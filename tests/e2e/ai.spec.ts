@@ -5,7 +5,7 @@ import type { Image as KonvaImage } from 'konva/lib/shapes/Image';
 import type { Text } from 'konva/lib/shapes/Text';
 
 // Every generation in this file is intercepted. This is browser integration
-// coverage with synthetic artwork, never evidence of a live Gemini request.
+// coverage with synthetic artwork, never evidence of a live provider request.
 const storageKey = 'frameflow:project:v1';
 const visualPrompt = 'Ivory botanical borders with warm gold details and a quiet center';
 const exactContent = {
@@ -18,7 +18,7 @@ const saved = (page: Page) => expect(page.getByText('Saved on this device', { ex
 const documentJSON = (page: Page) => page.evaluate((key) => localStorage.getItem(key)!, storageKey);
 async function project(page: Page): Promise<ProjectDocument> { return JSON.parse(await documentJSON(page)); }
 async function openAI(page: Page, configured = true) {
-  await page.route('**/api/health', (route) => route.fulfill({ json: { status: 'ok', aiConfigured: configured, aiAvailable: configured } }));
+  await page.route('**/api/health', (route) => route.fulfill({ json: { status: 'ok', provider: 'cloudflare', aiConfigured: configured, aiAvailable: configured } }));
   await page.goto('/');
   await page.getByRole('tab', { name: 'AI', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Set the atmosphere.' })).toBeVisible();
@@ -42,7 +42,7 @@ async function mockImage(page: Page): Promise<ImageResponse> {
     return canvas.toDataURL('image/png').split(',')[1];
   });
   return { requestId: 'mocked-browser-request', image: { base64, mimeType: 'image/png', width: 320, height: 320 },
-    generation: { mode: 'live', model: 'mocked-e2e-provider', requestedAspectRatio: '16:9', promptUsed: 'Mocked background-artwork request; no event wording.' } };
+    generation: { mode: 'live', provider: 'cloudflare', model: 'mocked-e2e-provider', requestedAspectRatio: '16:9', promptUsed: 'Mocked background-artwork request; no event wording.' } };
 }
 async function fillPrompt(page: Page) {
   await page.getByLabel('Visual theme').fill(visualPrompt);
@@ -142,7 +142,7 @@ test('mocked generation previews before one atomic apply, preserves exact editab
   const variant = result.variants[0];
   expect(variant.canvas).toMatchObject({ width: 1600, height: 900 });
   expect(variant.background).toEqual({ assetId: records[0].id, fit: 'cover', focalPoint: { x: .5, y: .5 } });
-  expect(variant.generation).toMatchObject({ model: 'mocked-e2e-provider', returnedWidth: 320, returnedHeight: 320, requestedAspectRatio: '16:9' });
+  expect(variant.generation).toMatchObject({ provider: 'cloudflare', model: 'mocked-e2e-provider', returnedWidth: 320, returnedHeight: 320, requestedAspectRatio: '16:9' });
   expect(result.originalPrompt).toBe(visualPrompt);
   expect(result.styleBrief?.theme).toBe('Elegant wedding');
   expect(variant.elements.map((element) => ({ role: element.role, text: element.text }))).toEqual(Object.entries(exactContent).map(([role, text]) => ({ role, text })));
@@ -160,6 +160,7 @@ test('mocked generation previews before one atomic apply, preserves exact editab
   await page.reload(); await saved(page);
   await expect.poll(async () => (await artworkState(page)).image !== null).toBe(true);
   expect(await documentJSON(page)).toBe(applied);
+  expect((await project(page)).variants[0].generation?.provider).toBe('cloudflare');
   expect((await artworkState(page)).texts.map((node) => node.text)).toEqual(Object.values(exactContent));
   await expect(page.getByTestId('canvas-dimensions')).toHaveText('1600 × 900 px');
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();

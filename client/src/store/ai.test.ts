@@ -20,7 +20,7 @@ function fixture(store: EditorStore): DesignPreview {
       elements: [{ ...createTextElement('heading', canvas, 'generated-title'), role: 'title', text: '  Exact title\n& date  ' }],
       background: { assetId: 'stored-artwork', fit: 'cover', focalPoint: { x: .5, y: .5 } },
       // Metadata-only mock: these unit tests never call a provider.
-      generation: { mode: 'live', model: 'mocked-provider', promptUsed: 'Artwork only; reserve space.', requestedAspectRatio: '16:9', returnedWidth: 1376, returnedHeight: 768 },
+      generation: { mode: 'live', provider: 'cloudflare', model: 'mocked-provider', promptUsed: 'Artwork only; reserve space.', requestedAspectRatio: '16:9', returnedWidth: 1376, returnedHeight: 768 },
     },
   };
 }
@@ -68,6 +68,7 @@ describe('AI request metadata and atomic application', () => {
     store.dispatch(generatedDesignApplied({ preview, timestamp }));
     const applied = store.getState().editor.document;
     expect(applied.variants[0]).toEqual({ ...preview.variant, revision: before.variants[0].revision + 1 });
+    expect(applied.variants[0].generation?.provider).toBe('cloudflare');
     expect(applied).toMatchObject({ originalPrompt: preview.originalPrompt, styleBrief: preview.styleBrief, updatedAt: timestamp });
     expect(store.getState().editor.past).toHaveLength(count + 1);
     expect(isProjectDocument(applied)).toBe(true);

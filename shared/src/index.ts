@@ -1,3 +1,5 @@
+import type { ImageProvider } from './ai.js';
+
 export type TextRole = 'eyebrow' | 'title' | 'date' | 'venue' | 'body' | 'custom';
 export * from './text.js';
 
@@ -35,6 +37,7 @@ export interface DesignVariant {
   sourceVariantId?: string;
   generation?: {
     mode: 'live' | 'example';
+    provider?: ImageProvider;
     model?: string;
     promptUsed: string;
     sourceAssetId?: string;

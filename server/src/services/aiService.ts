@@ -1,12 +1,12 @@
 import { imageSize } from 'image-size';
-import { AI_LIMITS, IMAGE_MIMES, type GenerateRequest, type ImageResponse, type ImageMime } from '@frameflow/shared';
+import { AI_LIMITS, IMAGE_MIMES, type GenerateRequest, type ImageResponse, type ImageMime, type CanvasSize } from '@frameflow/shared';
 
 export interface ProviderDiagnostic { providerStatus?: number; canonicalCode?: string; reason?: string }
 export class AiError extends Error {
   constructor(public code: string, message: string, public status = 502, public retryable = false, public providerDiagnostic?: ProviderDiagnostic) { super(message); }
 }
 export interface ProviderImage { data: string; mimeType: string }
-export type GenerateImage = (prompt: string, ratio: string, signal: AbortSignal) => Promise<ProviderImage>;
+export type GenerateImage = (prompt: string, ratio: string, signal: AbortSignal, target?: CanvasSize) => Promise<ProviderImage>;
 export const RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const;
 export function aspectRatio(width: number, height: number) {
   return RATIOS.reduce((best, ratio) => {
@@ -73,13 +73,13 @@ export function mapProviderError(error: unknown): AiError {
   if (status === 401 || status === 403 || code === 'UNAUTHENTICATED' || code === 'PERMISSION_DENIED' || CONFIGURATION_REASONS.has(reason)) return mapped('CONFIGURATION', 'The image service rejected its credentials or project configuration. Ask the owner to check API access, key restrictions and billing.', 503);
   if (status === 429 || code === 'RESOURCE_EXHAUSTED' || code === 'too_many_requests' || reason === 'RATE_LIMIT_EXCEEDED' || reason === 'QUOTA_EXCEEDED') return mapped('RATE_LIMIT', 'The image service is busy or its quota is exhausted. Please try later.', 429, true);
   if (status === 404 || code === 'NOT_FOUND' || reason === 'MODEL_NOT_FOUND' || reason === 'MODEL_NOT_SUPPORTED') return mapped('MODEL_UNAVAILABLE', 'The configured image model is unavailable for this API or project. Ask the owner to check model access and configuration.', 503);
-  if (status === 400 || status === 422 || code === 'INVALID_ARGUMENT' || code === 'OUT_OF_RANGE' || code === 'invalid_request') return mapped('PROVIDER_REQUEST', 'The image service rejected the request configuration. Ask the owner to check the model, API method and image options.', 400);
+  if (status === 400 || status === 413 || status === 422 || code === 'INVALID_ARGUMENT' || code === 'OUT_OF_RANGE' || code === 'invalid_request') return mapped('PROVIDER_REQUEST', 'The image service rejected the request configuration. Ask the owner to check the model, API method and image options.', 400);
   if (status === 408 || status === 504 || code === 'DEADLINE_EXCEEDED' || TIMEOUT_REASONS.has(reason)) return mapped('TIMEOUT', 'Generation timed out. Your design is unchanged. Check before retrying; the provider may still be processing.', 504, true);
   if (code === 'CANCELLED' || ABORT_REASONS.has(reason)) return mapped('CANCELLED', 'Generation was cancelled.', 499);
   if (NETWORK_REASONS.has(reason)) return mapped('NETWORK', 'The server could not reach the image service. Check its network connection before trying again. Your design is unchanged.', 502, true);
   return mapped('PROVIDER_FAILURE', 'The image service is temporarily unavailable. Please try later. Your design is unchanged.', 502, true);
 }
-export async function generateArtwork(request: GenerateRequest, requestId: string, model: string, timeoutMs: number, generate: GenerateImage, disconnected?: AbortSignal): Promise<ImageResponse> {
+export async function generateArtwork(request: GenerateRequest, requestId: string, model: string, timeoutMs: number, generate: GenerateImage, disconnected?: AbortSignal, provider: 'gemini' | 'cloudflare' = 'gemini'): Promise<ImageResponse> {
   if (disconnected?.aborted) throw new AiError('CANCELLED', 'Generation was cancelled.', 499);
   const ratio = aspectRatio(request.target.width, request.target.height);
   const prompt = artworkPrompt(request, ratio);
@@ -93,8 +93,8 @@ export async function generateArtwork(request: GenerateRequest, requestId: strin
       disconnected?.addEventListener('abort', cancel, { once: true });
       if (disconnected?.aborted) cancel();
     });
-    const image = await Promise.race([generate(prompt, ratio, controller.signal), timeout]);
-    return { requestId, image: validateImage(image), generation: { mode: 'live', model, requestedAspectRatio: ratio, promptUsed: prompt } };
+    const image = await Promise.race([generate(prompt, ratio, controller.signal, request.target), timeout]);
+    return { requestId, image: validateImage(image), generation: { mode: 'live', provider, model, requestedAspectRatio: ratio, promptUsed: prompt } };
   } catch (error) { throw mapProviderError(error); }
   finally { clearTimeout(timer); if (cancel) disconnected?.removeEventListener('abort', cancel); }
 }

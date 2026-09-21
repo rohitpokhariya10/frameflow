@@ -33,7 +33,7 @@ const variant = object({
   background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint: object({ x: range(0, 1), y: range(0, 1) }) }),
   sourceVariantId: id,
   generation: object({ mode: choice('live', 'example'), promptUsed: string, requestedAspectRatio: string,
-    returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { model: string, sourceAssetId: id }),
+    returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { provider: choice('gemini', 'cloudflare'), model: string, sourceAssetId: id }),
 });
 const project = object({
   schemaVersion: choice(1), id, name: string, createdAt: date, updatedAt: date,

@@ -1,6 +1,37 @@
 # Implementation status
 
-Latest status: **2026-09-22**. Milestones **0–5 implemented**; inspector/custom-size fixes are complete. **Milestone 6 has not started.**
+Latest status: **2026-09-22**. Milestones **0–5 implemented and real artwork generation verified through Cloudflare Workers AI**. Inspector/custom-size fixes are complete. The assessment is not yet complete/deployed. **Milestone 6 has not started.**
+
+## Cloudflare Workers AI provider — completed implementation and live verification
+
+- Continued from `b24261d10df668db08c3e7f214f7fa33573e8640`, preserving the user's existing `server/.env.example` changes. Added a focused REST adapter; the Gemini SDK adapter and tests remain intact. No master-brief change or frontend redesign.
+- `AI_PROVIDER=cloudflare` selects Cloudflare account/token/model; `gemini` selects Gemini key/model. Omitted selector defaults to Gemini for existing setups; example and local environment explicitly select Cloudflare. Unknown selections fail validation; missing selected credentials disable AI without fallback. Health exposes provider/readiness, never credentials.
+- Cloudflare uses native multipart prompt/width/height with `@cf/black-forest-labs/flux-2-klein-4b`, an AbortSignal, no retries, bounded response streaming, and actual byte-derived MIME/dimensions. Shared validation, normalized ImageResponse, preview/apply/assets/history remain the same. Optional `generation.provider` survives save/reload while old documents still validate.
+- Logical targets remain exact. Artwork's longest side is bounded to 1024, dimensions rounded to 16px and clamped to at least 256; 1080×1350 requests 816×1024. Actual artwork may differ and uses uniform cover. Errors distinguish request/auth/account/model/quota/network/timeout/invalid image without exposing tokens or raw payloads.
+- **ONE real app-level generation PASSED:** HTTP **200**, **image/jpeg**, **816×1024**, **595,042 bytes**, model **@cf/black-forest-labs/flux-2-klein-4b**, request ID `86468371-534a-4443-bdc6-c5d231f16bd8`. Health was cloudflare/configured; the standard wedding prompt targeted 4:5 poster. No extra generation or retry occurred.
+- Verified real image decode and IndexedDB Blob; preview preserved the exact original document; Apply kept eyebrow/title/date/venue as editable TextElements with artwork underneath; local save succeeded. Undo/Redo restored exact previous/generated documents without another request. Reload restored artwork, all text, provider metadata, and exact canvas dimensions; venue editing after reload worked.
+- Visual review: real preview at 1440×900 and restored inspector at 1366×768. Panels/actions fit. Ivory floral/gold composition renders correctly; decorations approach the venue area, so manual placement can improve that specific result. Generated assets and screenshots are not tracked.
+- Official Cloudflare docs confirm generation plus up to four reference inputs, each **smaller than 512×512**, through multipart `input_image_0`…`input_image_3`. M6 must prepare bounded thumbnails and verify reference-based continuity. No reference processing, adaptation, variants, or comparison added now.
+- Gemini remains an alternate with the documented zero Free Tier generation quota. Cloudflare uses available account allocation; free usage is bounded. No account/billing changes or automatic fallback.
+- Documentation updated: AI_GENERATION, README, and environment example, including setup, the actual live result, Gemini history, and M6 reference-input constraints.
+- Final review added deterministic JPEG/WebP header normalization, direct HTTP 400 handling, and actual factory-selection coverage with mocked adapters. Older projects, provider metadata persistence, request IDs, safe failures, IndexedDB, preview, atomic Apply, and history remain covered.
+- Continuation made **zero additional live provider requests**. Reviewed all 17 modified and two new files; secret-value scan of tracked/new source found no configured credentials. Real `server/.env` was untouched and remains ignored. No generated artwork, screenshot, trace, temporary file, dependency directory, or master-brief change is included.
+
+Final automated verification on 2026-09-22 (all provider generation mocked):
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **273 passed across 18 files** |
+| `npm run build` | Passed |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **72 passed**, development, both desktop sizes |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **72 passed**, production, both desktop sizes |
+
+Each browser suite includes 22 AI flow checks. The separate, previously completed
+single real Cloudflare request remains the live evidence above.
+
+**Ready for Milestone 6 development; stop here for this task.** Historical Gemini failures below do not supersede the successful Cloudflare verification.
 
 ## Gemini provider diagnosis — 2026-09-22
 
@@ -285,8 +316,8 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-5. **AI generation — implementation complete; live success blocked by zero daily Free Tier model quota (429).**
-Inspector/custom-size regressions are fixed; resolve the documented project quota blocker before live verification.
+5. **AI generation — complete, real Cloudflare app-level verification passed.**
+Gemini remains an alternate blocked by its project quota; Milestone 6 is next.
 6. Reference-image adaptation, variants, comparison — not started.
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.

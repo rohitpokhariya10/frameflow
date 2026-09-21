@@ -2,15 +2,17 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, readConfig, type ServerConfig } from './app.js';
+import * as gemini from './providers/geminiProvider.js';
+import * as cloudflare from './providers/cloudflareImageProvider.js';
 import { AiError, type GenerateImage, type ProviderImage } from './services/aiService.js';
 import { mockPng, mockRequest } from './testSupport.js';
 
 const servers: Server[] = [];
 const image: ProviderImage = { data: mockPng().toString('base64'), mimeType: 'image/png' };
-const baseConfig: ServerConfig = { apiKey: 'test-only-credential', model: 'mock-provider', timeoutMs: 1000, trustProxyHops: 0 };
-async function start(config: Partial<ServerConfig> = {}, provider: GenerateImage = async () => image) {
+const baseConfig: ServerConfig = { provider: 'gemini', apiKey: 'test-only-credential', model: 'mock-provider', timeoutMs: 1000, trustProxyHops: 0 };
+async function start(config: Partial<ServerConfig> = {}, provider: GenerateImage | null = async () => image) {
   const log = vi.fn();
-  const server = createServer(createApp({ ...baseConfig, ...config }, provider, log));
+  const server = createServer(createApp({ ...baseConfig, ...config }, provider ?? undefined, log));
   servers.push(server);
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -21,13 +23,14 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).filter((server) => server.listening).map((server) => new Promise<void>((resolve, reject) => {
     server.closeAllConnections(); server.close((error) => error ? reject(error) : resolve());
   })));
+  vi.restoreAllMocks();
 });
 
 describe('server environment configuration', () => {
   it('keeps a server-only key, documented model/timeout defaults and exact production origin', () => {
-    expect(readConfig({})).toEqual({ apiKey: undefined, model: 'gemini-3.1-flash-image', timeoutMs: 120000, clientOrigin: undefined, trustProxyHops: 0 });
+    expect(readConfig({})).toEqual({ provider: 'gemini', apiKey: undefined, model: 'gemini-3.1-flash-image', timeoutMs: 120000, clientOrigin: undefined, trustProxyHops: 0 });
     expect(readConfig({ GEMINI_API_KEY: ' test-only-credential ', GEMINI_IMAGE_MODEL: ' configured-model ', CLIENT_ORIGIN: 'https://editor.example', TRUST_PROXY_HOPS: '1', AI_TIMEOUT_MS: '150000' })).toEqual({
-      apiKey: 'test-only-credential', model: 'configured-model', clientOrigin: 'https://editor.example', trustProxyHops: 1, timeoutMs: 150000,
+      provider: 'gemini', apiKey: 'test-only-credential', model: 'configured-model', clientOrigin: 'https://editor.example', trustProxyHops: 1, timeoutMs: 150000,
     });
     expect(readConfig({ GEMINI_API_KEY: '  ' }).apiKey).toBe('');
   });
@@ -155,4 +158,68 @@ it('logs bounded provider classification for rejected configuration without expo
   const exposed = JSON.stringify([body, log.mock.calls]);
   for (const secret of ['test-only-credential', 'private-header', 'private-image-payload', 'private-cause', 'Image delivery mode']) expect(exposed).not.toContain(secret);
   expect(provider).toHaveBeenCalledTimes(1);
+});
+
+it('selects only the configured provider credentials and model without fallback', async () => {
+  const config = readConfig({ AI_PROVIDER: 'cloudflare', CLOUDFLARE_ACCOUNT_ID: 'test-account', CLOUDFLARE_API_TOKEN: 'test-cloud-token', GEMINI_API_KEY: 'unused-gemini-key' });
+  expect(config).toMatchObject({ provider: 'cloudflare', accountId: 'test-account', apiKey: 'test-cloud-token', model: '@cf/black-forest-labs/flux-2-klein-4b' });
+  expect(() => readConfig({ AI_PROVIDER: 'unknown' })).toThrow('AI_PROVIDER');
+  expect(() => readConfig({ AI_PROVIDER: 'cloudflare', CLOUDFLARE_IMAGE_MODEL: '../../escape' })).toThrow('CLOUDFLARE_IMAGE_MODEL');
+  for (const missing of [{ CLOUDFLARE_ACCOUNT_ID: 'test-account' }, { CLOUDFLARE_API_TOKEN: 'test-cloud-token' }, {}]) {
+    const provider = vi.fn();
+    const { url, generate } = await start(readConfig({ AI_PROVIDER: 'cloudflare', GEMINI_API_KEY: 'unused-gemini-key', ...missing }), provider);
+    expect(await (await fetch(`${url}/api/health`)).json()).toEqual({ status: 'ok', aiConfigured: false, aiAvailable: false, provider: 'cloudflare' });
+    expect((await generate()).status).toBe(503); expect(provider).not.toHaveBeenCalled();
+  }
+  const { url, generate } = await start(config);
+  const health = await (await fetch(`${url}/api/health`)).json();
+  expect(health).toEqual({ status: 'ok', aiConfigured: true, aiAvailable: true, provider: 'cloudflare' });
+  const response = await generate();
+  expect(await response.json()).toMatchObject({ generation: { provider: 'cloudflare', model: config.model } });
+  expect(JSON.stringify(health)).not.toContain('test-cloud-token');
+});
+
+it.each(['gemini', 'cloudflare'] as const)('constructs the selected %s adapter with only its own credentials', async (selected) => {
+  const generateImage = vi.fn<GenerateImage>().mockResolvedValue(image);
+  const geminiFactory = vi.spyOn(gemini, 'geminiProvider').mockReturnValue(generateImage);
+  const cloudflareFactory = vi.spyOn(cloudflare, 'cloudflareImageProvider').mockReturnValue(generateImage);
+  const config = readConfig({ AI_PROVIDER: selected,
+    GEMINI_API_KEY: 'mock-gemini-token', GEMINI_IMAGE_MODEL: 'mock-gemini-model',
+    CLOUDFLARE_ACCOUNT_ID: 'mock-cloudflare-account', CLOUDFLARE_API_TOKEN: 'mock-cloudflare-token',
+    CLOUDFLARE_IMAGE_MODEL: '@cf/black-forest-labs/flux-2-klein-4b',
+  });
+  // Passing null omits the provider override, so createApp must choose the adapter.
+  const { generate, log } = await start(config, null);
+  if (selected === 'gemini') {
+    expect(geminiFactory).toHaveBeenCalledExactlyOnceWith('mock-gemini-token', 'mock-gemini-model');
+    expect(cloudflareFactory).not.toHaveBeenCalled();
+  } else {
+    expect(cloudflareFactory).toHaveBeenCalledExactlyOnceWith('mock-cloudflare-account', 'mock-cloudflare-token', '@cf/black-forest-labs/flux-2-klein-4b');
+    expect(geminiFactory).not.toHaveBeenCalled();
+  }
+  const response = await generate();
+  const body: unknown = await response.json();
+  expect(response.status).toBe(200);
+  expect(body).toMatchObject({ generation: { provider: selected, model: config.model } });
+  expect(generateImage).toHaveBeenCalledExactlyOnceWith(expect.any(String), '4:5', expect.any(AbortSignal), mockRequest.target);
+  expect(JSON.stringify([body, log.mock.calls])).not.toMatch(/mock-gemini-token|mock-cloudflare-token|mock-cloudflare-account/);
+});
+
+it.each([
+  { AI_PROVIDER: 'gemini', CLOUDFLARE_ACCOUNT_ID: 'mock-account', CLOUDFLARE_API_TOKEN: 'mock-cloudflare-token' },
+  { AI_PROVIDER: 'cloudflare', GEMINI_API_KEY: 'mock-gemini-token', CLOUDFLARE_ACCOUNT_ID: 'mock-account' },
+  { AI_PROVIDER: 'cloudflare', GEMINI_API_KEY: 'mock-gemini-token', CLOUDFLARE_API_TOKEN: 'mock-cloudflare-token' },
+])('constructs neither adapter when the selected provider is missing required configuration %#', async (env) => {
+  const generateImage = vi.fn<GenerateImage>().mockResolvedValue(image);
+  const geminiFactory = vi.spyOn(gemini, 'geminiProvider').mockReturnValue(generateImage);
+  const cloudflareFactory = vi.spyOn(cloudflare, 'cloudflareImageProvider').mockReturnValue(generateImage);
+  const { url, generate } = await start(readConfig(env), null);
+  const health = await (await fetch(`${url}/api/health`)).json();
+  expect(health).toEqual({ status: 'ok', aiConfigured: false, aiAvailable: false, provider: env.AI_PROVIDER });
+  const response = await generate();
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ error: { code: 'NOT_CONFIGURED' } });
+  expect(geminiFactory).not.toHaveBeenCalled();
+  expect(cloudflareFactory).not.toHaveBeenCalled();
+  expect(generateImage).not.toHaveBeenCalled();
 });

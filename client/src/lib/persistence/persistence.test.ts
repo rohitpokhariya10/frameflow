@@ -31,6 +31,35 @@ describe('validated local recovery and debounced saves', () => {
     saveProject(() => storage, project);
     expect(restoreProject(() => storage).document).toEqual(project);
   });
+  it.each([undefined, 'gemini', 'cloudflare'] as const)('recovers generation metadata with provider %s without changing schema version', (provider) => {
+    const storage = memory(); const project = document();
+    project.variants[0].generation = {
+      mode: 'live', model: 'mocked-provider', promptUsed: 'Flowers', requestedAspectRatio: '4:5',
+      returnedWidth: 1024, returnedHeight: 1280, ...(provider === undefined ? {} : { provider }),
+    };
+    expect(isProjectDocument(project)).toBe(true);
+    saveProject(() => storage, project);
+    const session = bootstrapEditor(() => storage);
+    expect(session.store.getState().editor).toMatchObject({ document: project, past: [], future: [] });
+    expect(session.store.getState().editor.document.schemaVersion).toBe(1);
+    expect(session.store.getState().editor.document.variants[0].generation?.provider).toBe(provider);
+    session.dispose();
+  });
+  it('rejects unsupported persisted providers without overwriting the stored document', () => {
+    for (const provider of ['other', 'Cloudflare', '', null, 42, {}]) {
+      const project = document();
+      const invalid = { ...project, variants: [{ ...project.variants[0], generation: {
+        mode: 'live', provider, model: 'mocked-provider', promptUsed: 'Flowers', requestedAspectRatio: '4:5',
+        returnedWidth: 1024, returnedHeight: 1280,
+      } }] };
+      expect(isProjectDocument(invalid)).toBe(false);
+      const storage = memory(); const raw = JSON.stringify(invalid);
+      storage.setItem(PROJECT_KEY, raw); storage.setItem.mockClear();
+      expect(restoreProject(() => storage).document).toBeUndefined();
+      expect(storage.getItem(PROJECT_KEY)).toBe(raw);
+      expect(storage.setItem).not.toHaveBeenCalled();
+    }
+  });
   it.each(['{invalid', '{}', JSON.stringify({ ...document(), schemaVersion: 2 }), JSON.stringify({ ...document(), variants: [] })])('safely rejects corrupt data %s without overwriting it', (raw) => {
     const storage = memory(); storage.setItem(PROJECT_KEY, raw); storage.setItem.mockClear();
     const session = bootstrapEditor(() => storage);

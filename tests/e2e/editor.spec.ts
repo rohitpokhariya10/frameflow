@@ -104,7 +104,8 @@ test('Express health endpoint is reachable from the application origin', async (
   const response = await request.get('/api/health');
   expect(response.ok()).toBe(true);
   const body = await response.json();
-  expect(body).toEqual({ status: 'ok', aiConfigured: expect.any(Boolean), aiAvailable: expect.any(Boolean) });
+  expect(body).toEqual({ status: 'ok', provider: expect.any(String), aiConfigured: expect.any(Boolean), aiAvailable: expect.any(Boolean) });
+  expect(['gemini', 'cloudflare']).toContain(body.provider);
   expect(body.aiAvailable).toBe(body.aiConfigured);
 });
 

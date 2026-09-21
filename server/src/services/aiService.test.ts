@@ -36,9 +36,9 @@ describe('provider image validation and normalization', () => {
     const generate = vi.fn().mockResolvedValue({ data, mimeType: 'image/png' });
     const response = await generateArtwork(mockRequest, 'request-123', 'mock-provider', 1000, generate);
     expect(response).toEqual({ requestId: 'request-123', image: { base64: data, mimeType: 'image/png', width: 4, height: 5 }, generation: {
-      mode: 'live', model: 'mock-provider', requestedAspectRatio: '4:5', promptUsed: artworkPrompt(mockRequest, '4:5'),
+      mode: 'live', provider: 'gemini', model: 'mock-provider', requestedAspectRatio: '4:5', promptUsed: artworkPrompt(mockRequest, '4:5'),
     } });
-    expect(generate).toHaveBeenCalledExactlyOnceWith(response.generation.promptUsed, '4:5', expect.any(AbortSignal));
+    expect(generate).toHaveBeenCalledExactlyOnceWith(response.generation.promptUsed, '4:5', expect.any(AbortSignal), mockRequest.target);
   });
   it('rejects missing, malformed, mismatched, unsupported and oversized image content', () => {
     const valid = mockPng().toString('base64');

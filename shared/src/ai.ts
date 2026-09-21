@@ -3,13 +3,14 @@ import { validateCanvasSize, type CanvasSize } from './index.js';
 export const AI_LIMITS = { prompt: 2000, imageBytes: 8 * 1024 * 1024, imagePixels: 16_000_000, imageSide: 16_384 } as const;
 export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp'] as const;
 export type ImageMime = typeof IMAGE_MIMES[number];
+export type ImageProvider = 'gemini' | 'cloudflare';
 export interface StyleBrief { theme: string; palette: string[]; motifs: string[]; mood: string }
 export interface QuietRegion { x: number; y: number; width: number; height: number }
 export interface GenerateRequest { prompt: string; target: CanvasSize; styleBrief: StyleBrief; quietRegion: QuietRegion }
 export interface ImageResponse {
   requestId: string;
   image: { mimeType: ImageMime; base64: string; width: number; height: number };
-  generation: { mode: 'live'; model: string; requestedAspectRatio: string; promptUsed: string };
+  generation: { mode: 'live'; provider?: ImageProvider; model: string; requestedAspectRatio: string; promptUsed: string };
 }
 export interface ApiError { error: { code: string; message: string; retryable: boolean; requestId: string } }
 const record = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
@@ -34,5 +35,6 @@ export function validImageResponse(v: unknown): v is ImageResponse {
     && Number.isSafeInteger(i.width) && Number.isSafeInteger(i.height) && (i.width as number) > 0 && (i.height as number) > 0
     && (i.width as number) <= AI_LIMITS.imageSide && (i.height as number) <= AI_LIMITS.imageSide
     && (i.width as number) * (i.height as number) <= AI_LIMITS.imagePixels
-    && g.mode === 'live' && short(g.model, 200) && short(g.requestedAspectRatio, 20) && short(g.promptUsed, 10_000);
+    && g.mode === 'live' && (g.provider === undefined || g.provider === 'gemini' || g.provider === 'cloudflare')
+    && short(g.model, 200) && short(g.requestedAspectRatio, 20) && short(g.promptUsed, 10_000);
 }

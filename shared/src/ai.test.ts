@@ -50,6 +50,17 @@ describe('normalized AI response contract', () => {
   it('accepts normalized metadata; binary decoding is separately required by the asset layer', () => {
     expect(validImageResponse(response)).toBe(true);
   });
+  it('accepts both supported providers while retaining responses without provider metadata', () => {
+    for (const provider of ['gemini', 'cloudflare']) {
+      expect(validImageResponse({ ...response, generation: { ...response.generation, provider } })).toBe(true);
+    }
+    expect(validImageResponse(response)).toBe(true);
+  });
+  it('rejects unsupported or malformed provider metadata', () => {
+    for (const provider of ['other', 'Cloudflare', '', null, 42, {}]) {
+      expect(validImageResponse({ ...response, generation: { ...response.generation, provider } })).toBe(false);
+    }
+  });
   it('rejects missing metadata, unsupported image types and unsafe image sizes', () => {
     for (const value of [null, {}, { ...response, requestId: '' }, { ...response, generation: { ...response.generation, mode: 'example' } },
       ...[{ mimeType: 'image/svg+xml' }, { base64: '' }, { width: 0 }, { height: 1.5 }, { width: Infinity }, { width: 4096, height: 4096 }]

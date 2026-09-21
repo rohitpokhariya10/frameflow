@@ -1,21 +1,109 @@
 # Artwork generation
 
-Milestone 5 implementation is complete. The provider failure has been diagnosed:
-Gemini rejected the optional `response_format.delivery` field with HTTP 400,
-`invalid_request`: “Image delivery mode is not supported.” The adapter now omits
-that field. The original backend mapped this category to a generic retryable 502.
-The corrected live request now returns HTTP 429 `too_many_requests`: the project
-has **0 requests per day on the Free Tier** for `gemini-3.1-flash-image`. This is an
-external account/quota blocker. No image was returned; successful live generation
-remains unverified. Details and exact request counts are recorded below.
+Milestone 5 supports two server-side image providers. The current environment selects
+**Cloudflare Workers AI / @cf/black-forest-labs/flux-2-klein-4b**. The existing Gemini
+adapter remains intact; its live generation is blocked by this project's zero daily
+Free Tier quota. No automatic fallback occurs. Current live verification is recorded
+in `IMPLEMENTATION_STATUS.md`; historical Gemini failures are retained below.
+
+## Cloudflare selection and request mapping
+
+`AI_PROVIDER=cloudflare` selects `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and
+`CLOUDFLARE_IMAGE_MODEL` (default `@cf/black-forest-labs/flux-2-klein-4b`).
+`AI_PROVIDER=gemini` selects the existing `GEMINI_API_KEY` and `GEMINI_IMAGE_MODEL`.
+An omitted selector defaults to Gemini for compatibility; the environment example
+and active local configuration explicitly select Cloudflare. Unknown providers fail
+configuration validation. Only the selected provider's credentials affect readiness.
+Credentials are never exposed by `/api/health`, which returns `provider`,
+`aiConfigured`, and the compatibility `aiAvailable` flag.
+
+```dotenv
+AI_PROVIDER=cloudflare
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-2-klein-4b
+```
+
+The common `GenerateImage` function receives composed prompt, requested ratio,
+AbortSignal, and logical target dimensions. Cloudflare maps these to native Node
+`fetch` and `FormData`: `POST /client/v4/accounts/{account}/ai/run/{model}` at the
+fixed Cloudflare API origin, with bearer authentication and multipart `prompt`,
+`width`, and `height`. Fetch generates the multipart boundary; no extra SDK is needed.
+The shared timeout/cancellation logic remains authoritative and neither adapter retries.
+
+The [official Klein 4B contract](https://developers.cloudflare.com/changelog/post/2026-01-15-flux-2-klein-4b-workers-ai/)
+was checked on 2026-09-22. Width/height support 256–1920 pixels. FrameFlow bounds the
+longest generation side to 1024, rounds to 16-pixel increments, and clamps the short
+side to at least 256 to keep requests near one megapixel. A 1080×1350 poster requests
+816×1024 artwork; the logical canvas remains exactly 1080×1350. Small ratio changes
+and extreme custom formats use uniform cover and can crop. Actual returned dimensions
+are always read from bytes and recorded separately; arbitrary exact output sizes
+are not promised.
+
+Cloudflare returns a JSON envelope with `success` and `result.image` base64. The
+adapter bounds the streamed response, validates base64 shape, detects actual
+PNG/JPEG/WebP MIME from bytes, then uses the same signature/dimension/size validator
+and browser decode as Gemini. Provider metadata is optional for old documents but
+new responses and saved designs include `generation.provider`. Preview, apply,
+IndexedDB, persistence, and history continue using the same application contract.
+
+Cloudflare HTTP errors and documented numeric error codes map to safe request,
+auth/account, model, quota, timeout, and provider failures; bounded known codes and
+HTTP status can appear in server logs. Raw envelopes, tokens, account identifiers,
+image payloads, and provider messages do not reach logs or client errors. Missing
+configuration cannot fall through to another provider. Invalid images never reach
+preview/apply. Free generation uses the account's available allocation and is not
+unlimited: see [Cloudflare errors and quota](https://developers.cloudflare.com/workers-ai/platform/errors/).
+
+## Real Cloudflare verification — 2026-09-22
+
+**VERIFIED through the actual FrameFlow UI and backend**, with exactly one live
+Cloudflare generation request and no retries. Health reported `provider=cloudflare`
+and `aiConfigured=true`; the AI panel was enabled. Requested the ivory-floral Indian
+wedding prompt on a **1080×1350 / 4:5 poster**. The REST response was HTTP **200**,
+model **@cf/black-forest-labs/flux-2-klein-4b**, actual **image/jpeg**, **816×1024**,
+**595,042 bytes**, request ID `86468371-534a-4443-bdc6-c5d231f16bd8`.
+
+The browser decoded the real bytes and matched their dimensions, stored a Blob in
+IndexedDB, and rendered preview without changing the original saved document.
+Use this design applied artwork below four exact editable text elements: eyebrow,
+title, date, and venue. Save succeeded. One Undo restored the original design and
+one Redo restored the generated design with the request count still one. Reload
+restored artwork, text, provider metadata, and canvas dimensions. Selecting all four
+text fields and editing/undoing the venue after reload confirmed editability.
+History was tested before reload because the history stack is intentionally not persisted.
+
+Screenshots were reviewed at **1440×900** (preview) and **1366×768** (restored inspector).
+Ivory florals/gold ornamentation and the text hierarchy rendered correctly. The
+lower-left flowers extend near the venue region, so users may still adjust text
+placement after preview; the provider does not guarantee a perfectly empty text area.
+Images/screenshots and the isolated browser profile remain outside tracked source.
+Gemini's separate quota blocker is unchanged. Milestone 6 is ready to begin in a
+separate task; no adaptation implementation was added here.
+
+## Milestone 6 preparation only
+
+Cloudflare was selected following the user's successful external smoke test, its
+available free allocation, and documented reference-image editing support. The
+model supports up to four binary references named `input_image_0` through
+`input_image_3` in the same multipart request. **Each reference must be smaller
+than 512×512**. M6 must create an aspect-preserving thumbnail below that bound before
+sending source artwork, preserve the full original asset, and verify actual visual
+continuity. The adapter is isolated so those fields can be added there later.
+The common provider input will need an optional bounded reference-image field;
+prompt and target dimensions already exist. References use binary multipart uploads,
+not the base64 JSON response format. M6 must verify accepted reference MIME types
+and decoding before upload; the current app's stored assets support PNG/JPEG/WebP.
+Reference processing, adaptation endpoints, variants, and comparison are not implemented
+in this pass. Gemini remains available for separately verified alternate use.
 
 ## Server boundary and provider
 
-The Express server owns `GEMINI_API_KEY`. The client has only the public
+The Express server owns all provider credentials. The client has only the public
 `VITE_API_BASE_URL` setting, defaulting to `/api`. `GET /api/health` returns
-nonsecret `status` and `aiConfigured` flags (`aiAvailable` is retained for compatibility).
+nonsecret `status`, `provider`, and `aiConfigured` flags (`aiAvailable` is retained for compatibility).
 The AI panel disables Generate when configuration is absent and offers a connection
-retry if the backend cannot be reached. Adding a key and restarting the server
+retry if the backend cannot be reached. Adding the selected credentials and restarting the server
 activates generation; no mock or example replaces a failed request.
 
 `POST /api/ai/generate` validates the shared application request. The service maps
@@ -99,7 +187,7 @@ Browser decoding adds the full image integrity check before storage or preview.
 
 Each server process permits three requests per client IP per minute and two active
 generations. The default timeout is 120 seconds, configurable from 1–180 seconds.
-Client disconnection/timeout aborts the SDK request where supported; cancellation
+Client disconnection/timeout aborts the provider request where supported; cancellation
 cannot guarantee that provider processing or billing stops. There is no automatic
 retry after ambiguous failures. The client has a longer 185-second deadline.
 
@@ -114,28 +202,36 @@ quota system; configure an account budget before publishing a public demo.
 
 ## Local setup and deployment preparation
 
-Copy `server/.env.example` to ignored `server/.env`, supply `GEMINI_API_KEY` locally,
+Copy `server/.env.example` to ignored `server/.env`, configure the selected provider locally,
 and run `npm run dev`. Never use a `VITE_` name for the secret. The frontend uses
 Vite's `/api` proxy locally. No credentials are needed for ordinary editing or mocks.
 
 Deployment architecture is Vercel frontend plus Render backend. Set the frontend's
 `VITE_API_BASE_URL=https://<render-service>/api` at build time; set Render's exact
-`CLIENT_ORIGIN=https://<vercel-app>`, server key/model/timeout, and proxy setting
+`CLIENT_ORIGIN=https://<vercel-app>`, selected provider credentials/model/timeout, and proxy setting
 `TRUST_PROXY_HOPS=1`. Keep proxy trust 0 for direct local access. Express respects
 Render's `PORT` and listens on `0.0.0.0`. The existing built-client static fallback
 is retained for production E2E checks. No deployment was performed in Milestone 5.
 
 ## Verification
 
-Routine tests never use real API quota. Server tests inject a mocked provider and
-mock the SDK mapping; browser tests intercept the API using a PNG drawn at runtime
+Routine tests never use real API quota. Server tests mock provider factories,
+SDK transport, and Cloudflare fetch; browser tests intercept the API using a PNG drawn at runtime
 by the test. That synthetic fixture is not a generated AI image or live evidence.
 Tests cover preview-before-apply, exact wording, assets, layering, history, recovery,
 missing configuration, failures, stale work, and cancellation alongside prior editor
 regressions. Current command counts and visual-review results are recorded in
 [IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md).
 
-A real smoke attempt ran on 2026-09-22 (Asia/Kolkata) using the requested ivory-floral
+Final Cloudflare milestone regression: **273 unit/API tests across 18 files**, **72
+development browser tests**, and **72 production browser tests** passed, including
+22 AI browser checks per mode. Typecheck, lint, and build passed. Final review and
+test completion made **zero additional live AI requests**; the successful request
+documented above was preserved as the sole app-level Cloudflare live verification.
+
+## Historical Gemini smoke test — 2026-09-22
+
+A real Gemini smoke attempt ran on 2026-09-22 (Asia/Kolkata) using the requested ivory-floral
 Indian-wedding visual prompt and 4:5 poster target. The ignored server configuration
 contained a key; health reported `aiConfigured=true`, and the enabled AI panel made
 exactly **one** unmocked request. SDK: `@google/genai` **2.23.0**; configured/requested
@@ -150,7 +246,7 @@ attempts are recorded below; none returned an image. Mocked end-to-end verificat
 remains separate from live verification.
 Milestone 6 adaptation, export, and deployment are not implemented here.
 
-## Provider diagnosis — 2026-09-22
+## Historical Gemini provider diagnosis — 2026-09-22
 
 - One read-only SDK `models.get` succeeded for `gemini-3.1-flash-image` (Nano Banana 2).
   The official image guide and Interactions overview document that model for both
@@ -180,7 +276,7 @@ Milestone 6 adaptation, export, and deployment are not implemented here.
   response extraction from `steps`, and single-call 400 handling. Existing successful
   generation tests remain intact; no test was weakened to accept failure.
 
-## Corrected live request — 2026-09-22
+## Historical corrected Gemini live request — 2026-09-22
 
 After explicit continuation authorization, exactly **one** corrected minimal request
 ran through the same adapter, key, `@google/genai` **2.23.0**, and configured model
@@ -213,4 +309,4 @@ Gemini image**. This continuation used **1 minimal / 0 full** generation request
 Across the earlier explicitly authorized passes, there were three generation
 attempts in total: original generic 502, diagnostic 400, and corrected quota 429.
 
-**Real Gemini generation is not yet VERIFIED. Milestone 6 remains stopped.**
+**Real Gemini generation is not VERIFIED. The current Cloudflare result is recorded separately above/in implementation status.**

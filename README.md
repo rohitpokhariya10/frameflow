@@ -1,10 +1,11 @@
 # FrameFlow
 
-A calm creative editor for the FreshFolks assessment. **Milestones 0–4 complete:**
-editor workspace, canvas sizing, interactive text editing, deterministic Auto Layout,
-local recovery, and undo/redo. Milestone 5 artwork generation is implemented with
-mocked verification; **live Gemini verification is blocked by a missing API key**.
-The complete assessment is not yet finished or deployed.
+A calm creative editor for the FreshFolks assessment. Milestones 0–5 provide canvas
+sizing, interactive text editing, measured Auto Layout, local recovery, undo/redo,
+and artwork generation. **Real app-level generation is verified with Cloudflare Workers AI**;
+Gemini remains an alternate but this project's Gemini model has zero Free Tier quota.
+The full assessment is not yet finished or deployed. See the current live verification
+result in [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Run locally
 
@@ -18,9 +19,16 @@ npm run dev
 
 Open http://127.0.0.1:5173. Vite proxies `/api` to the Express server on port 3001.
 No credentials are needed for editing or automated mocked tests. To enable AI,
-copy `server/.env.example` to `server/.env`, fill `GEMINI_API_KEY`, and restart the
-server. The default model is `gemini-3.1-flash-image`. Keep the key server-side.
-Without a key, the AI panel explains that generation is not configured.
+copy `server/.env.example` to ignored `server/.env`, leave `AI_PROVIDER=cloudflare`,
+and fill `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The model defaults to
+`@cf/black-forest-labs/flux-2-klein-4b` via `CLOUDFLARE_IMAGE_MODEL`. Restart the server.
+The token needs Workers AI access for that account. Keep credentials server-side.
+
+To select the existing alternate, set `AI_PROVIDER=gemini` and `GEMINI_API_KEY`;
+`GEMINI_IMAGE_MODEL` defaults to `gemini-3.1-flash-image`. Omitting `AI_PROVIDER`
+retains Gemini for older setups. There is no automatic provider fallback. Health
+reports the active provider and whether its credentials are present; missing selected
+credentials disable generation even when the other provider has credentials.
 For split deployment, Vercel uses `VITE_API_BASE_URL=https://<render-service>/api`;
 Render uses the exact frontend `CLIENT_ORIGIN` and `TRUST_PROXY_HOPS=1`.
 See [AI generation](docs/AI_GENERATION.md) for configuration and verification limits.
@@ -34,7 +42,7 @@ Click **Add heading** on the empty canvas, or open **Text** to add a heading,
 subheading, or body. Select on the canvas or in the element list. Drag to move;
 the two side handles change width and reflow words without changing font size.
 Use the inspector to edit exact content (including newlines), family, size,
-weight, color, alignment, X/Y, and width. Numbers apply on Enter or blur.
+weight, color, alignment, X/Y, and width. Valid numbers apply while typing, with one undo per focus session.
 Duplicate offsets and selects a copy. Delete/Backspace remove the selection only
 when the canvas or element list owns focus; typing in form fields is protected.
 Escape or clicking the empty canvas/workspace deselects.
@@ -86,7 +94,8 @@ To check the built app through Express, run `npm run build`, then
   text defaults/limits, typography validation, and recoverable position bounds.
   Development consumes TypeScript; production uses built shared JavaScript.
 - `server/src/app.ts`: validated AI endpoint, health/configuration flag, CORS,
-  limits, and safe errors. Gemini SDK mapping stays in `providers/geminiProvider.ts`.
+  limits, provider selection, and safe errors. REST/SDK mapping stays in the two
+  provider adapters under `server/src/providers/`.
   Built Express also retains same-origin static serving for production checks.
 - `client/src/styles.css`: Tailwind v4 plus project-specific visual tokens and
   editor styles, preserving the warm-neutral/deep-green shell.
@@ -121,16 +130,19 @@ OS fallback fonts, so their appearance can differ between devices.
 
 ## Current limits
 
-Real Gemini generation is unverified until `GEMINI_API_KEY` is supplied; current AI
-tests use explicit mocks. Adaptation, export, and the wedding example remain later
+Routine AI tests use explicit mocks. The Gemini alternate remains blocked by this
+project’s zero Free Tier image quota. Cloudflare uses its account’s available allocation;
+free usage is limited, and provider quota/errors never trigger automatic retries.
+Adaptation, export, and the wedding example remain later
 scope. The current project persists in localStorage; image Blobs use IndexedDB.
 Generated previews may crop artwork to preserve aspect ratio. Inspect results for
 unwanted lettering and readable text space before applying.
 Undo/redo retains up to 30 document operations during this session.
 
 Text editing is limited to 50 elements/frame and 5,000 characters/element. Font
-size is 8–512 logical px; width is 32–8192 px. Numeric size controls clamp to those
-bounds; empty/nonfinite numbers are rejected. Movement permits partial overflow
+size is 8–512 logical px; width is 32–8192 px. Numeric size controls retain unsupported
+or incomplete drafts locally; only valid values enter the document, and blur restores
+the last valid value. Movement permits partial overflow
 while retaining up to 24 logical px of the text box inside the frame. Elements
 already outside the frame after a preset change remain recoverable from the list
 and position fields. Auto Layout is explicit and never rewrites content. Collision detection and
