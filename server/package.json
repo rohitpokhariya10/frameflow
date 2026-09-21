@@ -4,16 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev": "tsx watch --conditions=development --env-file-if-exists=.env src/index.ts",
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@frameflow/shared": "*",
-    "express": "^5.2.1"
+    "@google/genai": "^2.23.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "image-size": "^2.0.4"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "tsx": "^4.23.15"
   }

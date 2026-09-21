@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef } from 'react';
-import { Layer, Rect, Stage } from 'react-konva/lib/ReactKonvaCore';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { Layer, Rect, Stage, Text } from 'react-konva/lib/ReactKonvaCore';
 import 'konva/lib/shapes/Rect';
 import { Image, Maximize, Minus, Plus, Sparkles, Type } from 'lucide-react';
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
@@ -7,16 +7,21 @@ import { fitRequested, tabChanged, zoomChanged } from '../../store/uiSlice';
 import { calculateFitZoom, VIEWPORT } from './viewport';
 import { TextElementNode } from './TextElementNode';
 import { focusCanvas, useTextActions } from '../text/useTextActions';
+import { BackgroundArtwork } from './BackgroundArtwork';
+import { textNodeStyle } from '../text/textGeometry';
 
 export function CanvasWorkspace() {
   const dispatch = useAppDispatch();
-  const { canvas, name, elements, id } = useAppSelector(selectActiveVariant);
+  const current = useAppSelector(selectActiveVariant);
+  const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' ? state.ai.preview : null);
+  const { canvas, name, elements, id, background } = preview?.variant ?? current;
+  const [artworkError, setArtworkError] = useState('');
   const { zoom, fitRequest, selectedElementId } = useAppSelector((state) => state.ui);
   const actions = useTextActions();
   const viewportRef = useRef<HTMLDivElement>(null);
   const displayWidth = canvas.width * zoom;
   const displayHeight = canvas.height * zoom;
-  const showEmptyState = elements.length === 0 && displayWidth >= 220 && displayHeight >= 230;
+  const showEmptyState = !background && !preview && elements.length === 0 && displayWidth >= 220 && displayHeight >= 230;
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -30,7 +35,8 @@ export function CanvasWorkspace() {
 
   return (
     <main className="canvas-workspace" aria-label="Canvas workspace" id="canvas-interaction" tabIndex={0} data-selection-owner>
-      <div className="workspace-heading"><span>{name}<span className="workspace-heading-separator">/</span><span className="muted">{elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
+      <div className="workspace-heading"><span>{preview ? 'Generated preview' : name}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Apply from the AI panel' : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
+      {background && artworkError && <div className="artwork-error" role="alert">{artworkError}</div>}
       <div className="canvas-viewport" ref={viewportRef} data-testid="canvas-viewport" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
         <div className="canvas-scroll-content" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
           <div className="canvas-frame" data-testid="canvas-frame" data-logical-width={canvas.width} data-logical-height={canvas.height}
@@ -39,8 +45,12 @@ export function CanvasWorkspace() {
               <Stage width={displayWidth} height={displayHeight} scaleX={zoom} scaleY={zoom}
                 onMouseDown={(event) => { if (event.target === event.target.getStage()) { actions.select(null); focusCanvas(); } }}
                 onTouchStart={(event) => { if (event.target === event.target.getStage()) { actions.select(null); focusCanvas(); } }}>
-                <Layer listening={false}><Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} /></Layer>
-                <Layer>{elements.map((element) => <TextElementNode key={element.id} element={element} selected={selectedElementId === element.id} canvas={canvas} variantId={id} zoom={zoom} />)}</Layer>
+                <Layer listening={false} clipWidth={canvas.width} clipHeight={canvas.height}><Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} />
+                  {background && <BackgroundArtwork background={background} canvas={canvas} onError={setArtworkError} />}
+                </Layer>
+                <Layer>{elements.map((element) => preview
+                  ? <Text key={element.id} name="preview-text" {...textNodeStyle(element)} x={element.x} y={element.y} listening={false} />
+                  : <TextElementNode key={element.id} element={element} selected={selectedElementId === element.id} canvas={canvas} variantId={id} zoom={zoom} />)}</Layer>
               </Stage>
             </div>
             {showEmptyState && <div className={`canvas-empty ${displayWidth < 310 || displayHeight < 350 ? 'canvas-empty-compact' : ''}`}>
@@ -51,7 +61,7 @@ export function CanvasWorkspace() {
               <div className="empty-actions">
                 <button className="button empty-primary" onClick={() => actions.add('heading')}><Type size={15} />Add heading</button>
                 <span className="action-hint">Make your first words count</span>
-                <button className="button empty-secondary" onClick={() => dispatch(tabChanged('ai'))}><Sparkles size={14} />Create with AI<span className="soon-tag">Soon</span></button>
+                <button className="button empty-secondary" onClick={() => dispatch(tabChanged('ai'))}><Sparkles size={14} />Create with AI</button>
                 <button className="example-button" disabled title="Editable example is coming in Milestone 7"><Image size={14} />Open wedding example</button>
                 <span className="action-hint">Example coming in a later update</span>
               </div>

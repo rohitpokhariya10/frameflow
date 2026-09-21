@@ -11,7 +11,8 @@ import { recoveryWarningChanged } from '../../store/saveSlice';
 export function EditorShell() {
   const document = useAppSelector(selectDocument);
   const { canvas } = useAppSelector(selectActiveVariant);
-  const selected = useAppSelector(selectSelectedText);
+  const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' && Boolean(state.ai.preview));
+  const selected = useAppSelector((state) => preview ? undefined : selectSelectedText(state));
   const actions = useTextActions();
   const dispatch = useAppDispatch();
   const canUndo = useAppSelector((state) => state.editor.past.length > 0);
@@ -55,8 +56,8 @@ export function EditorShell() {
           <div className="panel-heading"><h2>Properties</h2><span className="subtle-label">No selection</span></div>
           <div className="properties-empty">
             <div className="selection-hint" aria-hidden="true"><span /><MousePointer2 size={22} strokeWidth={1.4} /></div>
-            <h3>Select an element</h3>
-            <p>Choose a text element on the canvas to edit typography, position and layout.</p>
+            <h3>{preview ? 'Review your design' : 'Select an element'}</h3>
+            <p>{preview ? 'Use this design from the AI panel, then select any text to edit its wording and layout.' : 'Choose a text element on the canvas to edit typography, position and layout.'}</p>
           </div>
           <div className="panel-footnote"><span className="tiny-frame" aria-hidden="true" /><p>A little space.<br />A lot of possibility.</p></div>
           </>}

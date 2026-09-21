@@ -1,8 +1,68 @@
 # Implementation status
 
-Latest status: **2026-09-21**. Current milestone: **4 — Local recovery and history, complete and verified**.
-Milestones **0–4 complete**. Next milestone: **5 — AI generation (not started)**.
+Latest status: **2026-09-21**. Current milestone: **5 — AI generation, implementation complete and automated verification passed**.
+Milestones **0–4 complete**. Live Gemini verification remains blocked by missing credentials.
+Next task: **targeted inspector/custom-size bug-fix pass**, then Milestone 6 (not started).
 The full assessment is not yet complete or deployed.
+
+## Milestone 5 — resume audit and completed implementation
+
+- Preserved all uncommitted M5 work on top of M4 commit `86e3730`. Inspected tracked diffs and every new implementation/test file. The partial tree already had the provider adapter, shared contracts, Express safety boundaries, AI form/state, runtime assets, background renderer, and atomic apply. No reset, restart, master-brief change, or shell redesign.
+- Finished lint fixes, SDK `statusCode` mapping, request/asset cancellation races, regeneration form restoration across tabs, browser/storage timeout handling, tests, setup examples, and AI documentation. No M6 features were added.
+- Server-only official `@google/genai` **2.23.0** adapter uses `ai.interactions.create` with inline JPEG/1K `response_format`, `store: false`, abort signal, and no automatic retries. Environment-selected model defaults to **gemini-3.1-flash-image**. Current official image-generation guide was checked on 2026-09-21; SDK mapping is typechecked and mocked-contract tested, not live verified.
+- Express `/api/health` reports nonsecret `aiConfigured` (`aiAvailable` retained for compatibility). `/api/ai/generate` authoritatively validates the shared prompt/target/style/quiet-region contract, constructs artwork instructions, selects the nearest supported log-ratio, validates image signature/MIME/base64/dimensions, and normalizes results/errors.
+- Explicit localhost plus configured-origin CORS, 24 KiB request limit, three attempts/minute/client, two concurrent generations/process, 120-second default timeout, UUID request IDs, safe ID/duration/outcome logs. PNG/JPEG/WebP bounded to 8 MiB, 16 million pixels, and 16,384 pixels/side; browser decoding completes validation. Missing key, auth, quota, refusal, no-image, timeout, network, decode, and storage failures preserve existing work.
+- Compact AI panel supplies visual prompt, five themes, current/preset format, and optional exact eyebrow/title/date/venue. Missing configuration disables Generate visibly. Loading is truthful; no fake progress. Preview actions are Use this design, Regenerate, and Discard. Existing warm-neutral/deep-green shell is preserved.
+- Exact event strings never enter the generation request. App-owned text overlays use deterministic format regions plus measured Auto Layout; unspecified fields stay empty and unresolved roles are reported without rewriting wording.
+- The client decodes/stores artwork in IndexedDB before preview. Redux/localStorage/history retain metadata and asset IDs only. Runtime images remain outside Redux and object URLs are revoked after decode or cancellation. Apply changes target canvas, asset reference, original prompt, style, generation metadata, and text in one history operation; Undo/Redo restore snapshots without Gemini calls.
+- Preview does not mutate the document. Other tabs display the current design; returning to AI restores the preview form. A monotonic document version plus project identity prevents stale Apply even after edit/undo revision reuse. Cancellation during preview cleanup cannot start a request; timeout races against stalled local work and reports failure promptly. Late successful storage cleans its abandoned asset.
+- Background uses aspect-preserving cover below text, a clipped noninteractive layer, and actual provider dimensions separate from exact logical canvas dimensions. Reload resolves the asset ID and restores text/canvas; missing artwork produces an actionable warning while preserving text.
+- Stabilized an existing pointer/Delete test by waiting for Konva’s actual hit map after inserting a node and asserting selection before the keypress; retained its deletion/typing-safety assertions.
+- Production browser testing exposed CORS rejecting built JavaScript/CSS requests carrying Origin. Scoped the guard to API routes and allowed explicit local built-server origins. Screenshot review also exposed loading feedback below the panel scroll position; request/error/preview feedback now scrolls into view, while actions stay fixed.
+- Added `docs/AI_GENERATION.md`; environment examples prepare Vercel frontend / Render backend with public API base URL, exact CLIENT_ORIGIN, Render PORT and proxy setting. Deployment remains later scope.
+
+## Milestone 5 — actual final verification
+
+| Command/check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed all workspaces and browser tests/config |
+| `npm run lint` | Passed, zero warnings/errors |
+| `npm test` | **189 passed across 15 files**; provider mocked, no real quota used |
+| `npm run build` | Passed all workspaces; app ~290 kB, canvas ~291 kB, no chunk-size warning |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **64 passed** through development frontend/backend |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **64 passed** through built Express app |
+| Visual review | **Reviewed at 1440×900 and 1366×768**: missing configuration, visible loading/preview feedback, fixed actions, applied artwork, inspector, and Auto Layout |
+| Diff/secret/artifact review | Master brief unchanged; no whitespace issues, detected secrets, embedded images, or tracked test artifacts |
+| Real Gemini smoke test | **BLOCKED: Real Gemini smoke test blocked because GEMINI_API_KEY is not configured.** |
+
+The 92 added unit/API tests cover shared contract bounds, ratio mapping, prompt separation,
+provider mapping, HTTP/config/CORS/rate/concurrency/error behavior, composition, state/history,
+stale requests, Blob persistence, image placement, object URL cleanup, and stalled/late storage.
+Routine tests inject mocks or intercept API responses with a runtime-drawn synthetic PNG;
+these are not generated AI artwork or proof of live Gemini success. The 22 new browser
+executions (11 flows at two sizes) cover configuration, preview/apply/recovery/history,
+discard/regeneration, tab restoration, stale source edits, cancellation, service/network/
+decode/storage failures, stalled/late decoding timeouts, and missing assets. All 42
+previous editor executions also pass.
+
+Checked again on 2026-09-21 without printing secrets: no environment GEMINI_API_KEY,
+no `server/.env`, and therefore no key from that file. No live request was made.
+Actual live model, returned dimensions, visual quality, and account access remain unverified.
+
+### Milestone 5 remaining limitations
+
+- Implementation complete; real Gemini smoke test remains blocked by the missing key. A model name and passing mock do not establish account access or successful live generation.
+- Artwork may contain unwanted lettering or cropping despite instructions; inspect the preview before Apply. Custom ratios use nearest supported generation ratio plus cover, never stretching.
+- Browser-local storage can be evicted. Applied/history assets are retained; explicit preview cleanup is best effort, and refresh of an unapplied preview can leave an orphan. No general garbage collection or cloud backup.
+- Cancellation cannot guarantee provider processing/billing stops. Limits are per server instance, not distributed quota enforcement. Exact Vercel/Render settings and account budgets still need deployment-time verification.
+- History starts empty after reload. Arbitrary long content may need manual layout adjustment. Adaptation, export, example design, deployment, and M6 are not started.
+
+## Known follow-up regression fixes before Milestone 6
+
+1. **Inspector live-update bug:** numeric/property controls such as font size, X, Y, and width may wait until blur before updating the canvas. The next targeted pass must apply valid drafts immediately while preserving sensible grouped history. Existing blur/Enter semantics are intentionally unchanged in this AI commit.
+2. **Custom canvas sizing bug / verification pass:** manually reported custom-size behavior needs dedicated reproduction and verification of valid application, useful invalid-value feedback, undo, and persistence. Existing automated custom-size checks remain required, but do not dismiss the manual report. Address this immediately after M5, before M6.
+
+No draggable canvas/frame resize handles are planned; they are outside this deadline's scope.
 
 ## Milestone 4 — completed work
 
@@ -190,8 +250,9 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-5. **AI generation — next, not started:** real Gemini generation and failure handling.
-6. Reference-image adaptation, variants, comparison.
+5. **AI generation — implementation complete; live smoke blocked by missing GEMINI_API_KEY.**
+Next: targeted inspector live-update and custom canvas sizing fixes listed above.
+6. Reference-image adaptation, variants, comparison — not started.
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.
 
@@ -209,3 +270,6 @@ Milestone 2 was committed and pushed as `bf53f50`.
 Milestone 3 was committed and pushed as `239a895`.
 Milestone 4 delivery commit: `feat: add local recovery and editor history`.
 The actual Milestone 4 hash and push outcome are recorded in the final delivery message.
+
+Milestone 5 delivery commit: `feat: integrate Gemini artwork generation`.
+The actual hash and push outcome are recorded in the final delivery message.

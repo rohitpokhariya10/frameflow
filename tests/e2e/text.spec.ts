@@ -158,7 +158,14 @@ test('selection, Escape and delete shortcuts respect typing and interaction owne
   await page.getByRole('tab', { name: 'Design', exact: true }).click();
   await page.getByRole('button', { name: 'Add heading', exact: true }).click();
   state = await canvasState(page); node = state.nodes[0];
+  // Konva batches drawing: the node exists before the next frame paints its hit map.
+  // Wait for the real pointer target, rather than clicking a still-blank hit canvas.
+  await expect.poll(() => page.evaluate(({ x, y }) => {
+    const stage = (window as unknown as { Konva: { stages: Stage[] } }).Konva.stages[0];
+    return stage.getIntersection({ x, y })?.id();
+  }, { x: (node.x + node.width / 2) * state.zoom, y: (node.y + node.height / 2) * state.zoom })).toBe(node.id);
   await page.mouse.click(state.left + (node.x + node.width / 2) * state.zoom, state.top + (node.y + node.height / 2) * state.zoom);
+  await expect(input).toHaveValue('Add a beautiful heading');
   await page.keyboard.press('Delete');
   expect((await canvasState(page)).nodes).toHaveLength(0);
 });

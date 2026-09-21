@@ -1,5 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { createTextElement, TEXT_LIMITS, validTextChanges, validateCanvasSize, type CanvasSize, type ProjectDocument, type TextKind, type TextChanges } from '@frameflow/shared';
+import type { DesignPreview } from './aiSlice';
+import { isProjectDocument } from '../lib/persistence/schema';
 
 interface TextTarget { variantId: string; id: string; timestamp: string }
 const finitePosition = (position: { x: number; y: number }) => Number.isFinite(position.x) && Number.isFinite(position.y);
@@ -19,6 +21,15 @@ const initialState: { document: ProjectDocument } = { document: createDocument('
 export const editorSlice = createSlice({
   name: 'editor', initialState,
   reducers: {
+    generatedDesignApplied(state, action: PayloadAction<{ preview: DesignPreview; timestamp: string }>) {
+      const { preview, timestamp } = action.payload;
+      if (state.document.id !== preview.sourceProjectId) return;
+      const index = state.document.variants.findIndex((variant) => variant.id === preview.variant.id);
+      if (index < 0) return;
+      const document = { ...state.document, originalPrompt: preview.originalPrompt, styleBrief: preview.styleBrief,
+        updatedAt: timestamp, variants: state.document.variants.map((variant, i) => i === index ? { ...preview.variant, revision: variant.revision + 1 } : variant) };
+      if (isProjectDocument(document)) state.document = document;
+    },
     textAutoLayoutApplied(state, action: PayloadAction<TextTarget & { expectedRevision: number; layout: { x: number; y: number; width: number; fontSize: number } }>) {
       const { variantId, id, expectedRevision, layout, timestamp } = action.payload;
       const variant = state.document.variants.find((item) => item.id === variantId);
@@ -97,4 +108,4 @@ export const editorSlice = createSlice({
     },
   },
 });
-export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied } = editorSlice.actions;
+export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied } = editorSlice.actions;

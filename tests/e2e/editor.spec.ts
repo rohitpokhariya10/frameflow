@@ -95,12 +95,15 @@ test('upcoming actions are truthful and keyboard tabs work', async ({ page }) =>
   await expect(page.getByRole('heading', { name: 'Words with presence.' })).toBeVisible();
   await page.getByRole('button', { name: /Create with AI/ }).click();
   await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText('AI generation · Milestone 5')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Set the atmosphere.' })).toBeVisible();
+  await expect(page.getByLabel('Visual theme')).toBeVisible();
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
 });
 
 test('Express health endpoint is reachable from the application origin', async ({ request }) => {
   const response = await request.get('/api/health');
   expect(response.ok()).toBe(true);
-  expect(await response.json()).toEqual({ status: 'ok', aiAvailable: false });
+  const body = await response.json();
+  expect(body).toEqual({ status: 'ok', aiConfigured: expect.any(Boolean), aiAvailable: expect.any(Boolean) });
+  expect(body.aiAvailable).toBe(body.aiConfigured);
 });

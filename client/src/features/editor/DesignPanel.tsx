@@ -4,6 +4,7 @@ import { CANVAS_PRESETS, validateCanvasSize, type CanvasSize } from '@frameflow/
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
 import { canvasResized } from '../../store/editorSlice';
 import { fitRequested, tabChanged, type LeftTab } from '../../store/uiSlice';
+import { AIPanel } from '../ai/AIPanel';
 import { TextPanel } from '../text/TextPanel';
 
 const TABS = [
@@ -39,13 +40,12 @@ export function DesignPanel() {
         ))}
       </div>
       <div className="tab-content" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
-        {activeTab === 'design' ? <CanvasSettings /> : activeTab === 'text' ? <TextPanel /> : <UpcomingPanel />}
+        {activeTab === 'design' ? <CanvasSettings /> : activeTab === 'text' ? <TextPanel /> : <AIPanel />}
       </div>
       <div className="design-panel-footer"><span className="status-dot" />Your next idea starts here.</div>
     </aside>
   );
 }
-
 function CanvasSettings() {
   const dispatch = useAppDispatch();
   const variant = useAppSelector(selectActiveVariant);
@@ -104,12 +104,4 @@ function CanvasSettings() {
       <div className="design-note"><span className="eyebrow">A FRAME, NOT A LIMIT</span><p>You can change your canvas size at any time.</p></div>
     </div>
   );
-}
-
-function UpcomingPanel() {
-  return <div className="upcoming-panel"><Sparkles size={24} strokeWidth={1.4} /><span className="eyebrow">COMING NEXT</span>
-    <h2>An idea into artwork.</h2>
-    <p>Create original artwork from a prompt, with your words kept editable.</p>
-    <span className="upcoming-badge">AI generation · Milestone 5</span>
-  </div>;
 }

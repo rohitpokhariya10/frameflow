@@ -2,7 +2,8 @@
 
 A calm creative editor for the FreshFolks assessment. **Milestones 0–4 complete:**
 editor workspace, canvas sizing, interactive text editing, deterministic Auto Layout,
-local recovery, and undo/redo.
+local recovery, and undo/redo. Milestone 5 artwork generation is implemented with
+mocked verification; **live Gemini verification is blocked by a missing API key**.
 The complete assessment is not yet finished or deployed.
 
 ## Run locally
@@ -16,8 +17,13 @@ npm run dev
 ```
 
 Open http://127.0.0.1:5173. Vite proxies `/api` to the Express server on port 3001.
-No credentials or environment files are needed for these milestones. Optional
-server configuration is documented in `server/.env.example`.
+No credentials are needed for editing or automated mocked tests. To enable AI,
+copy `server/.env.example` to `server/.env`, fill `GEMINI_API_KEY`, and restart the
+server. The default model is `gemini-3.1-flash-image`. Keep the key server-side.
+Without a key, the AI panel explains that generation is not configured.
+For split deployment, Vercel uses `VITE_API_BASE_URL=https://<render-service>/api`;
+Render uses the exact frontend `CLIENT_ORIGIN` and `TRUST_PROXY_HOPS=1`.
+See [AI generation](docs/AI_GENERATION.md) for configuration and verification limits.
 
 Choose Poster, Square, Landscape, or Story in Design. Custom size accepts integer
 sides from 256–4096 px with at most 12,000,000 total pixels. Apply changes the
@@ -42,6 +48,11 @@ closing. Refresh restores the current design; history starts empty. Use Undo/Red
 or Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z outside typing controls. Content updates group
 within a one-second typing session, ending on blur. Browser storage is not a backup.
 
+In **AI**, describe the artwork, choose a theme/format, and optionally enter exact
+event wording. Generate first creates a preview. **Use this design** applies it as
+one undoable change; Regenerate and Discard leave the document unchanged. Wording
+stays editable, while artwork is stored in IndexedDB and restored after refresh.
+
 ## Commands
 
 | Command | Runs |
@@ -51,7 +62,7 @@ within a one-second typing session, ending on blur. Browser storage is not a bac
 | `npm start` | Built Express server, serving the client and `/api` on http://127.0.0.1:3001 (build first) |
 | `npm run typecheck` | TypeScript checks in all three workspaces plus browser tests/config |
 | `npm run lint` | ESLint with TypeScript and React Hooks rules; zero warnings allowed |
-| `npm test` | Vitest validation, viewport, text operations, and Redux boundary tests |
+| `npm test` | Vitest validation, layout, history/persistence, AI state/assets, and mocked backend/provider tests |
 | `npm run test:e2e` | Playwright Chromium flows at 1440×900 and 1366×768; starts dev servers automatically |
 
 Before first browser test, run `npx playwright install chromium`. Screenshots and
@@ -73,10 +84,10 @@ To check the built app through Express, run `npm run build`, then
   tabs, active variant, and viewport state in `uiSlice`.
 - `shared/src/index.ts` / `text.ts`: document contracts, canvas-size validation,
   text defaults/limits, typography validation, and recoverable position bounds.
-  Vite consumes this small TypeScript workspace directly; build also emits JS
-  and declarations for later backend integration.
-- `server/src/index.ts`: Express health endpoint and same-origin production
-  static serving. `/api/health` truthfully returns `aiAvailable: false`.
+  Development consumes TypeScript; production uses built shared JavaScript.
+- `server/src/app.ts`: validated AI endpoint, health/configuration flag, CORS,
+  limits, and safe errors. Gemini SDK mapping stays in `providers/geminiProvider.ts`.
+  Built Express also retains same-origin static serving for production checks.
 - `client/src/styles.css`: Tailwind v4 plus project-specific visual tokens and
   editor styles, preserving the warm-neutral/deep-green shell.
 
@@ -94,8 +105,8 @@ handles are disabled. Text height is derived by Konva; no height, node refs,
 measurements, or transform scale is saved in the document. The selection belongs
 to UI state. Changing a canvas preset preserves every existing text property.
 
-No generic UI kit, monorepo framework, or Gemini dependencies were added. Konva's
-minimal bundle explicitly registers Rect, Text, and Transformer.
+No generic UI kit or monorepo framework was added. The official Gemini SDK is a
+server-only dependency. Konva's minimal bundle registers Rect, Text, Image, and Transformer.
 
 ## Fonts
 
@@ -110,10 +121,11 @@ OS fallback fonts, so their appearance can differ between devices.
 
 ## Current limits
 
-Milestone 5 AI generation is next and has not started. Adaptation, export, and the
-wedding example remain later scope. **Create with AI** opens its upcoming panel.
-The current project persists in localStorage; native IndexedDB asset storage is
-verified with a local fixture, without an image-generation/rendering feature yet.
+Real Gemini generation is unverified until `GEMINI_API_KEY` is supplied; current AI
+tests use explicit mocks. Adaptation, export, and the wedding example remain later
+scope. The current project persists in localStorage; image Blobs use IndexedDB.
+Generated previews may crop artwork to preserve aspect ratio. Inspect results for
+unwanted lettering and readable text space before applying.
 Undo/redo retains up to 30 document operations during this session.
 
 Text editing is limited to 50 elements/frame and 5,000 characters/element. Font

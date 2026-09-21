@@ -1,12 +1,14 @@
 import { combineReducers, configureStore, type UnknownAction } from '@reduxjs/toolkit';
 import { useDispatch, useSelector } from 'react-redux';
-import { createDocument } from './editorSlice';
+import { createDocument, generatedDesignApplied } from './editorSlice';
 import { uiSlice } from './uiSlice';
 import { historyReducer, initialHistory, undo, redo } from './history';
 import { saveSlice } from './saveSlice';
+import { aiSlice } from './aiSlice';
 
-const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer });
+const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer });
 function reducer(state: ReturnType<typeof combined> | undefined, action: UnknownAction) {
+  if (state && generatedDesignApplied.match(action) && action.payload.preview.sourceVersion !== state.editor.version) return state;
   const next = combined(state, action);
   if ((undo.match(action) || redo.match(action)) && next.ui.selectedElementId) {
     const variant = next.editor.document.variants.find((item) => item.id === next.ui.activeVariantId) ?? next.editor.document.variants[0];
@@ -19,7 +21,7 @@ function reducer(state: ReturnType<typeof combined> | undefined, action: Unknown
 
 export const createEditorStore = (document = createDocument(crypto.randomUUID(), new Date().toISOString())) => configureStore({
   reducer,
-  preloadedState: { editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState() },
+  preloadedState: { editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState() },
 });
 export type EditorStore = ReturnType<typeof createEditorStore>;
 export type RootState = ReturnType<EditorStore['getState']>;

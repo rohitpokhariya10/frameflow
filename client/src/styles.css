@@ -232,3 +232,30 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 1050px) and (min-width: 701px) {
   .properties-panel.has-selection { display: flex; position: fixed; z-index: 5; top: var(--topbar-height); right: 0; bottom: 0; width: 280px; box-shadow: -8px 0 24px #1f292514; }
 }
+
+.ai-panel { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.ai-panel-scroll { padding: 24px 19px 12px; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+.ai-panel .section-intro { margin-bottom: 20px; }
+.ai-panel textarea, .ai-panel select { width: 100%; border: 1px solid var(--color-line); border-radius: 7px; background: #fcfcfa; padding: 9px; color: var(--color-ink); font: inherit; font-size: 11px; line-height: 1.6; }
+.ai-panel textarea:focus-visible, .ai-panel select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+#ai-prompt { min-height: 108px; resize: vertical; max-height: 180px; }
+.theme-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 15px 0 18px; }
+.theme-options button { border: 1px solid var(--color-line); border-radius: 14px; padding: 5px 8px; font-size: 9px; color: var(--color-muted); }
+.theme-options button[aria-pressed="true"] { color: var(--color-primary); background: var(--color-selected); border-color: #a9c0ad; }
+.event-fields { margin-top: 18px; border-top: 1px solid var(--color-line); padding-top: 14px; }
+.event-fields summary { cursor: pointer; font-size: 11px; font-weight: 500; }
+.event-fields summary span { color: var(--color-muted); font-size: 9px; margin-left: 6px; }
+.event-fields label { display: block; margin-top: 10px; }
+.event-fields textarea { resize: vertical; min-height: 34px; max-height: 120px; }
+.ai-panel-actions { padding: 12px 19px; border-top: 1px solid var(--color-line); flex-shrink: 0; margin-top: auto; }
+.ai-panel-actions > .button { width: 100%; font-size: 11px; }
+.ai-panel-actions .button:disabled { background: #edf0eb; color: #78827b; border-color: var(--color-line); }
+.ai-secondary-actions { display: flex; gap: 8px; margin-top: 8px; }
+.ai-secondary-actions .button { flex: 1; padding: 0 7px; font-size: 10px; }
+.ai-notice { margin: 10px 0; padding: 9px; border-radius: 6px; background: #faf5e8; color: #826326; font-size: 10px; line-height: 1.6; }
+.text-link { display: block; text-decoration: underline; margin-top: 6px; }
+.ai-loading, .ai-preview-note { margin-top: 16px; color: var(--color-primary); font-size: 11px; line-height: 1.7; }
+.ai-loading strong { display: block; margin-top: 6px; }
+.ai-loading p, .ai-preview-note p { font-size: 10px; color: var(--color-muted); margin-top: 6px; }
+.ai-preview-note h3 { font-size: 12px; }
+.artwork-error { padding: 8px 24px; color: #826326; background: #faf5e8; font-size: 11px; }
