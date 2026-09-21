@@ -96,7 +96,7 @@ test('upcoming actions are truthful and keyboard tabs work', async ({ page }) =>
   await page.getByRole('button', { name: /Create with AI/ }).click();
   await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('AI generation · Milestone 5')).toBeVisible();
-  await expect(page.getByText('Not saved yet')).toBeVisible();
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
 });
 
 test('Express health endpoint is reachable from the application origin', async ({ request }) => {

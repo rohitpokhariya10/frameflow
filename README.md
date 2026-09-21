@@ -1,7 +1,8 @@
 # FrameFlow
 
-A calm creative editor for the FreshFolks assessment. **Milestones 0–2 complete:**
-editor workspace, canvas sizing, viewport zoom, and interactive text editing.
+A calm creative editor for the FreshFolks assessment. **Milestones 0–4 complete:**
+editor workspace, canvas sizing, interactive text editing, deterministic Auto Layout,
+local recovery, and undo/redo.
 The complete assessment is not yet finished or deployed.
 
 ## Run locally
@@ -31,6 +32,15 @@ weight, color, alignment, X/Y, and width. Numbers apply on Enter or blur.
 Duplicate offsets and selects a copy. Delete/Backspace remove the selection only
 when the canvas or element list owns focus; typing in form fields is protected.
 Escape or clicking the empty canvas/workspace deselects.
+
+Use **Auto Layout** to fit selected text inside the safe frame without changing its
+wording. It tries movement and width changes before reducing font size, and reports
+when readable fitting is impossible. A second successful run makes no change.
+
+Edits save locally after a short debounce. Wait for **Saved on this device** before
+closing. Refresh restores the current design; history starts empty. Use Undo/Redo
+or Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z outside typing controls. Content updates group
+within a one-second typing session, ending on blur. Browser storage is not a backup.
 
 ## Commands
 
@@ -100,19 +110,19 @@ OS fallback fonts, so their appearance can differ between devices.
 
 ## Current limits
 
-Auto Layout is next (Milestone 3), and has not been started. AI, persistence/history, adaptation, export,
-and the wedding example belong to later milestones. Disabled controls and
-upcoming panels make that explicit. **Create with AI** opens its upcoming panel;
-it does not generate artwork. The local save label says **Not saved yet** because
-refresh starts a new blank document. No undo/redo buttons are shown.
+Milestone 5 AI generation is next and has not started. Adaptation, export, and the
+wedding example remain later scope. **Create with AI** opens its upcoming panel.
+The current project persists in localStorage; native IndexedDB asset storage is
+verified with a local fixture, without an image-generation/rendering feature yet.
+Undo/redo retains up to 30 document operations during this session.
 
 Text editing is limited to 50 elements/frame and 5,000 characters/element. Font
 size is 8–512 logical px; width is 32–8192 px. Numeric size controls clamp to those
 bounds; empty/nonfinite numbers are rejected. Movement permits partial overflow
 while retaining up to 24 logical px of the text box inside the frame. Elements
 already outside the frame after a preset change remain recoverable from the list
-and position fields. No automatic fitting, content rewriting, collision detection,
-or inline text editing is performed.
+and position fields. Auto Layout is explicit and never rewrites content. Collision detection and
+inline text editing are outside current scope.
 
 At 701–1050 px the empty inspector is hidden; selecting text reveals a closable
 inspector over the right side. Below 700 px the design controls give way to a
@@ -121,3 +131,5 @@ preview and desktop-editing notice. Full mobile editing remains outside scope.
 The [master brief](FreshFolks-Assessment-Master-Brief.md) is preserved unchanged.
 See [implementation status](IMPLEMENTATION_STATUS.md) for actual verification and
 remaining milestones.
+
+See [Auto Layout](docs/AUTO_LAYOUT.md) and [persistence/history](docs/PERSISTENCE_AND_HISTORY.md) for implementation details and limits.

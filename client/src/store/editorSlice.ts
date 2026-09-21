@@ -91,7 +91,7 @@ export const editorSlice = createSlice({
       if (!validateCanvasSize(size.width, size.height).valid) return;
       const variant = state.document.variants.find((item) => item.id === variantId);
       if (!variant || (variant.canvas.width === size.width && variant.canvas.height === size.height)) return;
-      Object.assign(variant.canvas, size);
+      Object.assign(variant.canvas, { width: size.width, height: size.height });
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },

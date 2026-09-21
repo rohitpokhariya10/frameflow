@@ -1,8 +1,48 @@
 # Implementation status
 
-Latest status: **2026-09-21**. Current milestone: **3 — Deterministic text Auto Layout, complete and verified**.
-Milestones **0, 1, 2, and 3 complete**. Next milestone: **4 — Local recovery and history (not started)**.
+Latest status: **2026-09-21**. Current milestone: **4 — Local recovery and history, complete and verified**.
+Milestones **0–4 complete**. Next milestone: **5 — AI generation (not started)**.
 The full assessment is not yet complete or deployed.
+
+## Milestone 4 — completed work
+
+- Confirmed a clean main at `239a895934b6ada6e4deeffec23d6ece2cde6bc4`; inspected the existing reducer/UI/runtime boundaries, startup font loading, text interactions, atomic Auto Layout action, and tests. Preserved the master brief and previous milestone behavior.
+- Added version-1 project validation and localStorage persistence under `frameflow:project:v1`. The existing codebase uses handwritten runtime validation, so this follows that approach without another dependency. Checks document/variant/text shape, enums/fonts, finite numbers, canvas/text limits, unique IDs, metadata, and rejects unknown fields.
+- Bootstrap restores valid documents before render, with null selection, empty history, first variant active, normal Fit, and bundled fonts still awaited. Invalid JSON/version/schema or unavailable storage opens a usable blank design with a dismissible warning; existing saved data is not overwritten automatically on recovery failure.
+- Document-only subscription debounces saves 500 ms. Truthful top-bar `Saving…`, `Saved on this device`, and `Could not save` states; failures retry on the next document edit. Synchronous writes plus increasing request tokens prevent stale status updates. Pending edits flush on pagehide/hidden visibility; persistence listeners dispose during hot reload.
+- Added native IndexedDB repository with stable IDs and Blob/MIME/date records, put/get/has/delete, safe missing results, connection cleanup, and explicit rejection on open/blocked/version/write/abort failure. Put resolves on transaction completion. No Blob/base64/object URL enters Redux or localStorage. No runtime object URL cache is needed yet.
+- Added a 30-operation snapshot history wrapper around existing document actions. Undo/redo restore exact snapshots; new edits invalidate redo; no-op actions create no entry. Selection/zoom/Fit/tabs/save status stay outside history. Invalid selection is cleared on traversal.
+- Live content-only updates for one element coalesce within one second; blur or another document edit ends the group. Native input/textarea/select/contenteditable and IME behavior is preserved. Toolbar controls and Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y work outside typing controls.
+- Existing drag/resize commits and atomic Auto Layout each produce one undo step. Redo restores the fitted snapshot without recomputation. Auto Layout's async guard/feedback now use snapshot identity, preventing revision-number reuse after undo from accepting stale results.
+- Browser testing found preset display fields were copied into canvas state, causing strict persistence validation to fail. Restricted the reducer to width/height and added a regression test. Also made Playwright check/start frontend and backend independently after an existing Vite-only server caused health-check failures.
+- Added local `tests/fixtures/asset.svg`; actual Chrome IndexedDB tests verify bytes/MIME, reload recovery, put/get/has/delete/missing, unavailable factory, native version error, synchronous write failure, and aborted transaction preserving prior data. This is fixture verification, not live AI persistence.
+- Updated README and added `docs/PERSISTENCE_AND_HISTORY.md`. No Gemini, adaptation, export, example, backend database, or Milestone 5 implementation.
+
+## Milestone 4 — actual final verification
+
+| Command/check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed all workspaces and browser tests/config |
+| `npm run lint` | Passed, zero warnings/errors |
+| `npm test` | **97 passed across 7 files**: previous 75 + 10 history + 12 persistence tests |
+| `npm run build` | Passed all workspaces; app ~275 kB, canvas ~289 kB; no chunk warning |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **42 passed** through development frontend/backend |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **42 passed** through built Express app |
+| Screenshot review at 1440×900 and 1366×768 | Save success/failure and saving state readable; undo/redo enabled/disabled clear; top bar uncrowded; Auto Layout and inspector actions remain visible |
+| Diff/secret/artifact review | Master brief unchanged; no whitespace errors or detected secret patterns; generated test reports/screenshots remain ignored |
+
+Persistence coverage includes schema/JSON/version failure, unavailable storage/quota failure, debounced transitions/latest-only saving, stale completion rejection, lifecycle flush/dispose, exact fitted typography/canvas restoration, undo persistence, and exclusion of UI/history. History coverage includes add/delete/duplicate/canvas/geometry/Auto Layout, exact redo, typing session boundaries, no-op and UI exclusions, redo invalidation, and the 30-entry bound.
+
+Twelve added browser executions (six flows × two sizes) cover refresh recovery, empty restored history/null selection, real pointer drag/resize one-step undo, Auto Layout undo/redo, persistence after undo, typing/native shortcut safety, both Ctrl and Cmd editor shortcuts, redo invalidation, corrupt recovery, save failure, and native IndexedDB. All 30 prior executions still pass. The initial 38/42 browser run exposed the preset-field and backend-readiness issues above; both were fixed before the final complete passing runs.
+
+### Milestone 4 limitations
+
+- One project per browser origin; local device storage can be cleared or evicted. Multiple tabs use last successful writer wins; no cross-tab merge or cloud backup.
+- History is limited to 30 operations and starts empty after reload. Typing groups use a one-second pause/blur policy, not word-level editing semantics.
+- First variant restores as active because no variant switcher exists yet; selection/zoom are intentionally not persisted.
+- Forced process termination may lose changes inside the debounce window despite pagehide/visibility flushing. Save failures retain the in-memory design and retry on the next edit.
+- Asset repository is tested infrastructure only. Missing asset references preserve text metadata; future background rendering must surface missing-image recovery. No object URLs, automatic asset garbage collection, or live AI image persistence yet.
+- No remaining Milestone 4 blocker. Browser tooling's NO_COLOR/FORCE_COLOR warning and optional missing `.env` notice are harmless.
 
 ## Milestone 3 — completed work and resume audit
 
@@ -150,8 +190,7 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-4. **Local recovery and history — next, not started:** metadata/blob persistence, history.
-5. Real Gemini generation and failure handling.
+5. **AI generation — next, not started:** real Gemini generation and failure handling.
 6. Reference-image adaptation, variants, comparison.
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.
@@ -167,5 +206,6 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 Milestones 0/1 were committed and pushed as `57b6c81`.
 Milestone 2 was committed and pushed as `bf53f50`.
-Milestone 3 delivery commit: `feat: implement deterministic text auto layout`.
-The actual Milestone 3 commit hash and push outcome are recorded in the final delivery message.
+Milestone 3 was committed and pushed as `239a895`.
+Milestone 4 delivery commit: `feat: add local recovery and editor history`.
+The actual Milestone 4 hash and push outcome are recorded in the final delivery message.

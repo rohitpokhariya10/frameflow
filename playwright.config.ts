@@ -11,5 +11,10 @@ export default defineConfig({
     { name: 'desktop', use: { browserName: 'chromium', viewport: { width: 1440, height: 900 } } },
     { name: 'laptop', use: { browserName: 'chromium', viewport: { width: 1366, height: 768 } } },
   ],
-  webServer: { command: production ? 'npm start' : 'npm run dev', url: baseURL, reuseExistingServer: !process.env.CI, timeout: 30_000 },
+  webServer: production
+    ? { command: 'npm start', url: `${baseURL}/api/health`, reuseExistingServer: !process.env.CI, timeout: 30_000 }
+    : [
+      { command: 'npm run dev -w @frameflow/server', url: 'http://127.0.0.1:3001/api/health', reuseExistingServer: !process.env.CI, timeout: 30_000 },
+      { command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: !process.env.CI, timeout: 30_000 },
+    ],
 });

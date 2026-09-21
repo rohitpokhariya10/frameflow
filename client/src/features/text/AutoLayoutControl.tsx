@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from 'react-redux';
 import { ScanLine } from 'lucide-react';
-import type { TextElement } from '@frameflow/shared';
+import type { TextElement, DesignVariant } from '@frameflow/shared';
 import { selectActiveVariant, useAppDispatch, useAppSelector, type RootState } from '../../store';
 import { textAutoLayoutApplied } from '../../store/editorSlice';
 import { autoLayout, textOverflows, type LayoutResult } from '../../lib/layout/autoLayout';
@@ -21,8 +21,8 @@ export function AutoLayoutControl({ element }: { element: TextElement }) {
   const dispatch = useAppDispatch();
   const store = useStore<RootState>();
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<{ revision: number; message: string; unresolved: boolean } | null>(null);
-  const currentNotice = notice?.revision === variant.revision ? notice : null;
+  const [notice, setNotice] = useState<{ variant: DesignVariant; message: string; unresolved: boolean } | null>(null);
+  const currentNotice = notice?.variant === variant ? notice : null;
   const overflow = useMemo(() => textOverflows(element, safeRegion(variant.canvas), measureText), [element, variant.canvas]);
   async function fit() {
     setBusy(true);
@@ -31,16 +31,16 @@ export function AutoLayoutControl({ element }: { element: TextElement }) {
       // A font load may finish after typing, resizing, or switching selection.
       const state = store.getState();
       const current = selectActiveVariant(state);
-      if (current.id !== variant.id || current.revision !== variant.revision || state.ui.selectedElementId !== element.id) return;
+      if (current !== variant || state.ui.selectedElementId !== element.id) return;
       const result = autoLayout(element, variant.canvas, measureText);
       if (result.status === 'fitted') {
         const { x, y, width, fontSize } = result.element;
         dispatch(textAutoLayoutApplied({ variantId: variant.id, id: element.id, expectedRevision: variant.revision,
           layout: { x, y, width, fontSize }, timestamp: new Date().toISOString() }));
       }
-      setNotice({ revision: selectActiveVariant(store.getState()).revision, message: feedback(result, element), unresolved: result.status === 'unresolved' });
+      setNotice({ variant: selectActiveVariant(store.getState()), message: feedback(result, element), unresolved: result.status === 'unresolved' });
     } catch {
-      setNotice({ revision: variant.revision, message: 'The selected font could not be loaded. Please try again.', unresolved: true });
+      setNotice({ variant, message: 'The selected font could not be loaded. Please try again.', unresolved: true });
     } finally { setBusy(false); }
   }
   return <div className="auto-layout-control">

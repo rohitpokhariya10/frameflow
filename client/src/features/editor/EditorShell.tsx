@@ -1,18 +1,26 @@
-import { Download, Frame, MousePointer2 } from 'lucide-react';
-import { useAppSelector, selectActiveVariant, selectDocument, selectSelectedText } from '../../store';
+import { Download, Frame, MousePointer2, Undo2, Redo2, X } from 'lucide-react';
+import { useAppSelector, useAppDispatch, selectActiveVariant, selectDocument, selectSelectedText } from '../../store';
 import { DesignPanel } from './DesignPanel';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { TextInspector } from '../text/TextInspector';
 import { useTextActions } from '../text/useTextActions';
-import { selectionKey } from './selectionKeyboard';
+import { historyKey, selectionKey } from './selectionKeyboard';
+import { undo, redo } from '../../store/history';
+import { recoveryWarningChanged } from '../../store/saveSlice';
 
 export function EditorShell() {
   const document = useAppSelector(selectDocument);
   const { canvas } = useAppSelector(selectActiveVariant);
   const selected = useAppSelector(selectSelectedText);
   const actions = useTextActions();
+  const dispatch = useAppDispatch();
+  const canUndo = useAppSelector((state) => state.editor.past.length > 0);
+  const canRedo = useAppSelector((state) => state.editor.future.length > 0);
+  const save = useAppSelector((state) => state.save);
   return (
     <div className="editor-shell" onKeyDown={(event) => {
+      const history = historyKey(event);
+      if (history) { event.preventDefault(); dispatch(history === 'undo' ? undo() : redo()); return; }
       const command = selectionKey(event);
       if (!command || !selected) return;
       event.preventDefault();
@@ -28,12 +36,17 @@ export function EditorShell() {
         <span className="project-name">{document.name}</span>
         <span className="topbar-dimensions" data-testid="canvas-dimensions">{canvas.width} × {canvas.height} <span>px</span></span>
         <div className="topbar-actions">
-          <span className="save-status"><span />Not saved yet</span>
+          <div className="history-controls" role="group" aria-label="Document history">
+            <button className="icon-button" aria-label="Undo" title="Undo (⌘/Ctrl Z)" disabled={!canUndo} onClick={() => dispatch(undo())}><Undo2 size={16} /></button>
+            <button className="icon-button" aria-label="Redo" title="Redo (⌘/Ctrl Shift Z)" disabled={!canRedo} onClick={() => dispatch(redo())}><Redo2 size={16} /></button>
+          </div>
+          <span className={`save-status save-${save.status}`} role="status" aria-live="polite"><span />{{ saving: 'Saving…', saved: 'Saved on this device', error: 'Could not save' }[save.status]}</span>
           <button className="button export-button" disabled title="PNG export is coming in Milestone 7" aria-label="Export — not yet available">
             <Download size={15} />Export
           </button>
         </div>
       </header>
+      {save.warning && <div className="recovery-warning" role="alert"><span>{save.warning} New edits will replace the saved design.</span><button className="icon-button" aria-label="Dismiss recovery warning" onClick={() => dispatch(recoveryWarningChanged(''))}><X size={14} /></button></div>}
       <div className="editor-body">
         <DesignPanel />
         <CanvasWorkspace />

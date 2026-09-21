@@ -1,12 +1,14 @@
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2, X } from 'lucide-react';
 import { TEXT_FONTS, TEXT_LIMITS, TEXT_WEIGHTS, type TextElement } from '@frameflow/shared';
-import { selectActiveVariant, useAppSelector } from '../../store';
+import { selectActiveVariant, useAppSelector, useAppDispatch } from '../../store';
+import { endTextSession } from '../../store/history';
 import { NumberField } from '../../components/ui/NumberField';
 import { focusCanvas, useTextActions } from './useTextActions';
 import { AutoLayoutControl } from './AutoLayoutControl';
 
 export function TextInspector({ element }: { element: TextElement }) {
   const actions = useTextActions();
+  const dispatch = useAppDispatch();
   const count = useAppSelector(selectActiveVariant).elements.length;
   return <>
     <div className="panel-heading"><h2>Text properties</h2><button className="icon-button" aria-label="Deselect text" title="Deselect (Escape)" onClick={() => { actions.select(null); focusCanvas(); }}><X size={15} /></button></div>
@@ -14,7 +16,7 @@ export function TextInspector({ element }: { element: TextElement }) {
       <section className="inspector-section">
         <div className="inspector-section-title"><label htmlFor="text-content">Content</label><span>{element.role === 'custom' ? 'Text' : element.role}</span></div>
         <textarea id="text-content" aria-label="Text content" value={element.text} maxLength={TEXT_LIMITS.maxCharacters}
-          spellCheck={false} placeholder="Write something…" onChange={(event) => actions.update(element.id, { text: event.target.value })} />
+          spellCheck={false} placeholder="Write something…" onBlur={() => dispatch(endTextSession())} onChange={(event) => actions.update(element.id, { text: event.target.value })} />
         <div className="content-caption"><span>Line breaks stay exactly as typed.</span><span>{element.text.length}/{TEXT_LIMITS.maxCharacters}</span></div>
       </section>
       <section className="inspector-section">
