@@ -107,3 +107,53 @@ test('Express health endpoint is reachable from the application origin', async (
   expect(body).toEqual({ status: 'ok', aiConfigured: expect.any(Boolean), aiAvailable: expect.any(Boolean) });
   expect(body.aiAvailable).toBe(body.aiConfigured);
 });
+
+test('custom sizes preserve text geometry, fit, undo and survive reload', async ({ page }, testInfo) => {
+  await page.goto('/'); await page.getByRole('button', { name: 'Add heading', exact: true }).click();
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
+  const read = () => page.evaluate(() => JSON.parse(localStorage.getItem('frameflow:project:v1')!));
+  const original = await read();
+  await page.getByRole('tab', { name: 'Design', exact: true }).click();
+  await page.getByRole('button', { name: 'Custom size' }).click();
+  for (const [width, height] of [[1600, 900], [1080, 1350], [1000, 1000], [4096, 256], [1600, 900]]) {
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Width', exact: true }).fill(String(width));
+    await page.getByRole('textbox', { name: 'Height', exact: true }).fill(String(height));
+    const previous = await read();
+    await page.getByRole('button', { name: 'Apply size' }).click();
+    await expect(page.getByTestId('canvas-dimensions')).toHaveText(`${width} × ${height} px`);
+    await expect(page.getByTestId('canvas-frame')).toHaveAttribute('data-logical-width', String(width));
+    await expect(page.getByTestId('canvas-frame')).toHaveAttribute('data-logical-height', String(height));
+    await expectFrameFits(page);
+    await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
+    const resized = await read();
+    expect(resized.variants[0].elements).toEqual(original.variants[0].elements);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible(); expect(await read()).toEqual(previous);
+    await page.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible(); expect(await read()).toEqual(resized);
+  }
+  await page.reload();
+  await expect(page.getByTestId('canvas-dimensions')).toHaveText('1600 × 900 px'); await expectFrameFits(page);
+  expect((await read()).variants[0].elements).toEqual(original.variants[0].elements);
+  await page.screenshot({ path: testInfo.outputPath('custom-restored.png'), fullPage: true });
+});
+
+test('custom invalid sizes including 160 by 900 never mutate the saved document', async ({ page }) => {
+  await page.goto('/'); await page.getByRole('button', { name: 'Add heading', exact: true }).click();
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
+  const read = () => page.evaluate(() => localStorage.getItem('frameflow:project:v1'));
+  const original = await read();
+  await page.getByRole('tab', { name: 'Design', exact: true }).click(); await page.getByRole('button', { name: 'Custom size' }).click();
+  for (const [width, height] of [['160', '900'], ['', '900'], ['900', ''], ['900.5', '900'], ['-900', '900'], ['NaN', '900'], ['900', 'Infinity'], ['4097', '900'], ['4096', '4096']]) {
+    await page.getByRole('textbox', { name: 'Width', exact: true }).fill(width);
+    await page.getByRole('textbox', { name: 'Height', exact: true }).fill(height);
+    await page.getByRole('button', { name: 'Apply size' }).click();
+    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.getByTestId('canvas-dimensions')).toHaveText('1080 × 1350 px');
+    expect(await read()).toBe(original);
+  }
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
+  expect(JSON.parse((await read())!).variants[0].elements).toHaveLength(0);
+});

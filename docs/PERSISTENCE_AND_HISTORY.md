@@ -51,6 +51,10 @@ Text content continues updating the canvas live. Consecutive content-only update
 to the same variant/element within one second coalesce into one undo step. Blur
 ends the session explicitly; another document operation also separates it. This
 is a small deterministic grouping policy, not a complete word-level text editor.
+Numeric inspector updates carry a unique focus-session ID in action metadata.
+Font size, X, Y, and width update live but coalesce across pauses until blur or
+another document operation. New fields/sessions cannot merge; action IDs are not
+persisted. Undo/redo closes grouping, and no-ops still preserve redo.
 Native input/textarea/select/contenteditable shortcuts and IME are left alone.
 Outside those controls, Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z redoes (Ctrl+Y also works).
 

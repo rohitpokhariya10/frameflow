@@ -187,7 +187,9 @@ test('numeric bounds, empty text recovery, and preset changes preserve logical c
   await setNumber(page, 'X', 200);
   await setNumber(page, 'Text box width', 400);
   await setNumber(page, 'Font size', -10);
-  await expect(page.getByRole('spinbutton', { name: 'Font size' })).toHaveValue('8');
+  await expect(page.getByRole('spinbutton', { name: 'Font size' })).toHaveValue('72');
+  await expect(page.getByRole('alert')).toContainText('supported range');
+  await setNumber(page, 'Font size', 8);
   await setNumber(page, 'Font size', '');
   await expect(page.getByRole('alert')).toContainText('finite number');
   expect((await canvasState(page)).nodes[0].fontSize).toBe(8);
@@ -208,4 +210,65 @@ test('all advertised font faces are loaded before text renders', async ({ page }
   await page.getByRole('button', { name: 'Add heading', exact: true }).click();
   const loaded = await page.evaluate(() => [...document.fonts].filter((font) => font.status === 'loaded').map((font) => `${font.family.replace(/['"]/g, '')}:${font.weight}`));
   expect(loaded).toEqual(expect.arrayContaining(['Inter:400', 'Inter:600', 'Inter:700', 'Lora:400', 'Lora:600', 'Lora:700']));
+});
+
+test('numeric edits render before blur, preserve drafts, save live and group each session', async ({ page }, testInfo) => {
+  await page.goto('/'); await page.getByRole('button', { name: 'Add heading', exact: true }).click();
+  for (const [label, property, values] of [
+    ['Font size', 'fontSize', [90, 100]], ['X', 'x', [200, 210]], ['Y', 'y', [300, 310]], ['Text box width', 'width', [300, 250]],
+  ] as const) {
+    const before = (await canvasState(page)).nodes[0];
+    const input = page.getByRole('spinbutton', { name: label, exact: true });
+    for (const value of values) {
+      await input.fill(String(value)); await expect(input).toBeFocused();
+      expect((await canvasState(page)).nodes[0][property]).toBe(value);
+    }
+    const after = (await canvasState(page)).nodes[0];
+    if (property === 'width') { expect(after.height).toBeGreaterThan(before.height); expect(after.fontSize).toBe(before.fontSize); expect(after.scaleX).toBe(1); }
+    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem('frameflow:project:v1') ?? 'null')?.variants[0].elements[0]?.[key], property)).toBe(values[1]);
+    await expect(input).toBeFocused();
+    await input.press('Enter');
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    expect((await canvasState(page)).nodes[0]).toEqual(before);
+    await page.getByRole('button', { name: 'Redo', exact: true }).click();
+    expect((await canvasState(page)).nodes[0]).toEqual(after);
+  }
+  const size = page.getByRole('spinbutton', { name: 'Font size', exact: true });
+  for (const draft of ['', '-', '1.', 'NaN', 'Infinity', '513', '-8']) {
+    await size.fill(draft); await expect(size).toHaveValue(draft);
+    expect((await canvasState(page)).nodes[0].fontSize).toBe(100);
+    await size.press('Tab'); await expect(size).toHaveValue('100');
+  }
+  await size.fill('101'); await size.press('ArrowUp');
+  await page.getByRole('button', { name: 'Increase Font size', exact: true }).click();
+  await expect(size).toBeFocused(); expect((await canvasState(page)).nodes[0].fontSize).toBe(103);
+  await size.press('Enter'); await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  expect((await canvasState(page)).nodes[0].fontSize).toBe(100);
+  await page.screenshot({ path: testInfo.outputPath('live-inspector.png'), fullPage: true });
+});
+
+test('all complete inspector controls update immediately and Auto Layout consumes live values', async ({ page }) => {
+  await page.goto('/'); await page.getByRole('button', { name: 'Add heading', exact: true }).click();
+  const text = 'Aarav & Meera\nTogether forever';
+  await page.getByLabel('Text content').fill(text);
+  await expect(page.getByLabel('Text content')).toBeFocused();
+  expect((await canvasState(page)).nodes[0].text).toBe(text);
+  await page.getByLabel('Font family').selectOption('Inter');
+  expect((await canvasState(page)).nodes[0].fontFamily).toBe('Inter');
+  await page.getByLabel('Weight', { exact: true }).selectOption('700');
+  expect((await canvasState(page)).nodes[0].fontStyle).toBe('700');
+  await page.getByLabel('Color', { exact: true }).fill('#123456');
+  expect((await canvasState(page)).nodes[0].fill).toBe('#123456');
+  await page.getByRole('button', { name: 'Align right' }).click();
+  expect((await canvasState(page)).nodes[0].align).toBe('right');
+  const size = page.getByRole('spinbutton', { name: 'Font size', exact: true });
+  await size.fill('512'); await expect(size).toBeFocused();
+  await expect(page.locator('.layout-warning')).toBeVisible();
+  const live = (await canvasState(page)).nodes[0];
+  await page.getByRole('button', { name: 'Auto Layout', exact: true }).click();
+  await expect(page.locator('.layout-warning')).toHaveCount(0);
+  expect((await canvasState(page)).nodes[0].text).toBe(text);
+  expect((await canvasState(page)).nodes[0].fontSize).toBeLessThan(512);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  expect((await canvasState(page)).nodes[0]).toEqual(live);
 });

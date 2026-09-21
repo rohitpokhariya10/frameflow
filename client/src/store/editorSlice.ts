@@ -3,7 +3,7 @@ import { createTextElement, TEXT_LIMITS, validTextChanges, validateCanvasSize, t
 import type { DesignPreview } from './aiSlice';
 import { isProjectDocument } from '../lib/persistence/schema';
 
-interface TextTarget { variantId: string; id: string; timestamp: string }
+interface TextTarget { variantId: string; id: string; timestamp: string; editSession?: string }
 const finitePosition = (position: { x: number; y: number }) => Number.isFinite(position.x) && Number.isFinite(position.y);
 
 export function createDocument(id: string, timestamp: string): ProjectDocument {

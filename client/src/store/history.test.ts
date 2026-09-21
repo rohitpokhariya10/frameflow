@@ -96,3 +96,24 @@ describe('bounded document history', () => {
     expect(store.getState().editor).toBe(before);
   });
 });
+
+it('groups numeric sessions across pauses, separates fields, blur and pointer operations', () => {
+  const store = setup(); const before = store.getState().editor.document;
+  for (const [index, fontSize] of [80, 90, 100].entries()) store.dispatch(textUpdated({ ...target, editSession: 'size', changes: { fontSize }, timestamp: new Date(Date.parse(target.timestamp) + index * 5000).toISOString() }));
+  expect(store.getState().editor.past).toHaveLength(2);
+  const sized = store.getState().editor.document;
+  store.dispatch(undo()); expect(store.getState().editor.document).toBe(before);
+  store.dispatch(redo()); expect(store.getState().editor.document).toBe(sized);
+  for (const x of [200, 250]) store.dispatch(textMoved({ ...target, editSession: 'x', x, y: 100 }));
+  const moved = store.getState().editor.document;
+  expect(store.getState().editor.past).toHaveLength(3);
+  for (const width of [300, 400]) store.dispatch(textWidthResized({ ...target, editSession: 'width', x: 250, y: 100, width }));
+  store.dispatch(undo()); expect(store.getState().editor.document).toBe(moved);
+  store.dispatch(redo()); store.dispatch(endTextSession());
+  store.dispatch(textWidthResized({ ...target, editSession: 'width', x: 250, y: 100, width: 500 }));
+  expect(store.getState().editor.past).toHaveLength(5);
+  store.dispatch(textMoved({ ...target, x: 260, y: 100 }));
+  store.dispatch(textMoved({ ...target, x: 270, y: 100 }));
+  expect(store.getState().editor.past).toHaveLength(7);
+  expect(JSON.stringify(store.getState().editor.document)).not.toContain('editSession');
+});

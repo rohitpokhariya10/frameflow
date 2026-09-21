@@ -51,10 +51,20 @@ font family, weight, size, width, line height, letter spacing, and wrapping poli
 
 ## Keyboard and input policy
 
-Content updates immediately and retains whitespace/newlines. Numerical fields
-keep their draft locally until Enter or blur; invalid drafts never reach Redux.
-Font size/width clamp to the documented bounds. X/Y clamp to recoverable positions.
-Escape reverts an in-progress numeric draft without deselecting the element.
+Content, family, weight, color, and alignment update immediately. Content retains
+whitespace/newlines. Numeric fields retain local strings, including empty, `-`, and
+`1.` drafts. Complete finite values within the supported font-size/width range
+update Redux and canvas on change; invalid/out-of-range values never enter the
+document. X/Y retain the recoverable-position bounding policy. Blur/Enter normalizes
+the display or restores the last valid document value with an inline error. Escape
+discards only the current draft, preserving already-applied valid edits.
+
+Numeric controls use text inputs with accessible spinbutton semantics so browsers
+do not erase incomplete strings. Arrow keys and compact step buttons adjust by one
+and publish immediately, preserving focus. A unique focus-session action ID groups
+valid numeric changes, including pauses and steps, into one undo. Blur ends grouping;
+session IDs never enter the persisted document. The existing 500 ms persistence
+subscriber sees every live valid value.
 
 The editor handles Delete/Backspace only when the canvas or element list owns
 focus, and never from input/textarea/select/contenteditable, modifier shortcuts,

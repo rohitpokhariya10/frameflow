@@ -19,12 +19,12 @@ export function useTextActions() {
       dispatch(tabChanged('text'));
       focusCanvas();
     },
-    update(id: string, changes: TextChanges) { dispatch(textUpdated({ ...target(id), changes })); },
-    move(element: TextElement, position: { x: number; y: number }) {
-      dispatch(textMoved({ ...target(element.id), ...boundTextPosition(element, variant.canvas, position) }));
+    update(id: string, changes: TextChanges, editSession?: string) { dispatch(textUpdated({ ...target(id), changes, editSession })); },
+    move(element: TextElement, position: { x: number; y: number }, editSession?: string) {
+      dispatch(textMoved({ ...target(element.id), ...boundTextPosition(element, variant.canvas, position), editSession }));
     },
-    resize(element: TextElement, width: number) {
-      dispatch(textWidthResized({ ...target(element.id), width, ...boundTextPosition({ ...element, width }, variant.canvas) }));
+    resize(element: TextElement, width: number, editSession?: string) {
+      dispatch(textWidthResized({ ...target(element.id), width, ...boundTextPosition({ ...element, width }, variant.canvas), editSession }));
     },
     duplicate(element: TextElement) {
       if (variant.elements.length >= TEXT_LIMITS.maxElements) return;

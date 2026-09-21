@@ -1,9 +1,32 @@
 # Implementation status
 
-Latest status: **2026-09-21**. Current milestone: **5 — AI generation, implementation complete and automated verification passed**.
-Milestones **0–4 complete**. Live Gemini verification remains blocked by missing credentials.
-Next task: **targeted inspector/custom-size bug-fix pass**, then Milestone 6 (not started).
-The full assessment is not yet complete or deployed.
+Latest status: **2026-09-22**. Milestones **0–5 implemented**; the targeted inspector/custom-size regression pass is complete. The full assessment is not yet complete or deployed. **Milestone 6 has not started.**
+
+## Targeted regression pass — 2026-09-22
+
+- Continued the existing working tree above `91668471cff52f21d03fb63a5cd64c4261bd5547`; preserved the audit and partial numeric/session changes. No reset, master-brief edit, setup restart, editor redesign, or frame resize handles.
+- **Inspector resolved:** `NumberField` previously held every value until blur/Enter. Font size, X, Y, and text width now dispatch complete supported values on change. Content, family, weight, color, and alignment were already live and have explicit before-blur/render coverage.
+- Empty, `-`, `1.`, nonfinite, and out-of-range numeric drafts stay local and retain the last valid document value. Blur/Enter restores or normalizes; Escape discards the draft. X/Y still use logical pixels and recoverable bounds. Arrow keys and compact steppers update immediately without focus loss.
+- Numeric focus-session IDs coalesce successive changes across pauses into one undo. Blur, another document operation, or undo/redo ends grouping. Existing content grouping, drag/resize, Auto Layout, and UI-only history exclusions remain verified. The unchanged 500 ms persistence subscriber receives live valid edits; no session metadata is persisted.
+- **Custom sizing verified; no implementation defect reproduced:** 1600×900, 1080×1350, 1000×1000, and 4096×256 apply, update frame/top bar, refit after zoom, retain exact text geometry without Auto Layout, and undo/redo. Explicit 1600×900 reload recovery is tested. Existing opposite edge 256×4096 coverage remains.
+- 160×900 is intentionally rejected (minimum 256 per side). Empty width/height, fractional, negative, NaN/Infinity, >4096, and >12,000,000-pixel area produce inline errors without document/history changes. Validation was not weakened.
+- **Live Gemini attempted once and failed:** ignored `server/.env` now has credentials; health reported `aiConfigured=true` and AI controls were enabled. Requested 4:5 wedding artwork through `@google/genai` 2.23.0 / configured model `gemini-3.1-flash-image`. Response: HTTP 502 `PROVIDER_FAILURE`, request ID `0cf29396-e25f-4e8e-817b-47f40fad2151`, 765 ms. No returned image or dimensions; decode, preview, apply, storage and recovery from a live result remain unverified. No retry was made, and the safe error does not identify the underlying provider cause. See `docs/AI_GENERATION.md`.
+- Visual review at **1440×900 and 1366×768**: inspector/steppers/Auto Layout fit, custom validation and Apply remain visible, and mocked AI preview retains its layout. Focus and live rendering verified by browser assertions. Synthetic test images are not live Gemini evidence.
+
+### Current verification
+
+| Check | Actual result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **191 passed across 16 files** |
+| `npm run build` | Passed |
+| Development Chrome E2E | **72 passed**, plus **2 passed** focused 1600×900 reload checks |
+| Production Chrome E2E | **72 passed** |
+
+The inspector and custom-size follow-ups are resolved. Provider failure is the remaining live-AI verification blocker; no successful live generation is claimed. The editor foundation is ready for Milestone 6 development, with this blocker tracked separately. Stop here; do not start M6 in this pass.
+
+The sections below retain historical milestone verification, including the earlier missing-key result, superseded by the live attempt above.
 
 ## Milestone 5 — resume audit and completed implementation
 
@@ -57,12 +80,9 @@ Actual live model, returned dimensions, visual quality, and account access remai
 - Cancellation cannot guarantee provider processing/billing stops. Limits are per server instance, not distributed quota enforcement. Exact Vercel/Render settings and account budgets still need deployment-time verification.
 - History starts empty after reload. Arbitrary long content may need manual layout adjustment. Adaptation, export, example design, deployment, and M6 are not started.
 
-## Known follow-up regression fixes before Milestone 6
+## Former follow-up regressions
 
-1. **Inspector live-update bug:** numeric/property controls such as font size, X, Y, and width may wait until blur before updating the canvas. The next targeted pass must apply valid drafts immediately while preserving sensible grouped history. Existing blur/Enter semantics are intentionally unchanged in this AI commit.
-2. **Custom canvas sizing bug / verification pass:** manually reported custom-size behavior needs dedicated reproduction and verification of valid application, useful invalid-value feedback, undo, and persistence. Existing automated custom-size checks remain required, but do not dismiss the manual report. Address this immediately after M5, before M6.
-
-No draggable canvas/frame resize handles are planned; they are outside this deadline's scope.
+Inspector live updates and valid custom-size behavior are resolved/verified in the 2026-09-22 targeted pass above. No draggable canvas/frame handles were added.
 
 ## Milestone 4 — completed work
 

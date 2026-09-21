@@ -26,7 +26,7 @@ export function TextInspector({ element }: { element: TextElement }) {
           {TEXT_FONTS.map((font) => <option key={font} value={font}>{font}{font === 'Lora' ? ' · Editorial serif' : ' · Sans serif'}</option>)}
         </select>
         <div className="inspector-row typography-row">
-          <NumberField label="Font size" value={element.fontSize} min={TEXT_LIMITS.minFontSize} max={TEXT_LIMITS.maxFontSize} onCommit={(fontSize) => actions.update(element.id, { fontSize })} />
+          <NumberField label="Font size" value={element.fontSize} min={TEXT_LIMITS.minFontSize} max={TEXT_LIMITS.maxFontSize} onEndSession={() => dispatch(endTextSession())} onCommit={(fontSize, session) => actions.update(element.id, { fontSize }, session)} />
           <div><label className="control-label" htmlFor="font-weight">Weight</label><select id="font-weight" value={element.fontWeight} onChange={(event) => actions.update(element.id, { fontWeight: Number(event.target.value) as TextElement['fontWeight'] })}>
             {TEXT_WEIGHTS.map((weight) => <option key={weight} value={weight}>{weight === 400 ? 'Regular' : weight === 600 ? 'Semibold' : 'Bold'}</option>)}
           </select></div>
@@ -42,9 +42,9 @@ export function TextInspector({ element }: { element: TextElement }) {
       <section className="inspector-section">
         <div className="inspector-section-title"><h3>Layout</h3><span>Logical pixels</span></div>
         <div className="inspector-row geometry-row">
-          <NumberField label="X" value={element.x} onCommit={(x) => actions.move(element, { x, y: element.y })} />
-          <NumberField label="Y" value={element.y} onCommit={(y) => actions.move(element, { x: element.x, y })} />
-          <NumberField label="Text box width" value={element.width} min={TEXT_LIMITS.minWidth} max={TEXT_LIMITS.maxWidth} onCommit={(width) => actions.resize(element, width)} />
+          <NumberField label="X" value={element.x} onEndSession={() => dispatch(endTextSession())} onCommit={(x, session) => actions.move(element, { x, y: element.y }, session)} />
+          <NumberField label="Y" value={element.y} onEndSession={() => dispatch(endTextSession())} onCommit={(y, session) => actions.move(element, { x: element.x, y }, session)} />
+          <NumberField label="Text box width" value={element.width} min={TEXT_LIMITS.minWidth} max={TEXT_LIMITS.maxWidth} onEndSession={() => dispatch(endTextSession())} onCommit={(width, session) => actions.resize(element, width, session)} />
         </div>
         <AutoLayoutControl element={element} />
       </section>

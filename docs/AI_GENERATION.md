@@ -128,8 +128,17 @@ missing configuration, failures, stale work, and cancellation alongside prior ed
 regressions. Current command counts and visual-review results are recorded in
 [IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md).
 
-To close the live blocker, supply a server key and run exactly one 4:5 generation
-using the requested ivory-floral Indian-wedding visual prompt. Record the actual
-model and returned dimensions, inspect readability/lettering/crop, apply, and reload.
-Until then, real Gemini generation and persistence from a live result are unverified.
+A real smoke attempt ran on 2026-09-22 (Asia/Kolkata) using the requested ivory-floral
+Indian-wedding visual prompt and 4:5 poster target. The ignored server configuration
+contained a key; health reported `aiConfigured=true`, and the enabled AI panel made
+exactly **one** unmocked request. SDK: `@google/genai` **2.23.0**; configured/requested
+model: **gemini-3.1-flash-image**, through `ai.interactions.create`.
+
+Result: HTTP **502**, safe code **PROVIDER_FAILURE**, request ID
+`0cf29396-e25f-4e8e-817b-47f40fad2151` (server duration 765 ms). No image was returned,
+so actual MIME, dimensions, decode, preview, storage, apply, and live recovery could
+not be verified. The safe error does not establish the underlying provider cause.
+No second request was made; no successful actual model response is claimed. Mocked
+end-to-end verification remains separate from this failed live attempt. Resolving
+the provider failure remains necessary before claiming live generation works.
 Milestone 6 adaptation, export, and deployment are not implemented here.

@@ -1,6 +1,6 @@
 import { createAction, type UnknownAction } from '@reduxjs/toolkit';
 import type { ProjectDocument } from '@frameflow/shared';
-import { editorSlice, textUpdated } from './editorSlice';
+import { editorSlice, textUpdated, textMoved, textWidthResized } from './editorSlice';
 
 export const HISTORY_LIMIT = 30;
 export const undo = createAction('history/undo');
@@ -10,7 +10,7 @@ export interface HistoryState {
   document: ProjectDocument;
   past: ProjectDocument[];
   future: ProjectDocument[];
-  group: { key: string; time: number } | null;
+  group: { key: string; time: number; explicit?: boolean } | null;
   version: number;
 }
 export const initialHistory = (document: ProjectDocument): HistoryState => ({ document, past: [], future: [], group: null, version: 0 });
@@ -28,11 +28,13 @@ export function historyReducer(state: HistoryState = initialHistory(editorSlice.
   }
   const { document } = editorSlice.reducer({ document: state.document }, action);
   if (document === state.document) return state;
-  // Coalesce only content updates, with a pause boundary and an explicit blur boundary.
-  const payload = textUpdated.match(action) ? action.payload : null;
-  const group = payload && Object.keys(payload.changes).length === 1 && 'text' in payload.changes
-    ? { key: JSON.stringify([payload.variantId, payload.id]), time: Date.parse(payload.timestamp) } : null;
+  // Numeric controls supply a unique focus-session ID. Pointer commits do not.
+  const payload = textUpdated.match(action) || textMoved.match(action) || textWidthResized.match(action) ? action.payload : null;
+  const group = payload?.editSession
+    ? { key: JSON.stringify([payload.variantId, payload.id, action.type, payload.editSession]), time: Date.parse(payload.timestamp), explicit: true }
+    : textUpdated.match(action) && Object.keys(action.payload.changes).length === 1 && 'text' in action.payload.changes
+      ? { key: JSON.stringify([action.payload.variantId, action.payload.id]), time: Date.parse(action.payload.timestamp) } : null;
   const coalesce = group && state.group && group.key === state.group.key
-    && group.time >= state.group.time && group.time - state.group.time <= 1000 && state.future.length === 0;
+    && (group.explicit || (group.time >= state.group.time && group.time - state.group.time <= 1000)) && state.future.length === 0;
   return { document, past: coalesce ? state.past : [...state.past, state.document].slice(-HISTORY_LIMIT), future: [], group, version: state.version + 1 };
 }
