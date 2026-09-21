@@ -4,6 +4,7 @@ import { CANVAS_PRESETS, validateCanvasSize, type CanvasSize } from '@frameflow/
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
 import { canvasResized } from '../../store/editorSlice';
 import { fitRequested, tabChanged, type LeftTab } from '../../store/uiSlice';
+import { TextPanel } from '../text/TextPanel';
 
 const TABS = [
   { id: 'design', label: 'Design', icon: LayoutTemplate },
@@ -38,7 +39,7 @@ export function DesignPanel() {
         ))}
       </div>
       <div className="tab-content" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
-        {activeTab === 'design' ? <CanvasSettings /> : <UpcomingPanel tab={activeTab} />}
+        {activeTab === 'design' ? <CanvasSettings /> : activeTab === 'text' ? <TextPanel /> : <UpcomingPanel />}
       </div>
       <div className="design-panel-footer"><span className="status-dot" />Your next idea starts here.</div>
     </aside>
@@ -105,11 +106,10 @@ function CanvasSettings() {
   );
 }
 
-function UpcomingPanel({ tab }: { tab: 'text' | 'ai' }) {
-  const Icon = tab === 'text' ? Type : Sparkles;
-  return <div className="upcoming-panel"><Icon size={24} strokeWidth={1.4} /><span className="eyebrow">COMING NEXT</span>
-    <h2>{tab === 'text' ? 'Words with presence.' : 'An idea into artwork.'}</h2>
-    <p>{tab === 'text' ? 'Add headings, shape your typography, and give every word its place.' : 'Create original artwork from a prompt, with your words kept editable.'}</p>
-    <span className="upcoming-badge">{tab === 'text' ? 'Text editing · Milestone 2' : 'AI generation · Milestone 5'}</span>
+function UpcomingPanel() {
+  return <div className="upcoming-panel"><Sparkles size={24} strokeWidth={1.4} /><span className="eyebrow">COMING NEXT</span>
+    <h2>An idea into artwork.</h2>
+    <p>Create original artwork from a prompt, with your words kept editable.</p>
+    <span className="upcoming-badge">AI generation · Milestone 5</span>
   </div>;
 }

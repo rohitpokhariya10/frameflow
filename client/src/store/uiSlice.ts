@@ -15,6 +15,7 @@ const initialState: UiState = {
 export const uiSlice = createSlice({
   name: 'ui', initialState,
   reducers: {
+    elementSelected(state, action: PayloadAction<string | null>) { state.selectedElementId = action.payload; },
     tabChanged(state, action: PayloadAction<LeftTab>) { state.activeLeftTab = action.payload; },
     zoomChanged(state, action: PayloadAction<number>) {
       if (Number.isFinite(action.payload)) state.zoom = Math.max(VIEWPORT.minZoom, Math.min(VIEWPORT.maxZoom, action.payload));
@@ -22,4 +23,4 @@ export const uiSlice = createSlice({
     fitRequested(state) { state.fitRequest += 1; },
   },
 });
-export const { tabChanged, zoomChanged, fitRequested } = uiSlice.actions;
+export const { tabChanged, zoomChanged, fitRequested, elementSelected } = uiSlice.actions;

@@ -20,7 +20,7 @@ test('presets render exact logical dimensions and fit at desktop sizes', async (
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Something good/ })).toBeVisible();
-  await expect(page.locator('canvas')).toBeVisible();
+  await expect(page.locator('canvas').first()).toBeVisible();
   await expectFrameFits(page);
   await page.screenshot({ path: testInfo.outputPath(`editor-${testInfo.project.name}.png`), fullPage: true });
   for (const [name, width, height] of [['Square', 1080, 1080], ['Landscape', 1600, 900], ['Story', 1080, 1920], ['Poster', 1080, 1350]] as const) {
@@ -86,13 +86,13 @@ test('zoom only changes display; Fit, same preset, and workspace resize restore 
 
 test('upcoming actions are truthful and keyboard tabs work', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Add heading' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Add heading' })).toBeEnabled();
   await expect(page.getByRole('button', { name: /Export/ })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Open wedding example' })).toBeDisabled();
   await page.getByRole('tab', { name: 'Design', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Text', exact: true })).toBeFocused();
-  await expect(page.getByText('Text editing · Milestone 2')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Words with presence.' })).toBeVisible();
   await page.getByRole('button', { name: /Create with AI/ }).click();
   await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('AI generation · Milestone 5')).toBeVisible();

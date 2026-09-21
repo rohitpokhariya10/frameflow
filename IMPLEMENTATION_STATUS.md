@@ -1,8 +1,56 @@
 # Implementation status
 
-Latest status: **2026-09-21**. Current milestone: **1 — editor foundation, complete**.
-Milestones **0 and 1 complete and verified**. Next milestone: **2 — Text editing**.
-No Milestone 2 behavior has been implemented. The assessment is not yet complete or deployed.
+Latest status: **2026-09-21**. Current milestone: **2 — Text editing, complete and verified**.
+Milestones **0, 1, and 2 complete**. Next milestone: **3 — Auto Layout (not started)**.
+The full assessment is not yet complete or deployed.
+
+## Milestone 2 — resume audit and completed work
+
+- Audited `git status`, `git diff`, `git diff 57b6c81 --stat`, dependency manifests/lockfile, and `npm ls @fontsource/inter @fontsource/lora --workspace=@frameflow/client` before changing anything. The interrupted install had not run, no partial source changes existed, and the tree exactly matched `57b6c81`.
+- Re-read the master brief and existing status; inspected the current shell, canvas/fit code, Redux slices, shared contracts, and tests. Preserved the shell and the master brief.
+- Added heading, subheading, and body actions, including the center empty-state action. Logical defaults use 70% frame width, tiered typography, sensible vertical regions, unique IDs, automatic selection, and immediate inspector display.
+- Functional Text tab with a compact accessible element list, selected row, previews, and role labels. Empty text and text outside a resized frame remain recoverable.
+- Focused `TextElementNode` renders Konva Text, selects on pointer interaction, bounds dragging to retain a selectable portion, and commits one document update at drag end.
+- Side handles only: live width reflow, scale normalized to 1 during and after transforms, unchanged font size/content, one final document action. Rotation, corners, and vertical stretching are disabled.
+- Inspector edits exact content/newlines, font family, 400/600/700 weight, size, color, alignment, X/Y, and text width. Numeric drafts stay local until Enter/blur; invalid numbers are rejected and valid size values clamp to documented limits.
+- Duplicate preserves all styling/content under a new ID, offsets logically, and selects the copy. Delete button/Delete/Backspace clear the intended element and selection. Escape and empty canvas/workspace clicks deselect.
+- Keyboard handling protects input, textarea, select, contenteditable, modifier combinations, and IME composition. Destructive shortcuts require canvas/list focus.
+- Document/UI separation retained. No refs, nodes, measured heights, transform scales, or DOM objects in document state. Preset changes preserve text properties exactly; no Auto Layout is invoked.
+- At desktop widths the inspector fits vertically at 1366×768 with both actions visible. At 701–1050 px a selected inspector opens over the right side and can be closed. Narrow-screen preview policy remains unchanged.
+- Installed `@fontsource/inter` and `@fontsource/lora` **5.3.0** cleanly in the verified client workspace. Bundled normal Latin 400/600/700 faces, waited for all six before text rendering, and copied unmodified SIL OFL 1.1 licenses to `client/public/licenses/`. No runtime font CDN request or synthesized canvas weight.
+- Added `docs/TEXT_EDITING.md` with interaction, coordinate, font, keyboard, and scope decisions; updated README.
+
+## Milestone 2 — actual verification
+
+| Command/check | Result |
+| --- | --- |
+| `git status --short`, `git log -1 --oneline`, `git diff`, `git diff 57b6c81 --stat` | Clean baseline at 57b6c81 before implementation |
+| `npm ls @fontsource/inter @fontsource/lora --workspace=@frameflow/client` and manifest/lockfile inspection | Neither font installed before resume |
+| `npm install --workspace=@frameflow/client @fontsource/inter @fontsource/lora` | Passed; 2 packages added, 317 audited, 0 vulnerabilities reported |
+| `npm run typecheck` | All 3 workspaces plus browser tests/config passed |
+| `npm run lint` | Passed, zero errors/warnings |
+| `npm test` | **50 passed across 4 files**: all 30 prior tests plus 20 text/position tests |
+| `npm run build` | Passed; production app ~263 kB and canvas ~289 kB, no chunk-size warning |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **22 passed** through development servers |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **22 passed** through built Express app, including final visual fixes |
+| Screenshot inspection at 1440×900 and 1366×768 | Reviewed initial editor, three-text composition, inspector, selected row, handles, and long wrapped text |
+
+Browser tests perform real pointer dragging at two zoom levels and verify logical deltas. Both side handles are exercised at two zoom levels; font size, exact content, scale=1, natural reflow, and inspector updates on release are asserted. Also verified creation of all types, canvas/list selection, exact multiline editing, typography/color/alignment, duplication, both delete keys, Escape/blank-canvas deselection, Backspace inside textarea, select-field protection, empty-text recovery, numeric bounds, existing text surviving preset changes, all six font faces loaded, and no console/page errors during the complete editing flow.
+
+All prior canvas presets/custom-size/Fit/resize/API checks remain covered. The old “Add heading is disabled” and “Text is upcoming” assertions were updated to the newly implemented behavior, without dropping their surrounding regression checks.
+
+An additional test-source type check (`npx tsc --noEmit --target ES2022 --moduleResolution Bundler --module ESNext --lib ES2022,DOM,DOM.Iterable --skipLibCheck tests/e2e/editor.spec.ts tests/e2e/text.spec.ts playwright.config.ts`) exposed a missing Transformer generic and missing Node type configuration. Corrected the annotation and added `tests/tsconfig.json`; the root typecheck now includes the browser tests/config so these stay checked.
+
+Real screenshot review exposed a Tailwind class collision (`text-panel` inherited the panel color) and inspector actions below the laptop fold. Renamed the class and refined spacing; reviewed the final screenshots and added a viewport-bound assertion for the action row. Evidence remains in ignored `test-results/` rather than committing generated reports.
+
+### Milestone 2 limitations / blockers
+
+- **No remaining Milestone 2 blocker.** The earlier usage-limit rejection did not change the repository. Installation and required execution succeeded on resume.
+- Supported text families are Inter/Lora normal Latin. Emoji/other scripts may use OS fallbacks and differ visually by platform. Font-load failure offers a retry.
+- 50 elements/frame, 5,000 characters/element, 8–512 px font size, 32–8192 px width. Position bounding preserves a selectable text-box strip, not automatic text fitting.
+- Overflow warnings/fitting, full mobile editing, inline editing, history, persistence, Gemini, adaptation, export, and the wedding example remain later scope. Refresh still starts a blank document, correctly labelled `Not saved yet`.
+
+The sections below retain the historical Milestone 0/1 setup and verification record.
 
 ## Milestone 0 — repository review and setup
 
@@ -15,7 +63,7 @@ No Milestone 2 behavior has been implemented. The assessment is not yet complete
 - Added `.gitignore`, `.nvmrc`, server `.env.example`, README, and this status file.
 - Node requirement: 22.12+. Actual checks used Node 26.3.0 / npm 11.16.0 on macOS.
 
-## Milestone 1 — implemented behavior
+## Milestone 1 — behavior at its completion (historical)
 
 - Opens directly into the warm neutral FrameFlow editor: top bar, Design/Text/AI tabs, centered canvas, properties empty state.
 - All four presets change real logical dimensions in Redux and refit the frame.
@@ -28,7 +76,7 @@ No Milestone 2 behavior has been implemented. The assessment is not yet complete
 - Express health endpoint returns `{ "status": "ok", "aiAvailable": false }`. Built Express serves the frontend and API from the same origin.
 - Neutral system sans-serif only; no downloaded font assets or additional font licenses.
 
-## Verification performed
+## Milestones 0/1 — verification performed (historical)
 
 Commands actually executed; repeated after relevant fixes where needed:
 
@@ -65,15 +113,14 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-2. **Text editing — next:** creation, selection, editing, dragging, width resize, typography.
-3. Auto Layout: measurement, fitting, overflow, feedback.
+3. **Auto Layout — next, not started:** measurement, fitting, overflow, feedback.
 4. Local recovery: metadata/blob persistence, history.
 5. Real Gemini generation and failure handling.
 6. Reference-image adaptation, variants, comparison.
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.
 
-## Blockers and limits
+## Milestones 0/1 — blockers and limits at completion (historical)
 
 - No implementation blocker for these milestones. In-app browser execution was not exposed; Chromium downloads timed out. Installed Chrome provided real browser/visual checks; the override is documented in README.
 - Browser tooling emits a harmless NO_COLOR/FORCE_COLOR environment warning. No application console errors were observed.
@@ -82,6 +129,7 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Git delivery
 
-Requested single commit: `feat: build FrameFlow editor foundation and canvas sizing`.
+Milestones 0/1 were committed and pushed as `57b6c81`.
+Requested Milestone 2 commit: `feat: add interactive text editing and canvas transforms`.
 After final checks and diff review, stage the implementation and run `git push origin main`.
 The actual commit hash and push outcome are recorded in the final delivery message.

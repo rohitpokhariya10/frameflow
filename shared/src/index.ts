@@ -1,4 +1,5 @@
 export type TextRole = 'eyebrow' | 'title' | 'date' | 'venue' | 'body' | 'custom';
+export * from './text.js';
 
 /** Every position and dimension is in logical canvas pixels. */
 export interface TextElement {

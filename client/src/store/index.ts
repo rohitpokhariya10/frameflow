@@ -15,3 +15,5 @@ export const useAppSelector = useSelector.withTypes<RootState>();
 export const selectDocument = (state: RootState) => state.editor.document;
 export const selectActiveVariant = (state: RootState) =>
   state.editor.document.variants.find((variant) => variant.id === state.ui.activeVariantId) ?? state.editor.document.variants[0];
+export const selectSelectedText = (state: RootState) =>
+  selectActiveVariant(state).elements.find((element) => element.id === state.ui.selectedElementId) ?? null;

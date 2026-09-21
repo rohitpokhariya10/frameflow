@@ -15,7 +15,7 @@
     "dev": "concurrently -k -n client,server \"npm run dev -w @frameflow/client\" \"npm run dev -w @frameflow/server\"",
     "build": "npm run build -w @frameflow/shared && npm run build -w @frameflow/client && npm run build -w @frameflow/server",
     "start": "npm run start -w @frameflow/server",
-    "typecheck": "npm run typecheck --workspaces",
+    "typecheck": "npm run typecheck --workspaces && tsc -p tests/tsconfig.json",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:e2e": "playwright test"
