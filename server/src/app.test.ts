@@ -141,3 +141,18 @@ describe('AI HTTP API (provider mocked; no live calls)', () => {
     expect(log).toHaveBeenCalledExactlyOnceWith({ requestId: response.headers.get('x-request-id'), durationMs: expect.any(Number), outcome: code });
   });
 });
+
+it('logs bounded provider classification for rejected configuration without exposing raw diagnostics', async () => {
+  const error = { statusCode: 400, error: { code: 'invalid_request', message: 'Image delivery mode is not supported. test-only-credential' },
+    headers: { authorization: 'private-header' }, body: 'private-image-payload', cause: { message: 'private-cause' } };
+  const provider = vi.fn().mockRejectedValue(error);
+  const { generate, log } = await start({}, provider);
+  const response = await generate();
+  const body: unknown = await response.json();
+  expect(response.status).toBe(400);
+  expect(body).toMatchObject({ error: { code: 'PROVIDER_REQUEST', retryable: false } });
+  expect(log).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'PROVIDER_REQUEST', provider: expect.objectContaining({ providerStatus: 400 }) }));
+  const exposed = JSON.stringify([body, log.mock.calls]);
+  for (const secret of ['test-only-credential', 'private-header', 'private-image-payload', 'private-cause', 'Image delivery mode']) expect(exposed).not.toContain(secret);
+  expect(provider).toHaveBeenCalledTimes(1);
+});

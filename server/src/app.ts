@@ -49,7 +49,8 @@ export function createApp(config: ServerConfig, provider?: GenerateImage, log: (
       log({ requestId, durationMs: Date.now() - started, outcome: 'success' });
       if (!res.destroyed) res.json(result);
     } catch (error) {
-      log({ requestId, durationMs: Date.now() - started, outcome: error instanceof AiError ? error.code : 'failure' });
+      log({ requestId, durationMs: Date.now() - started, outcome: error instanceof AiError ? error.code : 'failure',
+        ...(error instanceof AiError && error.providerDiagnostic ? { provider: error.providerDiagnostic } : {}) });
       if (!res.destroyed) next(error);
     } finally { if (admitted) active--; res.off('close', disconnected); }
   });

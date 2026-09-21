@@ -1,6 +1,21 @@
 # Implementation status
 
-Latest status: **2026-09-22**. Milestones **0–5 implemented**; the targeted inspector/custom-size regression pass is complete. The full assessment is not yet complete or deployed. **Milestone 6 has not started.**
+Latest status: **2026-09-22**. Milestones **0–5 implemented**; inspector/custom-size fixes are complete. **Milestone 6 has not started.**
+
+## Gemini provider diagnosis — 2026-09-22
+
+- Continued the clean tree at `f86f44cd64a271505f510bceab57dbc16e359355`.
+- Read-only `models.get` confirmed the configured key can retrieve `gemini-3.1-flash-image` (Nano Banana 2). Current official documentation confirms the Interactions method, input/output shapes, aspect ratio, MIME, and image size, including later image-input support.
+- One minimal generation request, same SDK 2.23.0/key/model/adapter, returned **HTTP 400 / invalid_request: “Image delivery mode is not supported.”** after 628 ms. No image or dimensions returned. The first historical 502 discarded its raw exception; this reproduction identifies the application request bug, not an account/quota diagnosis.
+- Removed the unsupported `response_format.delivery` option. Kept configurable model, official `ai.interactions.create`, JPEG/1K/ratio fields, `store:false`, and disabled retries.
+- Fixed error normalization so request/model/access/quota/network/timeout failures retain useful safe classifications. Added allowlisted provider status/code/reason to local logs, excluding raw secrets, request/response bodies, messages, and headers. Fixed undefined-statusCode fallback.
+- Added real-SDK transport tests with mocked HTTP for corrected request/response serialization, plus status/nested-error/redaction/no-retry coverage. Existing generation-success tests remain unchanged except the corrected documented request shape.
+- Verification: typecheck/lint/build passed; **216 tests passed across 17 files**. **22 relevant production AI browser tests passed** at both desktop sizes. No broad editor changes or full browser-matrix rerun required.
+- **Corrected minimal live result:** after explicit continuation authorization, exactly one request with the same key/model/SDK/adapter, 1:1 and the minimal floral prompt, returned **429 / too_many_requests** in **882 ms**: “Rate limit exceeded for model gemini-3.1-flash-image (limit: 0 requests per day on Free Tier). Please upgrade your tier.” Normalized as **RATE_LIMIT / 429**. No MIME, dimensions, or image returned. Added actual SDK-shaped quota/no-retry tests and retained the safe provider code.
+- **External blocker:** the configured project has zero daily Free Tier generation quota for this model. The owner must configure the appropriate billing/tier and confirm nonzero quota in AI Studio. No speculative model switch or account changes were made. The unsupported delivery rejection is fixed, but successful generation still needs a controlled live verification after quota is available.
+- This continuation made **1 minimal / 0 full** live requests, with no retries. Full FrameFlow verification was correctly skipped because the minimal request did not succeed. IndexedDB/preview/apply/refresh/Undo/Redo remain mock-verified only. **Real Gemini generation is NOT VERIFIED; do not start Milestone 6 yet.**
+
+Earlier milestone results below are historical; this diagnosis supersedes the generic provider-failure blocker.
 
 ## Targeted regression pass — 2026-09-22
 
@@ -270,8 +285,8 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-5. **AI generation — implementation complete; live smoke blocked by missing GEMINI_API_KEY.**
-Next: targeted inspector live-update and custom canvas sizing fixes listed above.
+5. **AI generation — implementation complete; live success blocked by zero daily Free Tier model quota (429).**
+Inspector/custom-size regressions are fixed; resolve the documented project quota blocker before live verification.
 6. Reference-image adaptation, variants, comparison — not started.
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.

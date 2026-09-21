@@ -17,7 +17,7 @@ describe('Gemini Interactions adapter (SDK mocked; no live calls)', () => {
     expect(mocks.construct).toHaveBeenCalledExactlyOnceWith({ apiKey: 'test-only-credential' });
     expect(mocks.create).toHaveBeenCalledExactlyOnceWith({
       model: 'configured-model', input: 'Artwork only', store: false,
-      response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '4:5', image_size: '1K', delivery: 'inline' },
+      response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '4:5', image_size: '1K' },
     }, { signal, retries: { strategy: 'none' } });
   });
   it.each([

@@ -67,6 +67,73 @@ describe('safe provider failure handling', () => {
     const refusal = new AiError('PROVIDER_REFUSAL', 'Try different artwork.');
     expect(mapProviderError(refusal)).toBe(refusal);
   });
+  it.each([
+    [{ statusCode: 400 }, 'PROVIDER_REQUEST', 400, false],
+    [{ status: 422 }, 'PROVIDER_REQUEST', 400, false],
+    [{ statusCode: '404' }, 'MODEL_UNAVAILABLE', 503, false],
+    [{ statusCode: undefined, status: 429 }, 'RATE_LIMIT', 429, true],
+    [{ statusCode: NaN, status: 403 }, 'CONFIGURATION', 503, false],
+    [{ status: 500 }, 'PROVIDER_FAILURE', 502, true],
+    [{ statusCode: 503 }, 'PROVIDER_FAILURE', 502, true],
+    [{ status: 504 }, 'TIMEOUT', 504, true],
+    [{ name: 'APIConnectionTimeoutError' }, 'TIMEOUT', 504, true],
+    [{ name: 'APIUserAbortError' }, 'CANCELLED', 499, false],
+    [{ name: 'APIConnectionError', cause: { code: 'ENOTFOUND' } }, 'NETWORK', 502, true],
+    [{ name: 'APIConnectionError', cause: { cause: { code: 'ETIMEDOUT' } } }, 'TIMEOUT', 504, true],
+    [{ error: { error: { status: 'RESOURCE_EXHAUSTED' } } }, 'RATE_LIMIT', 429, true],
+    [{ error: { status: 'NOT_FOUND' } }, 'MODEL_UNAVAILABLE', 503, false],
+    [{ error: { status: 'UNAUTHENTICATED' } }, 'CONFIGURATION', 503, false],
+    [{ error: { code: 400, status: 'INVALID_ARGUMENT', details: [{ reason: 'API_KEY_INVALID' }] } }, 'CONFIGURATION', 503, false],
+  ])('distinguishes actionable provider and transport failures %#', (input, code, status, retryable) => {
+    expect(mapProviderError(input)).toMatchObject({ code, status, retryable });
+  });
+  it('retains only allowlisted diagnostic fields from nested SDK envelopes', () => {
+    const secret = 'private-key-image-payload-and-provider-text';
+    const error = mapProviderError({
+      statusCode: undefined, status: 400, message: secret, body: secret, headers: { authorization: secret },
+      error: { error: { code: 400, status: 'INVALID_ARGUMENT', message: secret, details: [{ reason: 'API_KEY_INVALID', metadata: { apiKey: secret } }] } },
+      cause: { name: secret, message: secret },
+    });
+    expect(error.providerDiagnostic).toEqual({ providerStatus: 400, canonicalCode: 'INVALID_ARGUMENT', reason: 'API_KEY_INVALID' });
+    expect(JSON.stringify(error)).not.toContain(secret);
+    expect(error.message).not.toContain(secret);
+    expect(error.cause).toBeUndefined();
+  });
+  it('preserves the actual Interactions invalid-request code without exposing its raw response', () => {
+    const error = mapProviderError({
+      name: 'BadRequestError', status: 400, statusCode: 400,
+      error: { code: 'invalid_request', message: 'Image delivery mode is not supported.' },
+      cause: { name: 'CreateInteractionClientError', body: 'private response body' },
+    });
+    expect(error).toMatchObject({ code: 'PROVIDER_REQUEST', status: 400, retryable: false });
+    expect(error.providerDiagnostic).toEqual({ providerStatus: 400, canonicalCode: 'invalid_request' });
+    expect(error.message).toContain('request configuration');
+    expect(JSON.stringify(error)).not.toContain('private response');
+    expect(JSON.stringify(error)).not.toContain('Image delivery mode');
+  });
+  it('retains the observed free-tier quota error code without exposing provider text', () => {
+    const error = mapProviderError({ name: 'RateLimitError', status: 429, statusCode: 429,
+      error: { code: 'too_many_requests', message: 'Rate limit exceeded (limit: 0 requests per day on Free Tier). private-account-data' } });
+    expect(error).toMatchObject({ code: 'RATE_LIMIT', status: 429, retryable: true,
+      providerDiagnostic: { providerStatus: 429, canonicalCode: 'too_many_requests' } });
+    expect(JSON.stringify(error)).not.toContain('private-account-data');
+    expect(error.message).toContain('quota');
+  });
+  it('does not parse raw bodies or messages or publish unrecognized metadata', () => {
+    const error = mapProviderError({ message: '{"status":403}', body: '{"error":{"status":"NOT_FOUND"}}', code: 'private-code', reason: 'private-reason', name: 'private-name', headers: { authorization: 'private-key' } });
+    expect(error).toMatchObject({ code: 'PROVIDER_FAILURE', status: 502 });
+    expect(error.providerDiagnostic).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain('private-');
+  });
+  it('prefers an explicit HTTP status to conflicting canonical status and bounds cyclic causes', () => {
+    const input = { status: 403, error: { status: 'RESOURCE_EXHAUSTED' }, cause: {} };
+    input.cause = input;
+    const error = mapProviderError(input);
+    expect(error).toMatchObject({ code: 'CONFIGURATION', status: 503, providerDiagnostic: { providerStatus: 403, canonicalCode: 'RESOURCE_EXHAUSTED' } });
+    const connection = mapProviderError({ name: 'APIConnectionError', cause: { cause: { code: 'ENOTFOUND', message: 'private hostname' } } });
+    expect(connection.providerDiagnostic).toEqual({ reason: 'ENOTFOUND' });
+    expect(JSON.stringify(connection)).not.toContain('hostname');
+  });
   it('enforces a bounded timeout and aborts the provider without retrying', async () => {
     vi.useFakeTimers();
     let signal: AbortSignal | undefined;

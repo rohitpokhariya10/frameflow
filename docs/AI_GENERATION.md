@@ -1,9 +1,13 @@
 # Artwork generation
 
-Milestone 5 implementation is complete. Automated provider and browser checks use
-explicit mocks. **Live Gemini smoke test: BLOCKED — requires GEMINI_API_KEY.**
-The environment and `server/.env` were checked on 2026-09-21; neither supplied a key.
-No real request was made, and account/model access and image quality remain unverified.
+Milestone 5 implementation is complete. The provider failure has been diagnosed:
+Gemini rejected the optional `response_format.delivery` field with HTTP 400,
+`invalid_request`: “Image delivery mode is not supported.” The adapter now omits
+that field. The original backend mapped this category to a generic retryable 502.
+The corrected live request now returns HTTP 429 `too_many_requests`: the project
+has **0 requests per day on the Free Tier** for `gemini-3.1-flash-image`. This is an
+external account/quota blocker. No image was returned; successful live generation
+remains unverified. Details and exact request counts are recorded below.
 
 ## Server boundary and provider
 
@@ -16,18 +20,21 @@ activates generation; no mock or example replaces a failed request.
 
 `POST /api/ai/generate` validates the shared application request. The service maps
 aspect ratio, builds the artwork prompt, enforces timeout, and validates the returned
-image. Only `server/src/providers/geminiProvider.ts` imports the Gemini SDK or knows
+image. Only the provider adapter and its tests import the Gemini SDK or know
 its request/response structure. Responses use the shared `ImageResponse` contract;
 errors contain a safe code, message, retryable flag, and request ID.
 
 The official [Gemini image-generation guide](https://ai.google.dev/gemini-api/docs/image-generation)
-was reviewed on 2026-09-21. Installed SDK: **@google/genai 2.23.0**. Default configured
+was rechecked on 2026-09-22. Installed SDK: **@google/genai 2.23.0**. Default configured
 model: **gemini-3.1-flash-image**, overridable with `GEMINI_IMAGE_MODEL`. The adapter
-uses `ai.interactions.create`, `input`, and `response_format` with inline JPEG,
+uses `ai.interactions.create`, `input`, and `response_format` requesting JPEG,
 `image_size: '1K'`, and the mapped `aspect_ratio`; it reads `output_image.data` and
 `mime_type`. `store: false` disables stored interactions and SDK retries are disabled.
-This surface is typechecked and contract-tested with a mock, not tested against a
-live account. A text-only or empty image response fails explicitly.
+The image response is inline by default; do not explicitly set `delivery`. Although
+the installed SDK accepts it, the live provider rejected that option. The current
+guide's request examples omit it. Model metadata is accessible with the configured
+key, but metadata access alone does not prove generation or editing entitlement.
+A text-only or empty image response fails explicitly.
 
 ## Artwork and wording
 
@@ -99,7 +106,7 @@ retry after ambiguous failures. The client has a longer 185-second deadline.
 CORS applies to API routes and allows explicit local Vite (5173) and built-server
 (3001) origins plus `CLIENT_ORIGIN`, without a wildcard or credentials. Static
 module/font loading is unaffected. Request IDs are returned in a header and payload. Logs
-contain only ID, duration, and outcome, never keys, image bytes, or full prompts.
+contain ID, duration, outcome, and allowlisted provider status/code/reason, never keys, image bytes, raw error messages, or full prompts.
 Validation, missing configuration, authentication, quota/rate limiting, concurrency,
 refusal, timeout, no-image, network, decode, and browser-storage failures preserve
 the existing document. Rate limits are in-memory per instance, not a distributed
@@ -138,7 +145,72 @@ Result: HTTP **502**, safe code **PROVIDER_FAILURE**, request ID
 `0cf29396-e25f-4e8e-817b-47f40fad2151` (server duration 765 ms). No image was returned,
 so actual MIME, dimensions, decode, preview, storage, apply, and live recovery could
 not be verified. The safe error does not establish the underlying provider cause.
-No second request was made; no successful actual model response is claimed. Mocked
-end-to-end verification remains separate from this failed live attempt. Resolving
-the provider failure remains necessary before claiming live generation works.
+No retry was made in that historical pass. Later explicitly authorized diagnostic
+attempts are recorded below; none returned an image. Mocked end-to-end verification
+remains separate from live verification.
 Milestone 6 adaptation, export, and deployment are not implemented here.
+
+## Provider diagnosis — 2026-09-22
+
+- One read-only SDK `models.get` succeeded for `gemini-3.1-flash-image` (Nano Banana 2).
+  The official image guide and Interactions overview document that model for both
+  text-to-image and image editing through `ai.interactions.create`. No fallback
+  model or API-surface migration was justified.
+- One minimal real request used the same key/model/adapter, prompt “Minimal elegant
+  floral wedding background, no text.” and ratio 1:1. Result after 628 ms:
+  `BadRequestError`, HTTP/statusCode **400**, provider code **invalid_request**,
+  message **Image delivery mode is not supported.** The nested cause was
+  `CreateInteractionClientError` with the same message. No image was returned.
+- This reproduces an **application request-configuration bug** in the old adapter,
+  rather than evidence of a quota, key, or model-access failure. The first historical
+  502 did not retain its raw exception, so its exact original provider response
+  cannot be recovered retrospectively. The unchanged adapter's live reproduction
+  establishes the rejected field.
+- Removed `delivery: 'inline'`; retained the documented method, model setting,
+  aspect ratio, JPEG MIME, 1K size, stateless behavior, and disabled retries.
+- Error normalization now preserves upstream request/model/access/quota/network/
+  timeout distinctions. HTTP 400/422 requests are nonretryable `PROVIDER_REQUEST`
+  errors. HTTP 404 maps to `MODEL_UNAVAILABLE`; 401/403 remain a server configuration
+  error. Fixed undefined `statusCode` masking valid `status`.
+- Logs now include only bounded, allowlisted provider HTTP status, canonical code,
+  and recognized reason when available. Raw messages, credentials, headers,
+  arbitrary details, image bodies, and causes are excluded. Redacted local diagnostic
+  text was used only to identify the concrete rejected option.
+- Actual SDK transport tests assert request serialization without `delivery`, image
+  response extraction from `steps`, and single-call 400 handling. Existing successful
+  generation tests remain intact; no test was weakened to accept failure.
+
+## Corrected live request — 2026-09-22
+
+After explicit continuation authorization, exactly **one** corrected minimal request
+ran through the same adapter, key, `@google/genai` **2.23.0**, and configured model
+**gemini-3.1-flash-image**. Prompt: “Minimal elegant floral wedding background, no text.”
+Ratio: **1:1**. API surface: **ai.interactions.create**. No automatic retry occurred.
+
+Result after **882 ms**:
+
+- SDK class: **RateLimitError**, with nested **CreateInteractionClientError**.
+- Provider HTTP/statusCode: **429**.
+- Provider code: **too_many_requests**.
+- Safe provider message: **Rate limit exceeded for model gemini-3.1-flash-image
+  (limit: 0 requests per day on Free Tier). Please upgrade your tier.**
+- Normalized application error: **RATE_LIMIT / HTTP 429**. No image, MIME, or
+  dimensions returned. The observed provider code is retained in safe diagnostics.
+
+The unsupported-delivery rejection has been eliminated in the corrected attempt;
+the current blocker is **external project tier/quota**, not a reason to switch models
+or repeatedly retry. Metadata access does not confer generation quota. The project
+owner must enable the appropriate billing/tier and confirm nonzero quota for this
+model in AI Studio before another controlled verification. Google documents that
+limits apply per project and that moving from Free to a paid tier requires billing:
+[Gemini rate limits and tier setup](https://ai.google.dev/gemini-api/docs/rate-limits).
+No billing or account configuration was changed by this pass.
+
+The conditional full FrameFlow live request was **not run**, because minimal
+success was required first. IndexedDB, preview, apply, exact editable text,
+refresh, and Undo/Redo remain covered by mocks but are **not verified with a real
+Gemini image**. This continuation used **1 minimal / 0 full** generation requests.
+Across the earlier explicitly authorized passes, there were three generation
+attempts in total: original generic 502, diagnostic 400, and corrected quota 429.
+
+**Real Gemini generation is not yet VERIFIED. Milestone 6 remains stopped.**
