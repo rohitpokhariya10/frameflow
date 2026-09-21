@@ -19,6 +19,19 @@ const initialState: { document: ProjectDocument } = { document: createDocument('
 export const editorSlice = createSlice({
   name: 'editor', initialState,
   reducers: {
+    textAutoLayoutApplied(state, action: PayloadAction<TextTarget & { expectedRevision: number; layout: { x: number; y: number; width: number; fontSize: number } }>) {
+      const { variantId, id, expectedRevision, layout, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      const element = variant?.elements.find((item) => item.id === id);
+      if (!variant || !element || variant.revision !== expectedRevision || !finitePosition(layout)
+        || !Number.isFinite(layout.width) || layout.width < TEXT_LIMITS.minWidth || layout.width > TEXT_LIMITS.maxWidth
+        || !Number.isFinite(layout.fontSize) || layout.fontSize < TEXT_LIMITS.minFontSize || layout.fontSize > element.fontSize) return;
+      const { x, y, width, fontSize } = layout;
+      if (element.x === x && element.y === y && element.width === width && element.fontSize === fontSize) return;
+      Object.assign(element, { x, y, width, fontSize });
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
     textAdded(state, action: PayloadAction<TextTarget & { kind: TextKind }>) {
       const { variantId, id, kind, timestamp } = action.payload;
       const variant = state.document.variants.find((item) => item.id === variantId);
@@ -84,4 +97,4 @@ export const editorSlice = createSlice({
     },
   },
 });
-export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted } = editorSlice.actions;
+export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied } = editorSlice.actions;

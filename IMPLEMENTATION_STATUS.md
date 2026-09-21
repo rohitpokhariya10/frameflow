@@ -1,8 +1,45 @@
 # Implementation status
 
-Latest status: **2026-09-21**. Current milestone: **2 — Text editing, complete and verified**.
-Milestones **0, 1, and 2 complete**. Next milestone: **3 — Auto Layout (not started)**.
+Latest status: **2026-09-21**. Current milestone: **3 — Deterministic text Auto Layout, complete and verified**.
+Milestones **0, 1, 2, and 3 complete**. Next milestone: **4 — Local recovery and history (not started)**.
 The full assessment is not yet complete or deployed.
+
+## Milestone 3 — completed work and resume audit
+
+- Preserved the existing partial working tree on main at `bf53f50`; no reset, discarded work, dependency changes, or algorithm restart. Inspected all modified/untracked implementation and test files. Existing fitting, measurement, atomic action, and browser coverage were retained; the remaining work was laptop inspector compaction, final verification, documentation, and delivery.
+- Pure `autoLayout` accepts an injected measurement adapter and optional target region. Validates dimensions, leaves already-fitting/empty text unchanged, tries preferred/full widths at original size, clamps position minimally, and only then runs a bounded 16-step font search. Re-measures and validates all edges with 1 logical pixel tolerance. Named safe-margin/font-floor policies match the brief; intentionally smaller text never enlarges.
+- Offscreen public Konva Text measurement shares renderer styles and reads natural wrapped height/width. Targeted browser font loading confirms the selected bundled face. No private text arrays, character-count estimates in production, fixed clipping height, ellipsis, or AI calls.
+- Preserved the discovered Konva wide-grapheme protection: a glyph too wide for its box can cause Konva to omit the rest of a paragraph. `Intl.Segmenter` plus public `measureSize` rejects such incomplete candidates instead of trusting their short height.
+- Exact text/newlines/emoji remain untouched. Unresolved results retain the original element. Measured line-count increases support conservative wrap classification; widening/movement/font reduction report actual changes.
+- Memoized derived overflow reacts to current text/style/width/position/canvas. Search runs on click only. Inspector shows restrained amber warning, factual success/unchanged feedback, or actionable amber unresolved feedback. Old notices expire after document edits.
+- One revision-guarded `textAutoLayoutApplied` action commits x/y/width/font size together. It cannot replace text/style and rejects stale or invalid results. Repeated successful fitting dispatches no document action.
+- Finished laptop compaction: X/Y/width share one row; section gaps and textarea default height are tighter without reducing font sizes. Duplicate/Delete sit outside the scrolling control region. At 1366×768, warning, success, and unresolved messages are visible without scrolling. Added geometric visibility assertions after screenshots exposed the earlier hidden-feedback issue.
+- Added `docs/AUTO_LAYOUT.md`. Master brief unchanged; no Milestone 4 work started.
+
+## Milestone 3 — actual final verification
+
+| Command/check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed: client, server, shared, browser tests/config |
+| `npm run lint` | Passed, zero warnings/errors |
+| `npm test` | **75 passed across 5 files**: 50 previous + 23 layout policy + 2 atomic action tests |
+| `npm run build` | Passed all workspaces; app ~268 kB, canvas ~289 kB; no chunk warning |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **30 passed** through development servers |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **30 passed** through built Express app |
+| Visual screenshot review | **1440×900 and 1366×768**: warning, fitted venue, unresolved feedback, geometry labels, action access, warm-neutral shell, and attached Transformer |
+| `git diff --check`, master-brief diff, targeted secret scan, untracked-file review | No whitespace errors, brief changes, detected secret patterns, or intended generated artifacts |
+
+Policy coverage includes already fits, narrow phrase wrapping, long venue, right/bottom repositioning, narrow-box widening, explicit newlines/Unicode, long token, impossible fit, idempotence after reduction, empty text, immutability, intentionally small fonts, overflow/tolerance, invalid dimensions/metrics, final remeasurement failure, and bounded constants. Store coverage verifies one revision, preserved text/style, no-op repeated geometry, stale-revision rejection, and invalid/enlarged font rejection.
+
+Eight added browser executions (four flows at two sizes) use actual Inter/Lora rendering: venue warning → fit → warning cleared → exact content/bounds → identical second run; impossible paragraphs unchanged with visible unresolved feedback; narrow emoji/token widening; readable font reduction and a slightly larger size exceeding available height; and overflow reacting to canvas/content/font/position plus empty/small text. All 22 previous browser checks continue to pass, including real drag/side-handle gestures, keyboard safety, presets/custom dimensions, zoom/Fit, and typography.
+
+### Milestone 3 limitations
+
+- Single-element fitting does not solve collisions between elements or redesign a composition.
+- Bounds describe Konva natural line boxes, not pixel-exact glyph-ink contours. Emoji and non-Latin scripts use OS fallback fonts and can differ between platforms.
+- Modern browser Font Loading API and `Intl.Segmenter` required. Inspector may scroll for an expanded textarea or shorter window; default tested desktop sizes keep the core interaction visible.
+- No persistence/history/AI/adaptation/export/example yet. Refresh still starts blank. Existing 50-element/5,000-character safeguards remain.
+- No remaining Milestone 3 blocker. Browser tooling still emits the harmless NO_COLOR/FORCE_COLOR warning.
 
 ## Milestone 2 — resume audit and completed work
 
@@ -113,8 +150,7 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 
 ## Remaining milestones
 
-3. **Auto Layout — next, not started:** measurement, fitting, overflow, feedback.
-4. Local recovery: metadata/blob persistence, history.
+4. **Local recovery and history — next, not started:** metadata/blob persistence, history.
 5. Real Gemini generation and failure handling.
 6. Reference-image adaptation, variants, comparison.
 7. Export, editable wedding example, keyboard/responsive polish.
@@ -130,6 +166,6 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 ## Git delivery
 
 Milestones 0/1 were committed and pushed as `57b6c81`.
-Requested Milestone 2 commit: `feat: add interactive text editing and canvas transforms`.
-After final checks and diff review, stage the implementation and run `git push origin main`.
-The actual commit hash and push outcome are recorded in the final delivery message.
+Milestone 2 was committed and pushed as `bf53f50`.
+Milestone 3 delivery commit: `feat: implement deterministic text auto layout`.
+The actual Milestone 3 commit hash and push outcome are recorded in the final delivery message.

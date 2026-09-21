@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { recoverablePosition, TEXT_LIMITS, type TextChanges, type TextKind } from '@frameflow/shared';
 import { createEditorStore, selectActiveVariant } from './index';
-import { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted } from './editorSlice';
+import { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied } from './editorSlice';
 import { elementSelected, zoomChanged } from './uiSlice';
 
 const target = { variantId: 'original', id: 'text-1', timestamp: '2026-09-21T06:00:00.000Z' };
@@ -12,6 +12,28 @@ function setup(kind: TextKind = 'heading') {
 }
 
 describe('text document operations', () => {
+  it('applies Auto Layout atomically, preserves content/style, and no-ops on repeated geometry', () => {
+    const store = setup();
+    const before = selectActiveVariant(store.getState());
+    const layout = { x: 43, y: 43, width: 994, fontSize: 42.125 };
+    store.dispatch(textAutoLayoutApplied({ ...target, expectedRevision: before.revision, layout }));
+    const after = selectActiveVariant(store.getState());
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.elements[0]).toEqual({ ...before.elements[0], ...layout });
+    const document = store.getState().editor.document;
+    store.dispatch(textAutoLayoutApplied({ ...target, expectedRevision: after.revision, layout }));
+    expect(store.getState().editor.document).toBe(document);
+  });
+  it('rejects stale layout results and invalid or enlarged typography', () => {
+    const store = setup();
+    const before = store.getState().editor;
+    const layout = { x: 43, y: 43, width: 994, fontSize: 42 };
+    store.dispatch(textAutoLayoutApplied({ ...target, expectedRevision: 0, layout }));
+    for (const changes of [{ x: NaN }, { width: 0 }, { fontSize: 7 }, { fontSize: 73 }]) {
+      store.dispatch(textAutoLayoutApplied({ ...target, expectedRevision: 1, layout: { ...layout, ...changes } }));
+    }
+    expect(store.getState().editor).toBe(before);
+  });
   it.each(['heading', 'subheading', 'body'] as const)('adds %s with logical, styled defaults and no UI mutation', (kind) => {
     const store = setup(kind);
     const variant = selectActiveVariant(store.getState());

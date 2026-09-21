@@ -3,6 +3,7 @@ import { TEXT_FONTS, TEXT_LIMITS, TEXT_WEIGHTS, type TextElement } from '@framef
 import { selectActiveVariant, useAppSelector } from '../../store';
 import { NumberField } from '../../components/ui/NumberField';
 import { focusCanvas, useTextActions } from './useTextActions';
+import { AutoLayoutControl } from './AutoLayoutControl';
 
 export function TextInspector({ element }: { element: TextElement }) {
   const actions = useTextActions();
@@ -38,17 +39,17 @@ export function TextInspector({ element }: { element: TextElement }) {
       </section>
       <section className="inspector-section">
         <div className="inspector-section-title"><h3>Layout</h3><span>Logical pixels</span></div>
-        <div className="inspector-row">
+        <div className="inspector-row geometry-row">
           <NumberField label="X" value={element.x} onCommit={(x) => actions.move(element, { x, y: element.y })} />
           <NumberField label="Y" value={element.y} onCommit={(y) => actions.move(element, { x: element.x, y })} />
+          <NumberField label="Text box width" value={element.width} min={TEXT_LIMITS.minWidth} max={TEXT_LIMITS.maxWidth} onCommit={(width) => actions.resize(element, width)} />
         </div>
-        <NumberField label="Text box width" value={element.width} min={TEXT_LIMITS.minWidth} max={TEXT_LIMITS.maxWidth} onCommit={(width) => actions.resize(element, width)} />
-        <p className="inspector-hint">Width reflows your words.<br />Font size stays the same.</p>
+        <AutoLayoutControl element={element} />
       </section>
-      <div className="inspector-actions">
-        <button className="button" disabled={count >= TEXT_LIMITS.maxElements} title="Duplicate with a small offset" onClick={() => actions.duplicate(element)}><Copy size={14} />Duplicate</button>
-        <button className="button delete-text" onClick={() => actions.remove(element.id)} title="Delete selected text"><Trash2 size={14} />Delete</button>
-      </div>
+    </div>
+    <div className="inspector-actions">
+      <button className="button" disabled={count >= TEXT_LIMITS.maxElements} title="Duplicate with a small offset" onClick={() => actions.duplicate(element)}><Copy size={14} />Duplicate</button>
+      <button className="button delete-text" onClick={() => actions.remove(element.id)} title="Delete selected text"><Trash2 size={14} />Delete</button>
     </div>
   </>;
 }
