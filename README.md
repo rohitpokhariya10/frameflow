@@ -1,277 +1,428 @@
 # FrameFlow
 
-A calm creative editor for the FreshFolks assessment. Milestones 0–6 provide canvas
-sizing, interactive text editing, measured Auto Layout, local recovery, undo/redo,
-artwork generation, and reference-based format adaptation. Exact-size PNG export
-and M7 reviewer UI polish are complete. **Real generation and portrait→landscape adaptation are verified with Cloudflare Workers AI**;
-Gemini remains an alternate but this project's Gemini model has zero Free Tier quota.
-The full assessment is not yet finished or deployed. See the current live verification
-result in [implementation status](IMPLEMENTATION_STATUS.md).
+A focused design editor for creating event artwork, fitting exact text, and adapting a composition to a new format.
 
-## What FrameFlow solves
+**[Live Demo](https://frameflow-h7fa.onrender.com)** · **[Source Code](https://github.com/rohitpokhariya10/frameflow)**
 
-An event design needs accurate, editable wording and a composition that works in
-more than one format. FrameFlow keeps text separate from AI artwork, so names,
-dates and long venue lines stay exact while the artwork can be recomposed.
+## Overview
 
-## Features and assessment mapping
+FrameFlow is a Canva-style editor built for the FreshFolks assessment. Choose a canvas, compose editable text, generate decorative artwork, and turn a portrait design into a related landscape composition while keeping both versions.
 
-| Requirement | Where to try it |
+The central decision is simple: **AI owns the artwork; FrameFlow owns the words.** Names, dates, venues, and headings remain editable text layers. Auto Layout measures and fits those layers locally, while reference-based AI adaptation recomposes the artwork around them.
+
+## Key Features
+
+| Feature | What it does |
 | --- | --- |
-| Configurable canvas | Design → presets or Custom size |
-| Editable text and typography | Text panel and right-hand inspector |
-| Overflow handling | Select text → Auto Layout |
-| AI artwork generation | AI → Generate → preview → Use this design |
-| Reference-based portrait → landscape | AI → Adapt format → Landscape → compare → Use this version |
-| Preserve exact wording | App-rendered text stays editable above generated artwork |
-| Keep both compositions | Version selector and Compare versions |
-| Local recovery and undo/redo | Browser save status and top-bar history controls |
-| PNG download (additional feature) | Export PNG at exact logical canvas dimensions |
+| Canvas sizing | Poster **1080×1350**, Square **1080×1080**, Landscape **1600×900**, Story **1080×1920**, and validated custom sizes |
+| Text editing | Add headings, subheadings, or body text; drag, resize width, edit typography, duplicate, and delete |
+| Frame-aware placement | Logical coordinates independent of zoom; overflow feedback and recoverable out-of-frame elements |
+| Auto Layout | Measure, wrap, reposition, and reduce text size only when necessary, without changing the wording |
+| AI generation | Describe a visual theme, add optional exact event wording, and review before applying |
+| AI adaptation | Recompose source artwork for another format and deterministically lay out copies of the exact text |
+| Variants | Keep the original and adapted design, compare them, and switch between editable versions |
+| Local recovery and history | Save the project and artwork in the browser; undo/redo meaningful edits |
+| PNG export | Download the active design at its exact logical dimensions, without editor controls |
+| Editable design title | Rename inline, cancel drafts, undo/redo renames, and restore the name after refresh |
 
-## Suggested reviewer flow
+Custom canvases accept integer sides from **256–4096 px**, with a maximum area of **12 million pixels**. Side handles reflow text without stretching glyphs; the font-size control changes glyph size. Inter and Lora are bundled locally with their [font licenses](client/public/licenses/).
 
-1. Open a Poster and add a heading. Replace its content with
-   “The Grand Royal Wedding Palace, Connaught Place, New Delhi, India”. Move it
-   near the edge, then use **Auto Layout** to fit it without changing the words.
-2. Open **AI → Generate**. Describe an ivory floral wedding design, choose a style,
-   and enter exact event wording. Review the preview before **Use this design**.
-3. Choose **Adapt format → Landscape**. Review the new composition beside its
-   source, then select **Use this version**. Switch between both versions.
-4. Edit the wording, try Undo/Redo, refresh to check recovery, and **Export PNG**.
+## FreshFolks Requirement Mapping
 
-Live AI actions use the configured account's allocation. The automated suites mock
-those actions; the completed M5/M6 live verification is recorded separately.
+| Assessment requirement | FrameFlow implementation | Status |
+| --- | --- | --- |
+| Select poster, banner, or custom dimensions | Four presets plus validated custom width/height | Implemented; browser verified |
+| Add, move, and resize text | Text panel, canvas dragging, width handles, and numeric/typography controls | Implemented; browser verified |
+| Place elements within a frame | Frame clipping, logical coordinates, overflow warnings, and recovery through the element list | Implemented; browser verified |
+| Auto Layout for overflowing text | Renderer-based fitting with safe margins and readable font limits | Implemented; unit and browser verified |
+| Generate themed artwork | Backend integration with Cloudflare Workers AI | Implemented; real generation verified |
+| Adapt to another aspect ratio | Source-image reference plus a new target composition | Implemented; real portrait-to-landscape adaptation verified |
+| Preserve visual theme | Reference-conditioned palette, motifs, and mood | Visually verified; best-effort generative preservation |
+| Preserve exact editable content | App-controlled TextElements copied and reflowed separately from artwork | Exact strings and editability verified |
+| Share a live application | Single Render service serving the editor and API | Deployed; page and health endpoint checked |
+| Provide source and approach | This repository, architecture diagrams, and engineering notes | Available |
 
-## Run locally
+The [master brief](FreshFolks-Assessment-Master-Brief.md) records the original specification. The delivered AI integration uses Cloudflare; Gemini remains an alternate generation adapter, not the production provider.
 
-Use Node **22.12+** (Node 22 LTS recommended; `.nvmrc` provided) and npm.
-The implementation was verified with Node 26.3.0 and npm 11.16.0.
+## Quick Reviewer Demo
+
+Allow roughly 1–2 minutes of interaction, plus provider generation time. AI latency and account allocation vary.
+
+1. Open the **[live app](https://frameflow-h7fa.onrender.com)** and choose **Poster** in Design.
+2. Click **Add heading**. In the inspector, replace its content with “The Grand Royal Wedding Palace, Connaught Place, New Delhi, India”. Set **X to 950** and **Y to 1250** to demonstrate overflow.
+3. Click **Auto Layout**. Observe the fitted text, then try Undo and Redo.
+4. Open **AI → Generate**. Use a visual theme such as “Ivory florals, warm gold ornamentation, soft romantic lighting”. Expand **Exact event wording** and enter a title, date, and venue there; these become the generated design's editable text.
+5. Click **Generate design**, inspect the preview, then **Use this design**. Applying generation replaces the active design's artwork and text with the preview; Undo restores the prior design.
+6. Choose **Adapt format → Landscape → Adapt artwork**. Compare Source and Target, then select **Use this version**.
+7. Switch versions, return to editing if comparison is open, and change the target venue to confirm it remains editable.
+8. Rename the design in the top bar. Click **Export PNG**, wait for **Saved on this device**, and refresh to check recovery. Both variants return; the first variant opens by default.
+
+```mermaid
+flowchart TD
+    A[Choose canvas] --> B[Edit text and create overflow]
+    B --> C[Auto Layout]
+    C --> D[Generate artwork]
+    D --> E[Review and apply]
+    E --> F[Adapt format]
+    F --> G[Compare Source and Target]
+    G --> H[Apply and switch variants]
+    H --> I[Edit target and export PNG]
+```
+
+## Architecture
+
+The repository uses three npm workspaces:
+
+- **Client:** React controls, Redux document/history, and Konva rendering. Canvas positions are stored in logical pixels; zoom changes only the view.
+- **Server:** Express validates requests, bounds provider work, and keeps credentials server-side. Small provider adapters translate the shared application contract into Cloudflare or Gemini requests.
+- **Shared:** TypeScript document/API contracts and handwritten runtime validators used across the application.
+
+```mermaid
+flowchart TD
+    Browser[Browser] -->|Load editor| UI
+    Browser -->|API requests| API
+    subgraph Render[Render Web Service]
+        UI[Built React and Vite frontend]
+        API[Express API]
+        Adapter[AI provider adapters]
+        API --> Adapter
+    end
+    Adapter --> CF[Cloudflare Workers AI - active]
+    Adapter -.-> Gemini[Gemini - alternate generation]
+    Browser --> LS[localStorage - project JSON]
+    Browser --> IDB[IndexedDB - artwork Blobs]
+```
+
+The frontend executes in the browser; Render serves its built assets and the API from one origin. There is no project database on the server.
+
+Redux stores serializable documents, asset IDs, UI metadata, and bounded history snapshots. Image Blobs, decoded images, canvas/DOM nodes, object URLs, and request controllers stay outside Redux. This keeps saving and undo/redo predictable without duplicating image data in every snapshot.
+
+## Why Artwork and Text Are Separate
+
+Image models can create visual compositions, but exact event copy needs a stronger guarantee than generated lettering. FrameFlow asks the model for decorative artwork and renders **names, dates, venues, headings, and supporting wording** itself as TextElements.
+
+Optional event-content fields stay in the client. During adaptation, every text string—including spaces and explicit newlines—is copied exactly. Font family, weight, and color are retained; geometry and font size can change to fit the target. The model receives the artwork reference and visual instructions, not the editable text elements.
+
+This separation makes a landscape version independently editable and lets the application verify content preservation. Decorative similarity remains a visual judgment; text equality is a deterministic invariant. Preview still matters because generated artwork may contain unwanted lettering or detail in an intended text area.
+
+## Auto Layout
+
+Auto Layout fits the selected text box into a safe region using the same font and Konva measurement rules as the editor:
+
+1. Measure the current text and return unchanged if it already fits.
+2. Try a bounded preferred width, then the full available width, at the original font size.
+3. Reposition the candidate only as far as needed to bring it inside the region.
+4. If necessary, use a bounded search for the largest fitting font above the readable floor.
+5. Re-measure before applying. If fitting safely is impossible, retain the original element and show an unresolved warning.
+
+The operation preserves the exact text, uses real renderer measurements rather than character-count estimates, and makes one undoable change. It is **idempotent**: fitting an already-fitted element again makes no change. No AI request is involved. Single-box fitting does not solve collisions between unrelated elements.
+
+[Auto Layout implementation and limits](docs/AUTO_LAYOUT.md)
+
+## AI Artwork Generation
+
+The active provider is **Cloudflare Workers AI**, using **`@cf/black-forest-labs/flux-2-klein-4b`**. The frontend uses a provider-independent request/response contract; credentials and provider payloads belong to the backend.
+
+```mermaid
+flowchart TD
+    Brief[Visual brief and target size] --> API[POST /api/ai/generate]
+    API --> Validate[Validate and compose artwork prompt]
+    Validate --> Adapter[Provider adapter]
+    Adapter --> CF[Cloudflare Workers AI]
+    CF --> Image[Validate returned artwork]
+    Image --> Store[Browser decode and IndexedDB storage]
+    Store --> Preview[Composed preview]
+    Text[Exact event wording - app controlled] --> Preview
+    Preview --> Apply[User selects Use this design]
+    Apply --> Document[Document stores asset ID and text layers]
+```
+
+Artwork must decode and finish its IndexedDB write before the preview becomes ready. The existing document remains unchanged until Apply. Regenerate, Discard, and Cancel are explicit actions; failures do not clear the current design. Applying a preview is one history operation.
+
+Gemini remains an explicitly selected alternate generation provider. Its configured image model had **zero daily Free Tier image quota for this project** during recorded verification. There is no automatic fallback, and Gemini reference adaptation is unavailable.
+
+[AI generation contracts, provider mapping, and evidence](docs/AI_GENERATION.md)
+
+## AI Format Adaptation
+
+Adaptation uses the current artwork as a real visual reference rather than generating solely from a repeated prompt. The browser prepares a proportional PNG thumbnail with a maximum side of **511 px** and a maximum size of **2 MiB**, leaving the original Blob unchanged. The backend validates it and sends its bytes to Cloudflare as multipart **`input_image_0`**.
+
+```mermaid
+flowchart TD
+    Source[Source variant] --> Artwork[Source artwork]
+    Source --> Text[Source TextElements]
+    subgraph ArtworkBranch[Artwork recomposition]
+        Artwork --> Reference[Bounded reference PNG]
+        Reference --> API[POST /api/ai/adapt]
+        API --> Input[Cloudflare input_image_0]
+        Input --> Recompose[Reference-based recomposition]
+        Recompose --> TargetArt[Target artwork stored in IndexedDB]
+    end
+    subgraph TextBranch[Exact editable content]
+        Text --> Layout[Deterministic target layout]
+        Layout --> Fit[Auto Layout]
+        Fit --> TargetText[Target TextElements - same strings]
+    end
+    TargetArt --> Preview[Source and Target preview]
+    TargetText --> Preview
+    Preview --> Apply[User selects Use this version]
+    Apply --> Target[New target variant]
+    Source --> Preserved[Source variant preserved]
+```
+
+Portrait-to-landscape adaptation asks for a related composition with decoration toward the left and readable text space on the right. App-controlled semantic regions and Auto Layout place the exact text in the target frame. Other presets have their own arrangements; custom layouts use normalized source positions and may need manual adjustment.
+
+Visual identity is **best-effort generative preservation**, not pixel-identical reproduction. Both previews retain their natural aspect ratios. Source edits, history traversal, version switching, cancellation, and newer requests invalidate obsolete work so a late result cannot silently overwrite the current design.
+
+[AI adaptation design and real verification](docs/AI_ADAPTATION.md)
+
+## Variants
+
+An original Poster and an adapted Landscape remain separate versions of one project. **Use this version** appends and selects the target; it does not overwrite the source. The version selector identifies each format and its Original/Adapted relationship, while **Compare versions** shows both compositions.
+
+Applying adaptation is one undo step. Undo removes that application; Redo restores the saved snapshot without another provider request. Both variants and their artwork survive refresh. Switching versions is UI state, so it does not create a document-history entry.
+
+## Local Persistence and History
+
+```mermaid
+flowchart TD
+    Actions[Meaningful editor actions] --> History[Bounded undo and redo snapshots]
+    History --> Document[Redux project document]
+    Document --> Save[Debounced save to localStorage]
+    Blob[AI artwork Blob] --> IDB[IndexedDB]
+    IDB -->|Asset ID only| Document
+    History --> Redo[Redo AI Apply from snapshot]
+    Redo --> NoRequest[No provider request]
+```
+
+The project JSON—including its title, text, variants, and asset IDs—is saved to `localStorage`. Artwork Blobs live in IndexedDB. Normal saving is debounced by 500 ms; the top bar reports success only after the write succeeds. Wait for **Saved on this device** before closing.
+
+History retains up to **30 meaningful document operations**. Typing and numeric editing sessions are grouped; drag, width resize, Auto Layout, rename, and AI Apply have clear commit boundaries. Selection, tabs, and zoom do not fill history. Use the top-bar buttons or Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z outside typing controls.
+
+Refresh restores the document and artwork, opens the first variant, and starts with empty history. This is **browser-local persistence**, not cloud sync or a backup. Invalid saved documents produce a recovery warning; missing artwork leaves usable text available.
+
+[Persistence, history, and asset lifecycle](docs/PERSISTENCE_AND_HISTORY.md)
+
+## Exact-size PNG Export
+
+**Export PNG** captures the active applied variant at its logical canvas size, independent of viewport zoom and device pixel ratio. It waits for fonts and artwork, then renders the background and text through the same drawing helpers as the editor. Selection handles, comparison frames, and editor chrome are excluded.
+
+Export does not change the document or make an AI/server request. Unapplied previews are not exported. Filenames depend on format and dimensions, never on the user-entered title:
+
+- `frameflow-poster-1080x1350.png`
+- `frameflow-landscape-1600x900.png`
+- `frameflow-custom-1000x1000.png`
+
+Artwork uses proportional fitting and clipping without stretching. Existing overlaps remain as edited, and content outside the frame is clipped. Export does not silently run Auto Layout.
+
+## Editable Design Title
+
+Click or focus the top-bar **Design name** to edit inline. Enter or blur commits a trimmed name; empty input becomes **New design**. Escape cancels, and committing the same name creates no history entry. Renames support Undo/Redo and refresh recovery through the existing document field. Long names truncate visually while the input stays compact.
+
+## Tech Stack
+
+| Area | Technology |
+| --- | --- |
+| Frontend | React, TypeScript, Vite |
+| State and canvas | Redux Toolkit, Konva, react-konva |
+| Styling | Tailwind CSS, custom editor styles, Lucide icons |
+| Backend | Node.js, Express, TypeScript |
+| Contracts and validation | Shared TypeScript types and handwritten runtime validators |
+| Active AI | Cloudflare Workers AI — FLUX.2 Klein 4B |
+| Alternate AI | Gemini generation adapter through `@google/genai` |
+| Storage | localStorage for document JSON; IndexedDB for artwork |
+| Testing | Vitest and Playwright |
+| Deployment | Single Render Web Service |
+
+## Project Structure
+
+```text
+client/
+  src/
+    features/       Editor, canvas, text, AI, variants, and PNG export
+    store/          Document/UI state, actions, and history
+    lib/
+      layout/       Deterministic fitting and renderer measurement
+      assets/       IndexedDB, image decoding, and reference preparation
+      persistence/  Saved-document validation, recovery, and saving
+  public/licenses/  Bundled font licenses
+server/
+  src/
+    app.ts          API routes, configuration, validation, and request limits
+    index.ts        Server startup and built-client static serving
+    providers/      Cloudflare and Gemini adapters
+    services/       AI orchestration and image validation
+shared/src/         Document/API types, limits, and runtime contracts
+tests/e2e/          Browser regression flows at both desktop sizes
+docs/               Engineering notes and controlled live evidence
+```
+
+## API Endpoints
+
+| Endpoint | Responsibility |
+| --- | --- |
+| `GET /api/health` | Service status, selected provider, and credential-presence flags; does not call the provider or prove remaining quota |
+| `POST /api/ai/generate` | Validate a visual brief, target size, style, and text-space region; return normalized artwork metadata and image data |
+| `POST /api/ai/adapt` | Validate a bounded source reference and target intent; return recomposed artwork for the new variant |
+
+AI responses include a request ID. Errors use safe codes and messages. The backend does not store projects or accept arbitrary remote asset URLs to fetch.
+
+## Running Locally
+
+Use **Node 22.12+** and npm. `.nvmrc` selects Node 22; the recorded verification environment used Node 26.3.0 and npm 11.16.0.
 
 ```sh
-npm install
+git clone https://github.com/rohitpokhariya10/frameflow.git
+cd frameflow
+nvm use
+npm ci
+cp server/.env.example server/.env
+```
+
+`npm ci` installs from the committed lockfile; `npm install` is also available for development. Fill the ignored `server/.env` with your own server-side settings:
+
+```dotenv
+PORT=3001
+AI_PROVIDER=cloudflare
+CLOUDFLARE_ACCOUNT_ID=your_account_id
+CLOUDFLARE_API_TOKEN=your_token
+CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-2-klein-4b
+AI_TIMEOUT_MS=120000
+CLIENT_ORIGIN=http://localhost:5173
+TRUST_PROXY_HOPS=0
+```
+
+Then start both development workspaces:
+
+```sh
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. Vite proxies `/api` to the Express server on port 3001.
-No credentials are needed for editing or automated mocked tests. To enable AI,
-copy `server/.env.example` to ignored `server/.env`, leave `AI_PROVIDER=cloudflare`,
-and fill `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The model defaults to
-`@cf/black-forest-labs/flux-2-klein-4b` via `CLOUDFLARE_IMAGE_MODEL`. Restart the server.
-The token needs Workers AI access for that account. Keep credentials server-side.
+Open **http://127.0.0.1:5173**. Vite proxies `/api` to Express on port 3001; both localhost and 127.0.0.1 development origins are allowed. Restart the server after changing environment settings.
 
-To select the existing alternate, set `AI_PROVIDER=gemini` and `GEMINI_API_KEY`;
-`GEMINI_IMAGE_MODEL` defaults to `gemini-3.1-flash-image`. Omitting `AI_PROVIDER`
-retains Gemini for older setups. There is no automatic provider fallback. Health
-reports the active provider and whether its credentials are present; missing selected
-credentials disable generation even when the other provider has credentials.
-For split deployment, Vercel uses `VITE_API_BASE_URL=https://<render-service>/api`;
-Render uses the exact frontend `CLIENT_ORIGIN` and `TRUST_PROXY_HOPS=1`.
-See [AI generation](docs/AI_GENERATION.md) for configuration and verification limits.
+Editing, Auto Layout, export, and mocked tests work without AI credentials. Cloudflare generation/adaptation requires an account ID, a token with Workers AI access, and available allocation. Keep tokens out of `VITE_` variables and source control. To explicitly select the alternate generation adapter, use `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, and `GEMINI_IMAGE_MODEL`; there is no automatic fallback.
 
-Choose Poster, Square, Landscape, or Story in Design. Custom size accepts integer
-sides from 256–4096 px with at most 12,000,000 total pixels. Apply changes the
-logical canvas and fits it to the workspace. The +/− controls change display zoom;
-Fit restores a centered view. Resizing the workspace also refits the canvas.
-
-Click **Add heading** on the empty canvas, or open **Text** to add a heading,
-subheading, or body. Select on the canvas or in the element list. Drag to move;
-the two side handles change width and reflow words without changing font size.
-Use the inspector to edit exact content (including newlines), family, size,
-weight, color, alignment, X/Y, and width. Valid numbers apply while typing, with one undo per focus session.
-Duplicate offsets and selects a copy. Delete/Backspace remove the selection only
-when the canvas or element list owns focus; typing in form fields is protected.
-Escape or clicking the empty canvas/workspace deselects.
-
-Use **Auto Layout** to fit selected text inside the safe frame without changing its
-wording. It tries movement and width changes before reducing font size, and reports
-when readable fitting is impossible. A second successful run makes no change.
-
-Edits save locally after a short debounce. Wait for **Saved on this device** before
-closing. Refresh restores the current design; history starts empty. Use Undo/Redo
-or Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z outside typing controls. Content updates group
-within a one-second typing session, ending on blur. Browser storage is not a backup.
-
-In **AI**, describe the artwork, choose a theme/format, and optionally enter exact
-event wording. Generate first creates a preview. **Use this design** applies it as
-one undoable change; Regenerate and Discard leave the document unchanged. Wording
-stays editable, while artwork is stored in IndexedDB and restored after refresh.
-
-## Commands
-
-| Command | Runs |
+| Command | Purpose |
 | --- | --- |
-| `npm run dev` | Vite frontend and Express/tsx watcher together |
-| `npm run build` | Shared declarations/JS, checked Vite production client, compiled Express server |
-| `npm start` | Built Express server, serving the client and `/api` on http://127.0.0.1:3001 (build first) |
-| `npm run typecheck` | TypeScript checks in all three workspaces plus browser tests/config |
-| `npm run lint` | ESLint with TypeScript and React Hooks rules; zero warnings allowed |
-| `npm test` | Vitest validation, layout, history/persistence, AI state/assets, and mocked backend/provider tests |
-| `npm run test:e2e` | Playwright Chromium flows at 1440×900 and 1366×768; starts dev servers automatically |
+| `npm run dev` | Start Vite and the Express TypeScript watcher |
+| `npm run typecheck` | Check all workspaces plus browser tests/config |
+| `npm run lint` | ESLint checks with zero warnings allowed |
+| `npm test` | Run the full Vitest Unit/API suite with provider mocks |
+| `npm run build` | Build shared code, the Vite client, and Express server |
+| `npm start` | Serve the built client and API through Express; build first |
+| `npm run test:e2e` | Run the development browser suite, starting servers as needed |
 
-Before first browser test, run `npx playwright install chromium`. Screenshots and
-failure traces go to ignored `test-results/` directories. Use `npm ci` for a
-lockfile-exact install in CI.
-If Chromium downloads are unavailable and Chrome is installed, run
-`PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` instead.
-To check the built app through Express, run `npm run build`, then
-`PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` (combine with the channel override if needed).
+## Production Deployment
 
-## Tech stack and architecture
+**[FrameFlow on Render](https://frameflow-h7fa.onrender.com)** uses a **single Render Web Service**. Express serves the built Vite frontend and `/api` from the same origin.
 
-React, TypeScript, Redux Toolkit and Konva render and edit the browser document.
-Vite builds the client. Express runs the AI endpoints; shared TypeScript contracts
-validate requests and documents. Vitest and Playwright cover domain, API and browser
-flows. IndexedDB stores artwork, and localStorage stores the serializable project.
+```mermaid
+flowchart TD
+    Browser[Browser] --> Render[Render Web Service]
+    Render --> Frontend[Built Vite frontend]
+    Render --> API[Express /api]
+    API --> CF[Cloudflare Workers AI]
+```
 
-AI produces artwork only. FrameFlow renders editable text using bundled fonts,
-measures overflow with the same renderer, and handles layout itself. This keeps
-wording reliable and avoids depending on image generation for typography.
+The repository's commands support this layout from the repository root:
 
-## Project structure and decisions
-
-- `client/src/features/editor/`: shell, accessible tabs, presets, custom form.
-- `client/src/features/canvas/`: React Konva frame, focused text-node interactions,
-  side-only Transformer, and reusable fit calculation.
-- `client/src/features/text/`: insertion/list, inspector, actions, real text
-  measurement for position bounds, and font loading.
-- `client/src/store/`: serializable document state in `editorSlice`; selection,
-  tabs, active variant, and viewport state in `uiSlice`.
-- `shared/src/index.ts` / `text.ts`: document contracts, canvas-size validation,
-  text defaults/limits, typography validation, and recoverable position bounds.
-  Development consumes TypeScript; production uses built shared JavaScript.
-- `server/src/app.ts`: validated AI endpoint, health/configuration flag, CORS,
-  limits, provider selection, and safe errors. REST/SDK mapping stays in the two
-  provider adapters under `server/src/providers/`.
-  Built Express also retains same-origin static serving for production checks.
-- `client/src/styles.css`: Tailwind v4 plus project-specific visual tokens and
-  editor styles, preserving the warm-neutral/deep-green shell.
-
-Document dimensions and element positions always use **logical pixels**.
-Konva's stage scale controls display only. The DOM empty-state content sits above
-the stage and is not part of the document. Reducers perform no timestamp or random
-ID generation and make no network calls. IDs/timestamps enter via initialization
-or action payloads; runtime objects stay outside Redux. Invalid sizes are rejected
-again at the reducer boundary.
-
-Dragging and resizing update the local Konva node during the gesture, then commit
-one document action on release. Width transforms normalize scale back to 1 on
-every move and on release, keeping glyphs undistorted. Rotation/corner/vertical
-handles are disabled. Text height is derived by Konva; no height, node refs,
-measurements, or transform scale is saved in the document. The selection belongs
-to UI state. Changing a canvas preset preserves every existing text property.
-
-No generic UI kit or monorepo framework was added. The official Gemini SDK is a
-server-only dependency. Konva's minimal bundle registers Rect, Text, Image, and Transformer.
-
-## Fonts
-
-Inter (UI/sans text) and Lora (editorial serif) are self-hosted using
-`@fontsource/inter` and `@fontsource/lora` 5.3.0. Only normal Latin assets at real
-400/600/700 weights are imported. The app waits for these six faces before drawing
-text; a failed font load offers a retry instead of silently measuring a fallback.
-No runtime requests to Google Fonts or another font CDN are needed. Both fonts
-use SIL OFL 1.1; unmodified licenses ship in
-[`client/public/licenses/`](client/public/licenses/). Other scripts/emoji may use
-OS fallback fonts, so their appearance can differ between devices.
-
-## Adapt a design
-
-Create/apply artwork, then open **AI → Adapt format**. Choose Landscape, Poster,
-Story, Square or Custom, and select **Adapt artwork**. FrameFlow uses the existing
-artwork as a visual reference while preserving every editable text string.
-
-Review Source and Target at their natural aspect ratios. **Use this version** adds
-and selects a new variant, keeping the original. The version selector and **Compare
-versions** let you return to either composition. Apply is one undo step; redo never
-calls AI. Both versions and their artwork survive refresh. Stale results require
-regeneration or discard. See [AI adaptation](docs/AI_ADAPTATION.md) for architecture,
-reference constraints and the real verification result.
-
-## Export a PNG
-
-Click **Export PNG** to download the active version at its exact logical canvas
-size, independent of Fit, editor zoom, or screen pixel density. All four presets
-and valid custom sizes (256–4096 px per side, up to 12 million pixels) are supported.
-The PNG includes background color, aspect-preserving artwork fit/crop, and text
-using the editor's typography, wrapping, and coordinates. Selection handles,
-comparison frames, and editor UI are excluded. Fonts and artwork must load first;
-failures show a retryable message instead of knowingly downloading an incomplete image.
-
-Names use `frameflow-poster-1080x1350.png`, `frameflow-landscape-1600x900.png`, or
-`frameflow-custom-1000x1000.png`. Preset names are inferred from dimensions; no
-user text or project IDs enter the filename. Export captures the active version at
-the click, including when comparing versions; unapplied AI previews are not exported.
-Export does not change selection, zoom, saved content, active version, or history.
-Temporary nodes/canvases and object URLs are released. No server or AI call is needed.
-
-Large exports use browser memory and can fail on constrained devices; close other
-tabs and retry. Browser download permissions and disk-space failures after download
-handoff cannot be detected reliably by a web page. Check your browser's downloads.
-Existing overlaps or off-canvas text are exported as composed, without automatic
-layout changes; scripts/emoji using OS fallback fonts can differ between devices.
-
-## Current limits
-
-Routine AI tests use explicit mocks. The Gemini alternate remains blocked by this
-project’s zero Free Tier image quota. Cloudflare uses its account’s available allocation;
-free usage is limited, and provider quota/errors never trigger automatic retries.
-The preloaded wedding example remains outside the completed M7 polish scope. Adaptation preserves visual
-identity best-effort; custom text layouts may need adjustment. The current project
-persists in localStorage; image Blobs use IndexedDB.
-Generated previews may crop artwork to preserve aspect ratio. Inspect results for
-unwanted lettering and readable text space before applying.
-Undo/redo retains up to 30 document operations during this session.
-
-Text editing is limited to 50 elements/frame and 5,000 characters/element. Font
-size is 8–512 logical px; width is 32–8192 px. Numeric size controls retain unsupported
-or incomplete drafts locally; only valid values enter the document, and blur restores
-the last valid value. Movement permits partial overflow
-while retaining up to 24 logical px of the text box inside the frame. Elements
-already outside the frame after a preset change remain recoverable from the list
-and position fields. Auto Layout is explicit and never rewrites content. Collision detection and
-inline text editing are outside current scope.
-
-At 701–1050 px the empty inspector is hidden; selecting text reveals a closable
-inspector over the right side. Below 700 px the design controls give way to a
-preview and desktop-editing notice. Full mobile editing remains outside scope.
-
-The [master brief](FreshFolks-Assessment-Master-Brief.md) is preserved unchanged.
-See [implementation status](IMPLEMENTATION_STATUS.md) for actual verification and
-remaining milestones.
-
-See [Auto Layout](docs/AUTO_LAYOUT.md) and [persistence/history](docs/PERSISTENCE_AND_HISTORY.md) for implementation details and limits.
-
-## API endpoints
-
-| Endpoint | Purpose |
+| Setting | Value |
 | --- | --- |
-| `GET /api/health` | Service readiness; no credentials returned |
-| `POST /api/ai/generate` | Validated artwork generation request |
-| `POST /api/ai/adapt` | Validated reference-image adaptation request |
+| Build command | `npm ci && npm run build` |
+| Start command | `npm start` |
+| Health path | `/api/health` |
+| Listen address | `0.0.0.0`, using Render's `PORT` |
+| Frontend API base | Relative `/api` |
 
-The server validates size and payload bounds and handles timeouts, concurrency and
-rate limits. Provider details stay server-side; the editor shows concise errors.
-See [generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) for contracts.
+The current same-origin setup does **not** require `VITE_API_BASE_URL`; leave it unset so the built client uses `/api`. Configure provider credentials in Render's server environment, not in a frontend bundle:
 
-## Environment variables and security
+```dotenv
+AI_PROVIDER=cloudflare
+CLOUDFLARE_ACCOUNT_ID=<secret>
+CLOUDFLARE_API_TOKEN=<secret>
+CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-2-klein-4b
+AI_TIMEOUT_MS=120000
+CLIENT_ORIGIN=https://frameflow-h7fa.onrender.com
+TRUST_PROXY_HOPS=1
+```
 
-Use [server/.env.example](server/.env.example) as the configuration reference.
-`AI_PROVIDER` selects Cloudflare or Gemini. Cloudflare uses `CLOUDFLARE_ACCOUNT_ID`,
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_IMAGE_MODEL`; the alternate uses `GEMINI_API_KEY`
-and `GEMINI_IMAGE_MODEL`. `AI_TIMEOUT_MS`, `PORT`, `CLIENT_ORIGIN` and
-`TRUST_PROXY_HOPS` control server operation. Optional client `VITE_API_BASE_URL`
-selects a separate API origin; never put a credential in a `VITE_` variable.
+`CLIENT_ORIGIN` is the **allowed browser/frontend origin**. Here it equals the Render origin because the frontend and API share that origin. `TRUST_PROXY_HOPS=1` accounts for the Render proxy; direct local access uses `0`. Let Render supply its listening port.
 
-Keep `.env` local and ignored. Tokens remain on the server and never enter the
-project document or browser bundle. Saved designs are local to the browser;
-clearing browser storage removes them. Exported PNGs contain the visible design.
+## Verification and Testing
 
-## Deployment and live demo
+The latest full verification, recorded on **22 September 2026** for application commit **`75688d5`**, produced:
 
-Not deployed yet. Live frontend/API URLs and production verification will be added
-after the deployment task. Current local setup and production-build test commands
-above are usable now; no hosted availability is claimed.
+| Check | Verified result |
+| --- | --- |
+| Full Unit/API suite | **334 passed across 26 files** |
+| Development browser suite | **122 passed** |
+| Built production browser suite | **122 passed** |
+| Typecheck | Passed |
+| Lint | Passed |
+| Build | Passed |
+| Focused design-title checks | **3 store + 8 browser tests passed**; also included in full suites |
 
-## Source repository
+Browser suites and visual review cover **1366×768** and **1440×900**. Coverage includes canvas sizing, real text rendering and pointer interactions, Auto Layout, save/recovery, history, mocked generation/adaptation, stale results, variants, exact PNG output, and title editing.
 
-[rohitpokhariya10/frameflow](https://github.com/rohitpokhariya10/frameflow)
+To run browser verification:
+
+```sh
+npx playwright install chromium
+npm run test:e2e
+npm run build
+PLAYWRIGHT_PRODUCTION=1 npm run test:e2e
+```
+
+Use `PLAYWRIGHT_CHANNEL=chrome` with either test command when using installed Chrome instead of bundled Chromium. Stop an independently running development backend before production verification so the suite starts the built Express server. Screenshots and traces are ignored test artifacts.
+
+**Automated provider operations are mocked.** Production browser counts describe tests against the locally built production app, not 122 tests against the hosted service. The live Render page and `/api/health` returned HTTP 200 during this README review; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. These read-only checks did not make a generation request. The counts above are the latest recorded application results, not new test runs for this documentation edit.
+
+## Real AI Verification
+
+Separate controlled checks previously exercised actual Cloudflare generation and adaptation through FrameFlow:
+
+| Operation | Observed result |
+| --- | --- |
+| Generation | **HTTP 200**, **JPEG 816×1024** artwork for a **1080×1350** logical poster |
+| Adaptation input | **PNG 407×511**, sent as actual binary `input_image_0` |
+| Adaptation output | **HTTP 200**, **JPEG 1024×576** for a **1600×900** logical landscape |
+| Request discipline | One successful generation; later one adaptation reusing that source, with zero additional source generations and no retries in those successful checks |
+
+Verification covered actual response/decode, IndexedDB Blob storage, preview-before-Apply, editable wording, refresh recovery, and Undo/Redo without another provider request. The adaptation check additionally confirmed unchanged source artwork, identical text strings, both variants, switching, target editing, and atomic Apply.
+
+Provider artwork resolution is separate from the document's logical dimensions. FrameFlow bounds provider requests, records actual returned dimensions, and fits/crops artwork proportionally without stretching. The exported PNG still uses the exact logical canvas size.
+
+The real checks establish working generation and reference-based recomposition, not a guarantee of identical style on every request. No new live AI requests were made for this README update. Detailed evidence remains in the [generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) notes.
+
+## Security
+
+- **Server-only credentials:** Provider keys stay in the server environment. Real `.env` files are ignored; examples contain placeholders.
+- **Explicit API origins:** CORS uses an exact allowlist of local development origins plus `CLIENT_ORIGIN`, without wildcard credential access. CORS is not user authentication.
+- **Runtime validation:** Shared handwritten validators check API inputs; saved documents are validated on recovery. Request sizes, dimensions, style fields, and image metadata are bounded.
+- **Image checks:** The backend checks image signatures, decoded byte sizes, and dimensions; the browser fully decodes artwork before storage/preview. Generation JSON is limited to 24 KiB and adaptation JSON to 3 MiB.
+- **Bounded provider work:** Generation and adaptation share three requests per IP per minute and a maximum of two active requests per server process, with timeout/abort handling.
+- **Safe failures:** Normalized errors and request IDs avoid exposing provider payloads or credentials. Logs omit full prompts and image bytes. No automatic provider retry loop consumes quota after ambiguous failures.
+- **Stale-result protection:** Cancelled, superseded, or obsolete responses cannot silently replace current work.
+
+## Trade-offs and Limitations
+
+- **Generative continuity:** Palette, motifs, and mood are preserved best-effort. Inspect previews for unwanted lettering or decoration near text; custom layouts can need manual adjustment.
+- **Provider allocation:** Cloudflare quota and availability are bounded. Rate limiting is per process, not a distributed budget system. Cancelling does not guarantee remote processing or charging stops.
+- **Local storage:** One project per browser origin, without accounts, cloud backup, or cross-device sync. Clearing/evicting storage removes recovery data; history and selected-version preference do not persist. Multiple tabs use the last successful save.
+- **Layout scope:** Up to 30 variants and 50 text elements per variant, with 5,000 characters per element. Single-element Auto Layout is not a general collision-solving design engine.
+- **Desktop-first editing:** Both supported desktop sizes are verified. Narrow screens show a desktop-editing notice rather than a full mobile editor.
+- **Rendering and export:** Provider dimensions can differ from logical dimensions, so proportional cover may crop. Large PNGs depend on browser memory; downloads can also be limited by browser or disk policies. Emoji and scripts outside the bundled Latin fonts use platform fallbacks.
+
+## Documentation
+
+- [AI generation](docs/AI_GENERATION.md) — provider contracts, asset flow, and real generation evidence
+- [AI adaptation](docs/AI_ADAPTATION.md) — source reference processing, exact text, variants, and live comparison
+- [Auto Layout](docs/AUTO_LAYOUT.md) — measurement, fitting policy, and invariants
+- [Persistence and history](docs/PERSISTENCE_AND_HISTORY.md) — recovery, snapshots, and IndexedDB lifecycle
+- [Implementation status](IMPLEMENTATION_STATUS.md) — dated verification results and development history
+
+Detailed notes preserve historical milestone decisions and deployment plans. This README describes the current submission and single-service Render deployment.
+
+## Live Demo / Repository
+
+**[Open FrameFlow](https://frameflow-h7fa.onrender.com)** · **[Browse the source](https://github.com/rohitpokhariya10/frameflow)**
