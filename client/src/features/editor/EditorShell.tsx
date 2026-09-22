@@ -1,4 +1,4 @@
-import { Download, Frame, MousePointer2, Undo2, Redo2, X } from 'lucide-react';
+import { Frame, MousePointer2, Undo2, Redo2, X } from 'lucide-react';
 import { useAppSelector, useAppDispatch, selectActiveVariant, selectDocument, selectSelectedText } from '../../store';
 import { DesignPanel } from './DesignPanel';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
@@ -7,6 +7,7 @@ import { useTextActions } from '../text/useTextActions';
 import { historyKey, selectionKey } from './selectionKeyboard';
 import { undo, redo } from '../../store/history';
 import { recoveryWarningChanged } from '../../store/saveSlice';
+import { ExportButton } from '../export/ExportButton';
 
 export function EditorShell() {
   const document = useAppSelector(selectDocument);
@@ -43,9 +44,7 @@ export function EditorShell() {
             <button className="icon-button" aria-label="Redo" title="Redo (⌘/Ctrl Shift Z)" disabled={!canRedo} onClick={() => dispatch(redo())}><Redo2 size={16} /></button>
           </div>
           <span className={`save-status save-${save.status}`} role="status" aria-live="polite"><span />{{ saving: 'Saving…', saved: 'Saved on this device', error: 'Could not save' }[save.status]}</span>
-          <button className="button export-button" disabled title="PNG export is coming in Milestone 7" aria-label="Export — not yet available">
-            <Download size={15} />Export
-          </button>
+          <ExportButton />
         </div>
       </header>
       {save.warning && <div className="recovery-warning" role="alert"><span>{save.warning} New edits will replace the saved design.</span><button className="icon-button" aria-label="Dismiss recovery warning" onClick={() => dispatch(recoveryWarningChanged(''))}><X size={14} /></button></div>}

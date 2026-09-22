@@ -284,3 +284,6 @@ h1, h2, h3, p { margin: 0; }
 
 .ai-panel .dimension-fields input { width: 100%; min-width: 0; border: 1px solid var(--color-line); border-radius: 7px; padding: 9px; font-size: 11px; }
 .ai-panel .dimension-fields { margin: 10px 0; }
+.export-control { position: relative; }
+.export-error { position: absolute; right: 0; top: calc(100% + 12px); width: 310px; padding: 14px; background: #fff8f5; border: 1px solid #d7aaa0; border-radius: 8px; color: #733b30; box-shadow: 0 4px 18px #00000014; z-index: 30; font-size: 12px; line-height: 1.5; }
+.export-error button { display: block; margin-top: 8px; background: transparent; border: 0; padding: 0; text-decoration: underline; color: inherit; cursor: pointer; }

@@ -87,7 +87,7 @@ test('zoom only changes display; Fit, same preset, and workspace resize restore 
 test('upcoming actions are truthful and keyboard tabs work', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('button', { name: 'Add heading' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: /Export/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Export PNG' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Open wedding example' })).toBeDisabled();
   await page.getByRole('tab', { name: 'Design', exact: true }).focus();
   await page.keyboard.press('ArrowRight');

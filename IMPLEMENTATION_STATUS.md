@@ -1,6 +1,36 @@
 # Implementation status
 
-Latest status: **2026-09-22**. **Milestones 0–6 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Milestone 7 has not started.**
+Latest status: **2026-09-22**. **Milestones 0–6 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Exact-size PNG export is complete; the remaining Milestone 7 polish/example and deployment are not started.**
+
+## PNG export — exact logical size
+
+- Started from clean `640c581a81aad0e6cbfec8eff3d9a73bca419a93`, synchronized with origin/main. No post-M6 uncommitted edits were present in `server/src/app.ts`, `server/src/adaptation.test.ts`, or elsewhere; no follow-up M6 commit was needed.
+- Wired the existing top-bar action to **Export PNG**, with duplicate-click protection, local busy state, and dismissible actionable failures. Captures the active variant at click time, including source/target switching and comparison mode; unapplied AI previews remain previews.
+- The visible Stage has display-scaled dimensions and stage scale. Export instead builds a temporary, non-listening Konva Group with Rect/Image/Text, using the SAME `imagePlacement` and `textNodeStyle` helpers as the editor. Explicit logical width/height and pixelRatio 1 exclude screen density, zoom, selection Transformer, hover UI, guides and editor chrome. No second layout engine, hidden Stage or hit canvas is created.
+- Waits for all bundled Inter/Lora weights and decodes the IndexedDB artwork before rendering. Exact text, newlines/wrapping, font family/weight/size, color, alignment, line/letter spacing and positions are retained. Cover/contain and focal-point placement preserve artwork aspect ratio. Canvas boundaries crop overflowing content.
+- Uses existing size validation unchanged (256–4096 per side; ≤12,000,000 pixels). Deterministic names use dimensions to infer poster/landscape/square/story, otherwise custom, e.g. `frameflow-custom-1000x1000.png`; no project ID or user-provided filename text.
+- All export state is local runtime state. No document/history dispatch, selection change, variant switch, zoom change or asset write occurs. A 30-second bound releases stalled preparation/encoding; nodes and output canvas are released in finally. Decoding URLs are revoked, download anchors removed and download URLs revoked after 10 seconds to allow browser consumption.
+- Missing artwork, decode/font failures, failed/null PNG encoding and observable download failures preserve editing and offer retry guidance. Memory-constrained browsers can fail on large valid canvases. A page cannot reliably detect browser-policy refusal or disk failure after download handoff, so no completed-save claim is made.
+- Added ten utility/lifecycle checks and 28 browser checks across both desktop sizes. Actual PNG bytes are decoded for poster 1080×1350, landscape 1600×900, square 1080×1080, story 1080×1920, custom 1000×1000 and extremes 4096×256 / 256×4096. Checks assert artwork/text, opacity, no selection-color pixels, byte-identical output across zoom/selection changes, restored selection, unchanged document/empty history, editable UI, variant switching/comparison, font wait, busy state and five failure paths. Fixture initialization explicitly waits for initial persistence before seeding.
+- **Manual visual verification:** reused the already-generated REAL M5 poster and M6 landscape with every AI endpoint blocked. Downloaded and opened PNGs at **1080×1350**, **1600×900**, and a temporary **1000×1000** custom canvas. Compared them to the editor at 1440×900 and 1366×768: artwork/text match, no distortion, selection/handles/chrome, added margins or unexpected whitespace. Existing decorative/text overlap carries through faithfully; export does not redesign content. Undid the temporary resize and verified the original document and both asset hashes unchanged. **Zero live AI generation/adaptation requests.** Verification images are outside the repository.
+- README documents usage, rendering, filenames, snapshot semantics, supported sizes, cleanup and browser limitations. No environment, backend, dependency, master-brief or broad redesign changes.
+
+Final export regression (all provider operations mocked):
+
+| Check | Actual result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **320 passed across 23 files** |
+| `npm run build` | Passed |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **114 passed**, development |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **114 passed**, production |
+
+Reviewed all nine changed files and checked whitespace. Secret-value scan of 111
+tracked/new files found no configured credentials; no PNG, base64 payload, trace,
+video, temporary download, environment file, dependency directory or master-brief
+change is included. No export blocker remains. Stop before broad polish, example,
+deployment or submission work. Earlier milestone results below are historical.
 
 ## Milestone 6 — reference-image adaptation
 
@@ -348,9 +378,9 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 ## Remaining milestones
 
 5. **AI generation — complete, real Cloudflare app-level verification passed.**
-Gemini remains an alternate blocked by its project quota. Milestone 6 is verified; Milestone 7 is next.
+Gemini remains an alternate blocked by its project quota. Milestone 6 is verified; PNG export is complete.
 6. **Reference-image adaptation, variants, comparison — implemented and real portrait→landscape verification passed.**
-7. Export, editable wedding example, keyboard/responsive polish.
+7. **PNG export complete.** Editable wedding example and broad final UI/keyboard/responsive polish remain.
 8. Release verification, documentation, deployment, submission.
 
 ## Milestones 0/1 — blockers and limits at completion (historical)

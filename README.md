@@ -2,8 +2,8 @@
 
 A calm creative editor for the FreshFolks assessment. Milestones 0–6 provide canvas
 sizing, interactive text editing, measured Auto Layout, local recovery, undo/redo,
-artwork generation, and reference-based format adaptation. **Real generation and
-portrait→landscape adaptation are verified with Cloudflare Workers AI**;
+artwork generation, and reference-based format adaptation. Exact-size PNG export
+is also implemented. **Real generation and portrait→landscape adaptation are verified with Cloudflare Workers AI**;
 Gemini remains an alternate but this project's Gemini model has zero Free Tier quota.
 The full assessment is not yet finished or deployed. See the current live verification
 result in [implementation status](IMPLEMENTATION_STATUS.md).
@@ -142,12 +142,35 @@ calls AI. Both versions and their artwork survive refresh. Stale results require
 regeneration or discard. See [AI adaptation](docs/AI_ADAPTATION.md) for architecture,
 reference constraints and the real verification result.
 
+## Export a PNG
+
+Click **Export PNG** to download the active version at its exact logical canvas
+size, independent of Fit, editor zoom, or screen pixel density. All four presets
+and valid custom sizes (256–4096 px per side, up to 12 million pixels) are supported.
+The PNG includes background color, aspect-preserving artwork fit/crop, and text
+using the editor's typography, wrapping, and coordinates. Selection handles,
+comparison frames, and editor UI are excluded. Fonts and artwork must load first;
+failures show a retryable message instead of knowingly downloading an incomplete image.
+
+Names use `frameflow-poster-1080x1350.png`, `frameflow-landscape-1600x900.png`, or
+`frameflow-custom-1000x1000.png`. Preset names are inferred from dimensions; no
+user text or project IDs enter the filename. Export captures the active version at
+the click, including when comparing versions; unapplied AI previews are not exported.
+Export does not change selection, zoom, saved content, active version, or history.
+Temporary nodes/canvases and object URLs are released. No server or AI call is needed.
+
+Large exports use browser memory and can fail on constrained devices; close other
+tabs and retry. Browser download permissions and disk-space failures after download
+handoff cannot be detected reliably by a web page. Check your browser's downloads.
+Existing overlaps or off-canvas text are exported as composed, without automatic
+layout changes; scripts/emoji using OS fallback fonts can differ between devices.
+
 ## Current limits
 
 Routine AI tests use explicit mocks. The Gemini alternate remains blocked by this
 project’s zero Free Tier image quota. Cloudflare uses its account’s available allocation;
 free usage is limited, and provider quota/errors never trigger automatic retries.
-Export and the wedding example remain later scope. Adaptation preserves visual
+The wedding example and broader final polish remain later scope. Adaptation preserves visual
 identity best-effort; custom text layouts may need adjustment. The current project
 persists in localStorage; image Blobs use IndexedDB.
 Generated previews may crop artwork to preserve aspect ratio. Inspect results for
