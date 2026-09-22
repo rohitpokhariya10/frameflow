@@ -15,6 +15,7 @@ const TABS = [
 
 export function DesignPanel() {
   const dispatch = useAppDispatch();
+  const variantId = useAppSelector(selectActiveVariant).id;
   const activeTab = useAppSelector((state) => state.ui.activeLeftTab);
   const tabRefs = useRef<Partial<Record<LeftTab, HTMLButtonElement | null>>>({});
   function moveTab(event: KeyboardEvent, index: number) {
@@ -40,7 +41,7 @@ export function DesignPanel() {
         ))}
       </div>
       <div className="tab-content" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
-        {activeTab === 'design' ? <CanvasSettings /> : activeTab === 'text' ? <TextPanel /> : <AIPanel />}
+        {activeTab === 'design' ? <CanvasSettings key={variantId} /> : activeTab === 'text' ? <TextPanel /> : <AIPanel />}
       </div>
       <div className="design-panel-footer"><span className="status-dot" />Your next idea starts here.</div>
     </aside>

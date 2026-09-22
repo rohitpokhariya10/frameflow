@@ -1,8 +1,9 @@
 # FrameFlow
 
-A calm creative editor for the FreshFolks assessment. Milestones 0–5 provide canvas
+A calm creative editor for the FreshFolks assessment. Milestones 0–6 provide canvas
 sizing, interactive text editing, measured Auto Layout, local recovery, undo/redo,
-and artwork generation. **Real app-level generation is verified with Cloudflare Workers AI**;
+artwork generation, and reference-based format adaptation. **Real generation and
+portrait→landscape adaptation are verified with Cloudflare Workers AI**;
 Gemini remains an alternate but this project's Gemini model has zero Free Tier quota.
 The full assessment is not yet finished or deployed. See the current live verification
 result in [implementation status](IMPLEMENTATION_STATUS.md).
@@ -128,13 +129,27 @@ use SIL OFL 1.1; unmodified licenses ship in
 [`client/public/licenses/`](client/public/licenses/). Other scripts/emoji may use
 OS fallback fonts, so their appearance can differ between devices.
 
+## Adapt a design
+
+Create/apply artwork, then open **AI → Adapt format**. Choose Landscape, Poster,
+Story, Square or Custom, and select **Adapt artwork**. FrameFlow uses the existing
+artwork as a visual reference while preserving every editable text string.
+
+Review Source and Target at their natural aspect ratios. **Use this version** adds
+and selects a new variant, keeping the original. The version selector and **Compare
+versions** let you return to either composition. Apply is one undo step; redo never
+calls AI. Both versions and their artwork survive refresh. Stale results require
+regeneration or discard. See [AI adaptation](docs/AI_ADAPTATION.md) for architecture,
+reference constraints and the real verification result.
+
 ## Current limits
 
 Routine AI tests use explicit mocks. The Gemini alternate remains blocked by this
 project’s zero Free Tier image quota. Cloudflare uses its account’s available allocation;
 free usage is limited, and provider quota/errors never trigger automatic retries.
-Adaptation, export, and the wedding example remain later
-scope. The current project persists in localStorage; image Blobs use IndexedDB.
+Export and the wedding example remain later scope. Adaptation preserves visual
+identity best-effort; custom text layouts may need adjustment. The current project
+persists in localStorage; image Blobs use IndexedDB.
 Generated previews may crop artwork to preserve aspect ratio. Inspect results for
 unwanted lettering and readable text space before applying.
 Undo/redo retains up to 30 document operations during this session.

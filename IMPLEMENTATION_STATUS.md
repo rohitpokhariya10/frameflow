@@ -1,6 +1,37 @@
 # Implementation status
 
-Latest status: **2026-09-22**. Milestones **0–5 implemented and real artwork generation verified through Cloudflare Workers AI**. Inspector/custom-size fixes are complete. The assessment is not yet complete/deployed. **Milestone 6 has not started.**
+Latest status: **2026-09-22**. **Milestones 0–6 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Milestone 7 has not started.**
+
+## Milestone 6 — reference-image adaptation
+
+- Continued the existing uncommitted M6 work above `6840c9514614df6e6e3050c6239dcc1e3678c812`; preserved completed milestones, master brief and real environment. No redesign, export, deployment or submission work.
+- Added provider-independent `POST /api/ai/adapt`, a required-reference provider capability and Cloudflare binary multipart `input_image_0`. Generation stays intact; Gemini adaptation truthfully returns unavailable. Both endpoints share bounded concurrency, rate limits, safe error normalization, timeout/abort and request IDs. Express route aliases retain the adaptation capability.
+- Browser retrieves/decodes the source Blob and creates a temporary aspect-preserving PNG ≤511px per side / 2 MiB. Original Blob is never overwritten. Shared validation bounds transport; the backend checks canonical base64, signature, byte-derived dimensions and metadata. Adapt JSON is capped at 3 MiB; generation remains 24 KiB.
+- Every editable text element retains its ID, exact string, role, family, weight and color. Preset-specific semantic regions and existing Auto Layout provide landscape right alignment, portrait/story centered stacks, square composition, and normalized custom mapping. Duplicated roles receive separate rows. Impossible fits/residual collisions are flagged without deleting text.
+- Source/Target previews use their natural aspect ratios and do not mutate the document. Apply stores a new target relationship and selects it through one atomic document/history operation. Source variants remain intact. Version switching and applied-version comparison work. Schema v1 and older documents remain compatible; both assets/variants reload.
+- Stale guards capture project/source identity, revision, monotonic document version and selection version. Source edits, undo-to-same-revision, variant switch-away-and-back, cancellation and superseded request IDs cannot silently apply obsolete work. Loading/error/stale states preserve the source.
+- **One real adaptation succeeded; zero new source generations/retries.** Reused the actual M5 wedding JPEG from IndexedDB. **407×511 PNG / 425,225 bytes** was supplied as binary `input_image_0`; the server-side transport guard confirmed the reference hash matched the browser payload. Cloudflare `@cf/black-forest-labs/flux-2-klein-4b` returned **HTTP 200**, **image/jpeg**, **1024×576**, **342,986 bytes** for the exact **1600×900** logical target. Request ID: `5e5f132a-f0af-4cc0-b9ea-305e7e3fdc0e`.
+- Verified real decode, IndexedDB, unchanged preview document, exact text-by-ID, one-step Apply, source preservation, target selection/editability, source↔target switching, both variants after refresh and atomic Undo/Redo with no extra provider request. Source Blob SHA-256 stayed unchanged. History verification preceded reload, since history is session-only.
+- Visual review at **1440×900 and 1366×768**: ivory roses, gold ornamentation, palette, mood and soft lighting carry into a visibly recomposed left-weighted landscape. This is not a simple crop/stretch; source and target ratios remain natural. Text hierarchy is readable on the right. A gold sprig approaches the venue line, so manual placement may improve this result; generative continuity is best effort.
+- Created `docs/AI_ADAPTATION.md`; updated setup/status and current persistence/AI documentation. Cloudflare's official PNG examples, four-reference naming, <512×512 constraint and 256–1920 output-side bounds are documented. Application limits are distinguished from unpublished provider format/byte limits.
+
+Final **post-live** automated regression (all provider operations mocked):
+
+| Check | Actual result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **310 passed across 22 files** |
+| `npm run build` | Passed |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **86 passed**, development |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **86 passed**, production |
+
+Each browser mode covers both desktop sizes, including 14 adaptation checks and 22
+existing generation checks. Security review scanned 107 tracked/new files against the
+configured secret values without printing them; no credential or generated artifact
+was included. Real `.env` stays untouched/ignored and the master brief is unchanged.
+
+**M6 is implemented and its real portrait→landscape flow is verified. Stop before M7.** Earlier milestone sections below are historical.
 
 ## Cloudflare Workers AI provider — completed implementation and live verification
 
@@ -317,8 +348,8 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 ## Remaining milestones
 
 5. **AI generation — complete, real Cloudflare app-level verification passed.**
-Gemini remains an alternate blocked by its project quota; Milestone 6 is next.
-6. Reference-image adaptation, variants, comparison — not started.
+Gemini remains an alternate blocked by its project quota. Milestone 6 is verified; Milestone 7 is next.
+6. **Reference-image adaptation, variants, comparison — implemented and real portrait→landscape verification passed.**
 7. Export, editable wedding example, keyboard/responsive polish.
 8. Release verification, documentation, deployment, submission.
 

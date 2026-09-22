@@ -7,6 +7,14 @@ export type ImageProvider = 'gemini' | 'cloudflare';
 export interface StyleBrief { theme: string; palette: string[]; motifs: string[]; mood: string }
 export interface QuietRegion { x: number; y: number; width: number; height: number }
 export interface GenerateRequest { prompt: string; target: CanvasSize; styleBrief: StyleBrief; quietRegion: QuietRegion }
+// Application transport limits; the provider adapter owns multipart field names.
+export const ADAPT_LIMITS = { referenceSide: 511, referenceBytes: 2 * 1024 * 1024, requestBytes: 3 * 1024 * 1024 } as const;
+export type AdaptFormat = 'poster' | 'landscape' | 'story' | 'square' | 'custom';
+export interface AdaptRequest extends GenerateRequest {
+  format: AdaptFormat;
+  source: { projectId: string; variantId: string; revision: number; assetId: string; width: number; height: number };
+  referenceImage: { mimeType: 'image/png'; base64: string; width: number; height: number };
+}
 export interface ImageResponse {
   requestId: string;
   image: { mimeType: ImageMime; base64: string; width: number; height: number };
@@ -37,4 +45,19 @@ export function validImageResponse(v: unknown): v is ImageResponse {
     && (i.width as number) * (i.height as number) <= AI_LIMITS.imagePixels
     && g.mode === 'live' && (g.provider === undefined || g.provider === 'gemini' || g.provider === 'cloudflare')
     && short(g.model, 200) && short(g.requestedAspectRatio, 20) && short(g.promptUsed, 10_000);
+}
+
+export function validAdaptRequest(v: unknown): v is AdaptRequest {
+  if (!validGenerateRequest(v)) return false;
+  const a = v as unknown as Record<string, unknown>;
+  if (!['poster', 'landscape', 'story', 'square', 'custom'].includes(a.format as string) || !record(a.source) || !record(a.referenceImage)) return false;
+  const s = a.source, i = a.referenceImage;
+  const presets: Record<string, CanvasSize> = { poster: { width: 1080, height: 1350 }, landscape: { width: 1600, height: 900 }, story: { width: 1080, height: 1920 }, square: { width: 1080, height: 1080 } };
+  const preset = presets[a.format as string];
+  return (!preset || (preset.width === v.target.width && preset.height === v.target.height))
+    && ['projectId', 'variantId', 'assetId'].every((key) => short(s[key], 200) && !/^(blob:|data:|https?:|\/)/i.test(s[key] as string))
+    && Number.isSafeInteger(s.revision) && (s.revision as number) >= 0
+    && typeof s.width === 'number' && typeof s.height === 'number' && validateCanvasSize(s.width, s.height).valid
+    && i.mimeType === 'image/png' && short(i.base64, Math.ceil(ADAPT_LIMITS.referenceBytes / 3) * 4)
+    && [i.width, i.height].every((n) => Number.isSafeInteger(n) && (n as number) > 0 && (n as number) <= ADAPT_LIMITS.referenceSide);
 }

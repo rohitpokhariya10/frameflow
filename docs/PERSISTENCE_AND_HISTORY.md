@@ -20,7 +20,8 @@ until the user makes a document edit.
 
 A valid document restores before the editor renders. Selection is null, history
 is empty, and normal font loading and canvas Fit still run. The first variant
-becomes active; there is currently no variant-switching UI or persisted preference.
+becomes active; the M6 version selector can switch to any restored variant. The
+preference is not persisted.
 
 Only a changed document reference schedules a 500 ms debounced save. The top bar
 shows `Saving…`, then `Saved on this device` only after `setItem` succeeds, or
@@ -71,19 +72,20 @@ record or `null`; has returns a boolean; deleting a missing ID is safe. Open,
 blocked, version, quota/write, and aborted-transaction failures reject so callers
 can report failure without clearing the document. Connections close after use.
 
-There is no runtime image renderer/cache yet, so no object URLs are created.
-When introduced, URLs must remain outside Redux and be revoked on release. Future
-image flows must await successful Blob storage before committing a document that
-references it. The repository does not automatically delete assets: future cleanup
-must consider the current design, every variant, previews, and undo history.
-Missing assets do not invalidate usable text metadata; future background UI must
-provide a missing-image message and recovery action.
+M5/M6 decode artwork through temporary object URLs outside Redux and revoke the URLs
+after decoding. Both operations await successful Blob storage before publishing previews
+or committing a document that references the new asset. Applied/history assets are
+retained. Only unapplied preview assets are deleted on discard/cancellation; general
+orphan cleanup must account for every variant and history snapshot. Missing artwork
+shows a recovery message while keeping usable text metadata. Adaptation reads the
+source Blob without altering it, and stores output under a new asset ID.
 
 Browser tests compile the actual repository into an isolated test context and use
 native IndexedDB with a tiny local SVG fixture. They verify exact Blob bytes/MIME,
 recovery across reload, deletion/missing results, open/version failures, write
 failure, transaction abort, and preservation of the prior record. This proves local
-asset infrastructure only; no live AI persistence is claimed.
+asset infrastructure independently. M5/M6 separately verified real generated/adapted
+artwork persistence, as recorded in implementation status.
 
 ## Scope and limits
 
@@ -91,4 +93,7 @@ One local project per browser origin; no cross-tab merge/conflict resolution,
 cloud backup, storage migration, or persisted history. Multiple tabs use last
 successful writer wins. Browser storage can be cleared or evicted. History is
 bounded to 30 operations; the schema permits up to 30 variants, 50 text elements
-per variant, and 5,000 characters per element. Milestone 5 AI work is not started.
+per variant, and 5,000 characters per element. M5 generation and M6 reference
+adaptation are implemented. Applying an adapted
+variant is one history transaction; undo/redo restores document references without
+provider calls. Source and target variants survive reload through schema v1.

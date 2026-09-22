@@ -78,24 +78,21 @@ Ivory florals/gold ornamentation and the text hierarchy rendered correctly. The
 lower-left flowers extend near the venue region, so users may still adjust text
 placement after preview; the provider does not guarantee a perfectly empty text area.
 Images/screenshots and the isolated browser profile remain outside tracked source.
-Gemini's separate quota blocker is unchanged. Milestone 6 is ready to begin in a
-separate task; no adaptation implementation was added here.
+Gemini's separate quota blocker is unchanged. This records the completed M5 pass;
+the subsequent M6 adaptation is documented in [AI_ADAPTATION.md](AI_ADAPTATION.md).
 
-## Milestone 6 preparation only
+## Milestone 6 reference support (now implemented)
 
 Cloudflare was selected following the user's successful external smoke test, its
 available free allocation, and documented reference-image editing support. The
 model supports up to four binary references named `input_image_0` through
 `input_image_3` in the same multipart request. **Each reference must be smaller
-than 512×512**. M6 must create an aspect-preserving thumbnail below that bound before
-sending source artwork, preserve the full original asset, and verify actual visual
-continuity. The adapter is isolated so those fields can be added there later.
-The common provider input will need an optional bounded reference-image field;
-prompt and target dimensions already exist. References use binary multipart uploads,
-not the base64 JSON response format. M6 must verify accepted reference MIME types
-and decoding before upload; the current app's stored assets support PNG/JPEG/WebP.
-Reference processing, adaptation endpoints, variants, and comparison are not implemented
-in this pass. Gemini remains available for separately verified alternate use.
+than 512×512**. M6 now prepares a PNG thumbnail below that bound, preserves the original asset,
+and supplies it through the separate required-reference adaptation capability.
+The current app can decode stored PNG/JPEG/WebP assets; references are normalized to PNG.
+Reference processing, the adaptation endpoint, variants and comparison are documented
+in [AI_ADAPTATION.md](AI_ADAPTATION.md), including the successful single real adaptation.
+Gemini generation remains available; Gemini adaptation truthfully reports unavailable.
 
 ## Server boundary and provider
 
@@ -175,7 +172,8 @@ order. A provider resolution tier never changes the requested canvas dimensions.
 The decoded image renders below text in a noninteractive, frame-clipped Konva layer.
 Cover uses one uniform scale and centered focal point by default, so cropping can
 occur but stretching cannot. Existing contain/focal-point metadata is also respected.
-There are no image manipulation controls or reference-image adaptation in this milestone.
+There are no image manipulation controls. Reference-image adaptation is a separate
+M6 operation documented in [AI_ADAPTATION.md](AI_ADAPTATION.md).
 
 ## Bounds and failures
 

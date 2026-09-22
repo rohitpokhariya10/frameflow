@@ -30,6 +30,17 @@ export const editorSlice = createSlice({
         updatedAt: timestamp, variants: state.document.variants.map((variant, i) => i === index ? { ...preview.variant, revision: variant.revision + 1 } : variant) };
       if (isProjectDocument(document)) state.document = document;
     },
+    adaptedDesignApplied(state, action: PayloadAction<{ preview: DesignPreview; timestamp: string }>) {
+      const { preview, timestamp } = action.payload, source = preview.adaptation?.source;
+      const current = state.document.variants.find((item) => item.id === source?.id);
+      if (!source || !current || state.document.id !== preview.sourceProjectId || current.revision !== source.revision
+        || current.background?.assetId !== source.background?.assetId || preview.variant.sourceVariantId !== current.id
+        || state.document.variants.some((item) => item.id === preview.variant.id) || state.document.variants.length >= 30
+        || preview.variant.elements.length !== current.elements.length
+        || !current.elements.every((element) => preview.variant.elements.some((item) => item.id === element.id && item.text === element.text))) return;
+      const document = { ...state.document, updatedAt: timestamp, variants: [...state.document.variants, preview.variant] };
+      if (isProjectDocument(document)) state.document = document;
+    },
     textAutoLayoutApplied(state, action: PayloadAction<TextTarget & { expectedRevision: number; layout: { x: number; y: number; width: number; fontSize: number } }>) {
       const { variantId, id, expectedRevision, layout, timestamp } = action.payload;
       const variant = state.document.variants.find((item) => item.id === variantId);
@@ -108,4 +119,4 @@ export const editorSlice = createSlice({
     },
   },
 });
-export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied } = editorSlice.actions;
+export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied, adaptedDesignApplied } = editorSlice.actions;

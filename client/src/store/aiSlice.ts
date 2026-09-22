@@ -1,8 +1,9 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { DesignVariant, StyleBrief } from '@frameflow/shared';
+import type { DesignVariant, StyleBrief, AdaptFormat, ProjectDocument } from '@frameflow/shared';
 export interface DesignPreview {
   variant: DesignVariant; originalPrompt: string; styleBrief: StyleBrief; unresolved: string[];
   sourceVersion: number; sourceProjectId: string;
+  adaptation?: { source: DesignVariant; selectionVersion: number; format: AdaptFormat };
 }
 interface AiState { status: 'idle' | 'generating' | 'ready' | 'error'; requestId: string | null; error: string; preview: DesignPreview | null }
 const initialState: AiState = { status: 'idle', requestId: null, error: '', preview: null };
@@ -19,3 +20,11 @@ export const aiSlice = createSlice({ name: 'ai', initialState, reducers: {
   generationCleared: () => initialState,
 } });
 export const { generationStarted, generationReady, generationFailed, generationCleared } = aiSlice.actions;
+
+export function adaptationIsCurrent(preview: DesignPreview, document: ProjectDocument, version: number, activeVariantId: string, selectionVersion: number) {
+  const context = preview.adaptation;
+  if (!context || preview.sourceProjectId !== document.id || preview.sourceVersion !== version
+    || context.selectionVersion !== selectionVersion || context.source.id !== activeVariantId) return false;
+  const source = document.variants.find((variant) => variant.id === context.source.id);
+  return source?.revision === context.source.revision && source.background?.assetId === context.source.background?.assetId;
+}

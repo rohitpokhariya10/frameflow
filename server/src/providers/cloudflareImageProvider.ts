@@ -1,6 +1,6 @@
 import { imageSize } from 'image-size';
 import { AI_LIMITS, type CanvasSize } from '@frameflow/shared';
-import { AiError, mapProviderError, type GenerateImage } from '../services/aiService.js';
+import { AiError, mapProviderError, type GenerateImage, type AdaptImage, type ProviderImage } from '../services/aiService.js';
 
 export const CLOUDFLARE_IMAGE_MODEL = '@cf/black-forest-labs/flux-2-klein-4b';
 // Keep generation near 1 megapixel, within the model's 256–1920 side limits.
@@ -40,12 +40,19 @@ async function boundedJSON(response: Response): Promise<unknown> {
   } finally { reader.releaseLock(); }
 }
 
-/** REST multipart contract; image-input fields can be added here for M6, not in the client. */
 export function cloudflareImageProvider(accountId: string, token: string, model: string): GenerateImage {
-  return async (prompt, ratio, signal, target) => {
+  return cloudflareRequest(accountId, token, model);
+}
+export function cloudflareAdaptProvider(accountId: string, token: string, model: string): AdaptImage {
+  return cloudflareRequest(accountId, token, model);
+}
+/** Both operations share transport; adaptation always supplies validated reference bytes. */
+function cloudflareRequest(accountId: string, token: string, model: string) {
+  return async (prompt: string, ratio: string, signal: AbortSignal, target?: CanvasSize, reference?: ProviderImage) => {
     const [w, h] = ratio.split(':').map(Number);
     const size = cloudflareDimensions(target ?? { width: w * 1024, height: h * 1024 });
     const body = new FormData(); body.set('prompt', prompt); body.set('width', String(size.width)); body.set('height', String(size.height));
+    if (reference) body.set('input_image_0', new Blob([new Uint8Array(Buffer.from(reference.data, 'base64'))], { type: reference.mimeType }), 'reference.png');
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`, {
       method: 'POST', headers: { Authorization: `Bearer ${token}` }, body, signal, redirect: 'error',
     });

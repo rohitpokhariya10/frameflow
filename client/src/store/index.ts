@@ -1,15 +1,24 @@
 import { combineReducers, configureStore, type UnknownAction } from '@reduxjs/toolkit';
 import { useDispatch, useSelector } from 'react-redux';
-import { createDocument, generatedDesignApplied } from './editorSlice';
-import { uiSlice } from './uiSlice';
+import { createDocument, generatedDesignApplied, adaptedDesignApplied } from './editorSlice';
+import { uiSlice, variantSelected } from './uiSlice';
 import { historyReducer, initialHistory, undo, redo } from './history';
 import { saveSlice } from './saveSlice';
-import { aiSlice } from './aiSlice';
+import { aiSlice, adaptationIsCurrent } from './aiSlice';
 
 const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer });
 function reducer(state: ReturnType<typeof combined> | undefined, action: UnknownAction) {
   if (state && generatedDesignApplied.match(action) && action.payload.preview.sourceVersion !== state.editor.version) return state;
-  const next = combined(state, action);
+  if (state && variantSelected.match(action) && !state.editor.document.variants.some((item) => item.id === action.payload)) return state;
+  if (state && adaptedDesignApplied.match(action) && !adaptationIsCurrent(action.payload.preview, state.editor.document, state.editor.version, state.ui.activeVariantId, state.ui.selectionVersion)) return state;
+  let next = combined(state, action);
+  if (state && next.editor.document !== state.editor.document) {
+    const restored = next.editor.document.variants.find((item) => !state.editor.document.variants.some((old) => old.id === item.id));
+    const previous = state.editor.document.variants.find((item) => item.id === state.ui.activeVariantId);
+    const activeVariantId = restored?.id ?? (next.editor.document.variants.some((item) => item.id === state.ui.activeVariantId) ? state.ui.activeVariantId
+      : next.editor.document.variants.find((item) => item.id === previous?.sourceVariantId)?.id ?? next.editor.document.variants[0].id);
+    if (activeVariantId !== next.ui.activeVariantId) next = { ...next, ui: { ...next.ui, activeVariantId, selectedElementId: null, fitRequest: next.ui.fitRequest + 1, selectionVersion: next.ui.selectionVersion + 1 } };
+  }
   if ((undo.match(action) || redo.match(action)) && next.ui.selectedElementId) {
     const variant = next.editor.document.variants.find((item) => item.id === next.ui.activeVariantId) ?? next.editor.document.variants[0];
     if (!variant.elements.some((item) => item.id === next.ui.selectedElementId)) {

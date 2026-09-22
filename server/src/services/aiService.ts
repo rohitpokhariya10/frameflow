@@ -1,5 +1,5 @@
 import { imageSize } from 'image-size';
-import { AI_LIMITS, IMAGE_MIMES, type GenerateRequest, type ImageResponse, type ImageMime, type CanvasSize } from '@frameflow/shared';
+import { AI_LIMITS, IMAGE_MIMES, type GenerateRequest, type ImageResponse, type ImageMime, type CanvasSize, type AdaptRequest, type ImageProvider, ADAPT_LIMITS } from '@frameflow/shared';
 
 export interface ProviderDiagnostic { providerStatus?: number; canonicalCode?: string; reason?: string }
 export class AiError extends Error {
@@ -7,6 +7,7 @@ export class AiError extends Error {
 }
 export interface ProviderImage { data: string; mimeType: string }
 export type GenerateImage = (prompt: string, ratio: string, signal: AbortSignal, target?: CanvasSize) => Promise<ProviderImage>;
+export type AdaptImage = (prompt: string, ratio: string, signal: AbortSignal, target: CanvasSize, reference: ProviderImage) => Promise<ProviderImage>;
 export const RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const;
 export function aspectRatio(width: number, height: number) {
   return RATIOS.reduce((best, ratio) => {
@@ -79,10 +80,37 @@ export function mapProviderError(error: unknown): AiError {
   if (NETWORK_REASONS.has(reason)) return mapped('NETWORK', 'The server could not reach the image service. Check its network connection before trying again. Your design is unchanged.', 502, true);
   return mapped('PROVIDER_FAILURE', 'The image service is temporarily unavailable. Please try later. Your design is unchanged.', 502, true);
 }
-export async function generateArtwork(request: GenerateRequest, requestId: string, model: string, timeoutMs: number, generate: GenerateImage, disconnected?: AbortSignal, provider: 'gemini' | 'cloudflare' = 'gemini'): Promise<ImageResponse> {
-  if (disconnected?.aborted) throw new AiError('CANCELLED', 'Generation was cancelled.', 499);
+export function validateReference(request: AdaptRequest): ProviderImage {
+  try {
+    const reference = { data: request.referenceImage.base64, mimeType: request.referenceImage.mimeType };
+    const image = validateImage(reference);
+    if (Buffer.from(reference.data, 'base64').length > ADAPT_LIMITS.referenceBytes || image.mimeType !== 'image/png'
+      || image.width > ADAPT_LIMITS.referenceSide || image.height > ADAPT_LIMITS.referenceSide
+      || image.width !== request.referenceImage.width || image.height !== request.referenceImage.height) throw new Error('Invalid reference');
+    return reference;
+  } catch { throw new AiError('INVALID_REFERENCE', 'The source reference is invalid or too large. Prepare the source artwork again.', 400); }
+}
+export function adaptationPrompt(request: AdaptRequest, ratio: string) {
+  const composition = request.format === 'landscape'
+    ? 'Bias decorative visual weight toward the left and leave calm negative space on the right.'
+    : request.format === 'square' ? 'Use a compact balanced square composition with decoration around the perimeter and a calm center.'
+      : request.format === 'custom' ? 'Recompose naturally for the custom target frame and keep the reserved text region calm.'
+        : 'Use a vertical composition with decorative borders or corners and a calm centered text region.';
+  return `Use the supplied source artwork as the visual reference. Preserve its palette, floral/decorative motifs, mood, lighting, artistic treatment and visual identity. Recompose naturally for ${request.target.width} by ${request.target.height} (${ratio}). ${composition} Extend or rearrange the artwork; do not merely stretch or crop the original.\n${artworkPrompt(request, ratio)}\nDo not include letters, words, names, dates, logos, signatures or typography.`;
+}
+export function generateArtwork(request: GenerateRequest, requestId: string, model: string, timeoutMs: number, generate: GenerateImage, disconnected?: AbortSignal, provider: ImageProvider = 'gemini'): Promise<ImageResponse> {
   const ratio = aspectRatio(request.target.width, request.target.height);
   const prompt = artworkPrompt(request, ratio);
+  return runArtwork(requestId, model, ratio, prompt, timeoutMs, (signal) => generate(prompt, ratio, signal, request.target), disconnected, provider);
+}
+export function adaptArtwork(request: AdaptRequest, requestId: string, model: string, timeoutMs: number, adapt: AdaptImage, disconnected?: AbortSignal, provider: ImageProvider = 'cloudflare'): Promise<ImageResponse> {
+  const reference = validateReference(request);
+  const ratio = aspectRatio(request.target.width, request.target.height);
+  const prompt = adaptationPrompt(request, ratio);
+  return runArtwork(requestId, model, ratio, prompt, timeoutMs, (signal) => adapt(prompt, ratio, signal, request.target, reference), disconnected, provider);
+}
+async function runArtwork(requestId: string, model: string, ratio: string, prompt: string, timeoutMs: number, generate: (signal: AbortSignal) => Promise<ProviderImage>, disconnected: AbortSignal | undefined, provider: ImageProvider): Promise<ImageResponse> {
+  if (disconnected?.aborted) throw new AiError('CANCELLED', 'Generation was cancelled.', 499);
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancel: (() => void) | undefined;
@@ -93,7 +121,7 @@ export async function generateArtwork(request: GenerateRequest, requestId: strin
       disconnected?.addEventListener('abort', cancel, { once: true });
       if (disconnected?.aborted) cancel();
     });
-    const image = await Promise.race([generate(prompt, ratio, controller.signal, request.target), timeout]);
+    const image = await Promise.race([generate(controller.signal), timeout]);
     return { requestId, image: validateImage(image), generation: { mode: 'live', provider, model, requestedAspectRatio: ratio, promptUsed: prompt } };
   } catch (error) { throw mapProviderError(error); }
   finally { clearTimeout(timer); if (cancel) disconnected?.removeEventListener('abort', cancel); }

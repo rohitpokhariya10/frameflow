@@ -222,3 +222,25 @@ describe('Cloudflare transport cancellation and timeouts', () => {
     expect(fetch).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it('sends a real binary PNG multipart reference on adaptation, retaining normal response validation', async () => {
+  const { cloudflareAdaptProvider } = await import('./cloudflareImageProvider.js');
+  const { adaptArtwork } = await import('../services/aiService.js');
+  const bytes = mockPng(), data = bytes.toString('base64');
+  const fetch = intercept(async (input, init) => {
+    const received = new Request(input, init), body = await received.formData();
+    const reference = body.get('input_image_0') as File;
+    expect(reference).toBeInstanceOf(File); expect(reference.type).toBe('image/png'); expect(reference.name).toBe('reference.png');
+    expect(Buffer.from(await reference.arrayBuffer())).toEqual(bytes);
+    expect(body.get('width')).toBe('1024'); expect(body.get('height')).toBe('576');
+    expect([...body.keys()].sort()).toEqual(['height', 'input_image_0', 'prompt', 'width']);
+    expect(received.headers.get('authorization')).toBe(`Bearer ${token}`);
+    return Response.json({ success: true, result: { image: data } });
+  });
+  const request = { ...mockRequest, target: { width: 1600, height: 900 }, format: 'landscape' as const,
+    source: { projectId: 'project', variantId: 'original', revision: 1, assetId: 'source', width: 1080, height: 1350 },
+    referenceImage: { base64: data, mimeType: 'image/png' as const, width: 4, height: 5 } };
+  const result = await adaptArtwork(request, 'adapt-request', model, 1000, cloudflareAdaptProvider(account, token, model));
+  expect(result).toMatchObject({ requestId: 'adapt-request', image: { mimeType: 'image/png', width: 4, height: 5 } });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

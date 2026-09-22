@@ -5,12 +5,14 @@ import { AI_LIMITS, CANVAS_PRESETS, TEXT_LIMITS, type StyleBrief } from '@framef
 import { selectActiveVariant, useAppDispatch, useAppSelector, type RootState } from '../../store';
 import { generationStarted, generationReady, generationFailed, generationCleared } from '../../store/aiSlice';
 import { generatedDesignApplied } from '../../store/editorSlice';
-import { elementSelected } from '../../store/uiSlice';
+import { elementSelected, aiModeChanged } from '../../store/uiSlice';
 import { aiConfigured, generateDesign } from './api';
 import { composeText, emptyContent, quietRegion } from './composition';
 import { measureText } from '../../lib/layout/measureText';
 import { loadEditorFonts } from '../text/fonts';
 import { abortable, assets, storeGeneratedImage } from '../../lib/assets/runtimeAssets';
+
+import { AdaptPanel } from './AdaptPanel';
 
 const themes: StyleBrief[] = [
   { theme: 'Elegant wedding', palette: ['ivory', 'warm gold', 'soft sage'], motifs: ['delicate florals', 'ornamental details'], mood: 'romantic, refined, editorial' },
@@ -20,6 +22,16 @@ const themes: StyleBrief[] = [
   { theme: 'Luxury', palette: ['ivory', 'antique gold'], motifs: ['fine ornamental edges'], mood: 'understated elegance' },
 ];
 export function AIPanel() {
+  const dispatch = useAppDispatch();
+  const mode = useAppSelector((state) => state.ui.aiMode), busy = useAppSelector((state) => state.ai.status === 'generating');
+  const previewAssetId = useAppSelector((state) => state.ai.preview?.variant.background?.assetId);
+  return <div className="ai-tools"><div className="ai-mode-controls" role="group" aria-label="AI operation">{(['generate', 'adapt'] as const).map((value) => <button key={value} aria-pressed={mode === value} disabled={busy} onClick={() => {
+    if (value === mode) return;
+    dispatch(generationCleared()); dispatch(aiModeChanged(value));
+    if (previewAssetId) void assets.deleteAsset(previewAssetId).catch(() => undefined);
+  }}>{value === 'generate' ? 'Generate' : 'Adapt format'}</button>)}</div>{mode === 'adapt' ? <AdaptPanel /> : <GeneratePanel />}</div>;
+}
+function GeneratePanel() {
   const dispatch = useAppDispatch(); const store = useStore<RootState>();
   const variant = useAppSelector(selectActiveVariant);
   const ai = useAppSelector((state) => state.ai);
