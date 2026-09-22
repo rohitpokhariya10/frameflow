@@ -96,6 +96,17 @@ h1, h2, h3, p { margin: 0; }
 .design-note .eyebrow { font-size: 8px; letter-spacing: 1px; }
 .design-note p { color: var(--color-muted); font-size: 11px; line-height: 1.7; max-width: 175px; margin-top: 8px; }
 .design-panel-footer { padding: 17px 19px; display: flex; align-items: center; gap: 7px; border-top: 1px solid var(--color-line); color: var(--color-muted); font-size: 10px; }
+.new-design-action { color: var(--color-ink); background: white; }
+.design-panel-footer > span { margin-left: auto; }
+.new-design-dialog { margin: auto; width: min(440px, calc(100vw - 40px)); padding: 28px; border: 1px solid var(--color-line); border-radius: 12px; color: var(--color-ink); background: #fffefa; box-shadow: 0 20px 70px #182d2530; }
+.new-design-dialog::backdrop { background: #182d2566; }
+.new-design-dialog h2 { margin: 0 0 12px; font-size: 22px; font-weight: 500; }
+.new-design-dialog p { font-size: 13px; line-height: 1.7; color: var(--color-muted); }
+.reset-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.reset-confirm { background: #963b32; border-color: #963b32; color: white; }
+.reset-confirm:hover:not(:disabled) { background: #7c3029; }
+.reset-actions button:disabled { opacity: .6; cursor: wait; }
+.new-design-dialog .reset-error { color: #963b32; }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: #9cab91; }
 .upcoming-panel { padding: 35px 23px; }
 .upcoming-panel > svg { color: var(--color-primary); margin-bottom: 23px; }

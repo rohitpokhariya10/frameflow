@@ -13,7 +13,7 @@ const TABS = [
   { id: 'ai', label: 'AI', icon: Sparkles },
 ] as const;
 
-export function DesignPanel() {
+export function DesignPanel({ onNewDesign }: { onNewDesign: () => void }) {
   const dispatch = useAppDispatch();
   const variantId = useAppSelector(selectActiveVariant).id;
   const activeTab = useAppSelector((state) => state.ui.activeLeftTab);
@@ -43,7 +43,7 @@ export function DesignPanel() {
       <div className="tab-content" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
         {activeTab === 'design' ? <CanvasSettings key={variantId} /> : activeTab === 'text' ? <TextPanel /> : <AIPanel />}
       </div>
-      <div className="design-panel-footer"><span className="status-dot" />Your next idea starts here.</div>
+      <div className="design-panel-footer"><button id="new-design-action" className="button new-design-action" onClick={onNewDesign}>New design</button><span>Start fresh</span></div>
     </aside>
   );
 }

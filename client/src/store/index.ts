@@ -5,9 +5,11 @@ import { uiSlice, variantSelected } from './uiSlice';
 import { historyReducer, initialHistory, undo, redo } from './history';
 import { saveSlice } from './saveSlice';
 import { aiSlice, adaptationIsCurrent } from './aiSlice';
+import { projectReset } from './projectReset';
 
 const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer });
 function reducer(state: ReturnType<typeof combined> | undefined, action: UnknownAction) {
+  if (projectReset.match(action)) return { ...freshState(action.payload), save: { ...saveSlice.getInitialState(), status: 'saved' as const } };
   if (state && generatedDesignApplied.match(action) && action.payload.preview.sourceVersion !== state.editor.version) return state;
   if (state && variantSelected.match(action) && !state.editor.document.variants.some((item) => item.id === action.payload)) return state;
   if (state && adaptedDesignApplied.match(action) && !adaptationIsCurrent(action.payload.preview, state.editor.document, state.editor.version, state.ui.activeVariantId, state.ui.selectionVersion)) return state;
@@ -28,9 +30,10 @@ function reducer(state: ReturnType<typeof combined> | undefined, action: Unknown
   return next;
 }
 
+const freshState = (document: ReturnType<typeof createDocument>) => ({ editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState() });
 export const createEditorStore = (document = createDocument(crypto.randomUUID(), new Date().toISOString())) => configureStore({
   reducer,
-  preloadedState: { editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState() },
+  preloadedState: freshState(document),
 });
 export type EditorStore = ReturnType<typeof createEditorStore>;
 export type RootState = ReturnType<EditorStore['getState']>;

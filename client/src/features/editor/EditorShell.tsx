@@ -10,7 +10,7 @@ import { undo, redo } from '../../store/history';
 import { recoveryWarningChanged } from '../../store/saveSlice';
 import { ExportButton } from '../export/ExportButton';
 
-export function EditorShell() {
+export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
   const { canvas, id: variantId } = useAppSelector(selectActiveVariant);
   const adapting = useAppSelector((state) => Boolean(state.ai.preview?.adaptation));
   const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' && Boolean(state.ai.preview));
@@ -49,7 +49,7 @@ export function EditorShell() {
       </header>
       {save.warning && <div className="recovery-warning" role="alert"><span>{save.warning} New edits will replace the saved design.</span><button className="icon-button" aria-label="Dismiss recovery warning" onClick={() => dispatch(recoveryWarningChanged(''))}><X size={14} /></button></div>}
       <div className="editor-body">
-        <DesignPanel />
+        <DesignPanel onNewDesign={onNewDesign} />
         <CanvasWorkspace />
         <aside className={`properties-panel ${selected ? 'has-selection' : ''}`} aria-label="Properties">
           {selected ? <TextInspector key={`${variantId}-${selected.id}`} element={selected} /> : <>

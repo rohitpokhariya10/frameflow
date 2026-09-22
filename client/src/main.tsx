@@ -19,7 +19,7 @@ if (import.meta.hot) import.meta.hot.dispose(() => {
 });
 root.render(<div className="font-loading" role="status">Preparing your workspace…</div>);
 void loadEditorFonts().then(() => {
-  root.render(<React.StrictMode><Provider store={store}><App /></Provider></React.StrictMode>);
+  root.render(<React.StrictMode><Provider store={store}><App session={session} /></Provider></React.StrictMode>);
 }).catch(() => {
   root.render(<div className="font-loading" role="alert"><p>We couldn’t load the editor fonts.</p><button className="button" onClick={() => location.reload()}>Try again</button></div>);
 });

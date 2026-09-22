@@ -1,6 +1,29 @@
 # Implementation status
 
-Latest status: **2026-09-22**. **Milestones 0–7, PNG export, editable design name and final AI prompt/UI hardening are implemented.** Production uses the existing [same-origin Render service](https://frameflow-h7fa.onrender.com), serving the Vite frontend and Express `/api` with Cloudflare Workers AI. The final release verification below supersedes historical undeployed-status statements and test counts in earlier entries.
+Latest status: **2026-09-22**. **Milestones 0–7, PNG export, editable design name, final AI hardening and confirmed New design/reset are implemented.** Production uses the existing [same-origin Render service](https://frameflow-h7fa.onrender.com), serving the Vite frontend and Express `/api` with Cloudflare Workers AI. The latest reset verification and final release records below supersede historical undeployed-status statements and earlier test counts.
+
+## New design/reset — verified complete
+
+- Resumed clean `d015aea` and added only the current-project reset flow. **New design** lives in the left panel footer, visible from Design/Text/AI, with the top bar unchanged. The native modal uses an accessible title/description, initial Cancel focus, explicit Tab/Shift+Tab containment, Escape cancellation, focus return and a differentiated destructive **Start new design** button. Cancel/Escape preserve the document and preview.
+- Reuses `createDocument` and shared store initialization: new project ID, **New design**, the existing **1080×1350** empty Poster, one original variant, no text/artwork/selection. Root reset clears both history stacks, edit grouping, AI request/preview/error state and UI state. Keying the editor shell by project ID clears local drafts and invokes existing AI AbortController unmount cleanup; old request IDs/project IDs cannot publish or apply late results.
+- Persistence writes the validated fresh document synchronously before changing the store or deleting artwork. Successful replacement invalidates the old debounce/timer and pending save; the subscription does not schedule an old snapshot. A failed fresh save leaves old state, history, assets and pending saves intact, with an actionable dialog error.
+- Asset cleanup derives a deduplicated set of background/source-reference IDs from the current document, undo/redo snapshots and generation/adaptation preview. It calls the existing per-ID repository deletion, never clears/enumerates an entire database, and preserves unrelated assets/storage. Existing abort handling also removes an in-flight artwork write that finishes after cancellation. Cleanup failures are reported with **Retry cleanup**; successfully saved fresh state remains intact and retry does not create another project. Retry IDs are retained for the current browser session.
+- Focused coverage: **6 Unit/state/persistence tests** and **10 browser tests** at both sizes. Browser scenarios build a renamed generated project, applied adapted version and unapplied preview, check dialog semantics and cancellation, reset, inspect real IndexedDB cleanup, verify no history resurrection, refresh, create/edit fresh text and export. Separate cases cover delayed generation/adaptation responses, fresh-save failure, pending edits and retrying failed preview-asset deletion. Unrelated storage/assets survive.
+- Visual review passed at **1366×768 and 1440×900**: discoverable compact footer action, centered readable modal with visible focus/destructive action, and clean usable default editor after reset. Screenshots remain ignored test artifacts. No live Cloudflare calls were made for this feature.
+- Verification environment: an unrelated app occupied development port 5173. The first attempt reached that app and was excluded from verification; the complete FrameFlow development suite passed using an isolated Vite instance on 127.0.0.1:5175 with the standard backend and unchanged tests. API tests required local HTTP binding permission; the subsequent authorized full run passed.
+
+| Check | Actual result |
+| --- | --- |
+| Typecheck | Passed |
+| Lint | Passed |
+| Unit/API | **342 passed across 27 files** |
+| Build | Passed |
+| Development browser | **134 passed** |
+| Production browser | **134 passed** |
+
+- Final security/artifact review scanned **123 tracked/new files** against configured credential values without exposing them: no matches, forbidden artifacts, whitespace errors or broken local documentation links. Real environment files remain ignored and unchanged. Temporary port configuration and test artifacts are excluded from the commit.
+- Continuation review preserved all 15 changed/new files without code/test edits. The immediately preceding full production run completed with **134 passed**. An additional requested production rerun was blocked by automatic approval review due to the account usage limit (reported retry time 7:26 PM); it did not execute. The successful 342 Unit/API, 134 development, 134 production, typecheck, lint and build results above remain the actual immediately prior verification results. Fresh continuation whitespace review passed.
+- **New design/reset implementation and verification are complete.** Delivery uses `feat: add new design reset flow`; the commit hash, push result and clean-tree verification are reported on delivery. No live provider request was needed.
 
 ## Final release hardening
 

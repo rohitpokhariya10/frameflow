@@ -201,6 +201,8 @@ The project JSON—including its title, text, variants, and asset IDs—is saved
 
 History retains up to **30 meaningful document operations**. Typing and numeric editing sessions are grouped; drag, width resize, Auto Layout, rename, and AI Apply have clear commit boundaries. Selection, tabs, and zoom do not fill history. Use the top-bar buttons or Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z outside typing controls.
 
+**New design** in the left panel footer requires confirmation before clearing the current device-local project and its referenced artwork. It saves a fresh default document, clears Undo/Redo and AI previews, and leaves unrelated storage and application configuration alone.
+
 Refresh restores the document and artwork, opens the first variant, and starts with empty history. This is **browser-local persistence**, not cloud sync or a backup. Invalid saved documents produce a recovery warning; missing artwork leaves usable text available.
 
 [Persistence, history, and asset lifecycle](docs/PERSISTENCE_AND_HISTORY.md)
@@ -352,19 +354,19 @@ TRUST_PROXY_HOPS=1
 
 ## Verification and Testing
 
-The latest full verification, recorded on **22 September 2026** for application commit **`02c8850`**, produced:
+The latest full verification, recorded on **22 September 2026** for the **New design/reset implementation**, produced:
 
 | Check | Verified result |
 | --- | --- |
-| Full Unit/API suite | **336 passed across 26 files** |
-| Development browser suite | **124 passed** |
-| Built production browser suite | **124 passed** |
+| Full Unit/API suite | **342 passed across 27 files** |
+| Development browser suite | **134 passed** |
+| Built production browser suite | **134 passed** |
 | Typecheck | Passed |
 | Lint | Passed |
 | Build | Passed |
 | Focused design-title checks | **3 store + 8 browser tests passed**; also included in full suites |
 
-Browser suites and visual review cover **1366×768** and **1440×900**. Coverage includes canvas sizing, real text rendering and pointer interactions, Auto Layout, save/recovery, history, mocked generation/adaptation, stale results, variants, exact PNG output, and title editing.
+Browser suites and visual review cover **1366×768** and **1440×900**. Coverage includes canvas sizing, real text rendering and pointer interactions, Auto Layout, save/recovery, history, mocked generation/adaptation, stale results, variants, exact PNG output, title editing, and confirmed project reset with pending-save/late-AI protection.
 
 To run browser verification:
 
@@ -377,7 +379,7 @@ PLAYWRIGHT_PRODUCTION=1 npm run test:e2e
 
 Use `PLAYWRIGHT_CHANNEL=chrome` with either test command when using installed Chrome instead of bundled Chromium. Stop an independently running development backend before production verification so the suite starts the built Express server. Screenshots and traces are ignored test artifacts.
 
-**Automated provider operations are mocked.** The built production count is against the locally built app. A separate full run against the deployed Render service also passed **124 tests**, with every AI provider call mocked. The hosted page and `/api/health` returned HTTP 200; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. Final screenshot review covered both desktop sizes, including long document titles, inspector/Auto Layout, AI forms, loading/error states, composed comparison and version switching.
+**Automated provider operations are mocked.** The built production count is against the locally built app. The preceding AI release (`02c8850`) also passed a separate full run of **124 tests** against the deployed Render service, with every AI provider call mocked. The hosted page and `/api/health` returned HTTP 200; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. Final screenshot review covered both desktop sizes, including long document titles, inspector/Auto Layout, AI forms, loading/error states, composed comparison and version switching.
 
 ## Real AI Verification
 

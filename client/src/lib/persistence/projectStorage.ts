@@ -36,6 +36,12 @@ export function createProjectSaver(storage: StorageAccess, onStatus: (status: Sa
     catch { if (token === request) onStatus('error'); }
   };
   return {
+    replace(document: ProjectDocument) {
+      // Synchronous: on failure leave the old pending save and project intact.
+      saveProject(storage, document);
+      clearTimeout(timer); pending = undefined; request++;
+      onStatus('saved');
+    },
     schedule(document: ProjectDocument) {
       pending = document;
       const token = ++request;
