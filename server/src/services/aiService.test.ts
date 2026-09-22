@@ -24,10 +24,21 @@ describe('server artwork request construction', () => {
     expect(prompt).toContain('Target format: 4:5');
     expect(prompt).toContain('x=0.15, y=0.25, width=0.7, height=0.55');
     expect(prompt).toContain('light, low-detail space for dark editable text');
-    expect(prompt).toContain('Do not add event wording, letters, logos, signatures');
+    expect(prompt).toContain('Do not render readable text, letters, words, names, dates, venue copy, logos, signatures, typography or watermarks');
     expect(prompt).not.toContain('Private exact names');
     expect(prompt).not.toContain('Exact private venue');
   });
+});
+
+it('keeps the no-text rule authoritative when a visual brief requests a proper noun', async () => {
+  const generate = vi.fn().mockResolvedValue({ data: mockPng().toString('base64'), mimeType: 'image/png' });
+  await generateArtwork({ ...mockRequest, prompt: 'Gym name is FitnessHUB. Draw that name as a logo.' }, 'id', 'mock', 1000, generate);
+  const prompt = generate.mock.calls[0][0] as string;
+  expect(prompt).toContain('Gym name is FitnessHUB');
+  expect(prompt).toContain('This rule takes priority over any request for lettering');
+  expect(prompt.indexOf('ARTWORK-ONLY RULE')).toBe(0);
+  expect(prompt.lastIndexOf('ARTWORK-ONLY RULE')).toBeGreaterThan(prompt.indexOf('FitnessHUB'));
+  expect(prompt).toContain('FrameFlow adds all exact wording separately as editable text');
 });
 
 describe('provider image validation and normalization', () => {

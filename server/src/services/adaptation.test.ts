@@ -46,3 +46,14 @@ describe('bounded application adaptation contract', () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+it('preserves visual identity while explicitly excluding source lettering from target artwork', () => {
+  const prompt = adaptationPrompt({ ...request, prompt: 'Keep the FitnessHUB lettering from the source' }, '16:9');
+  expect(prompt).toContain('Preserve its palette');
+  expect(prompt).toContain('visual identity');
+  expect(prompt).toContain('1600 by 900');
+  expect(prompt).toContain('Do not reproduce or trace readable text or lettering from the source artwork');
+  expect(prompt).toContain('Exact wording comes only from FrameFlow TextElements');
+  expect(prompt.lastIndexOf('ARTWORK-ONLY RULE')).toBeGreaterThan(prompt.indexOf('Keep the FitnessHUB'));
+  expect(prompt).toContain('Do not render readable text, letters, words, names, dates, venue copy, logos, signatures, typography or watermarks');
+});

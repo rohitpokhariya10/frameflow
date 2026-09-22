@@ -15,9 +15,11 @@ export function aspectRatio(width: number, height: number) {
     return distance(ratio) < distance(best) ? ratio : best;
   });
 }
+const ARTWORK_ONLY = 'ARTWORK-ONLY RULE: Do not render readable text, letters, words, names, dates, venue copy, logos, signatures, typography or watermarks. FrameFlow adds all exact wording separately as editable text. This rule takes priority over any request for lettering in the visual brief or style fields; use those fields only for visual style, mood and decoration.';
+
 export function artworkPrompt(request: GenerateRequest, ratio: string) {
   const { styleBrief: s, quietRegion: q } = request;
-  return `Create background artwork for an editable ${s.theme} design.\nVisual direction: ${request.prompt}\nPalette: ${s.palette.join(', ')}.\nMotifs: ${s.motifs.join(', ')}.\nMood: ${s.mood}.\nTarget format: ${ratio}.\nReserve the normalized rectangle x=${q.x}, y=${q.y}, width=${q.width}, height=${q.height} as calm, light, low-detail space for dark editable text added by the application. Keep decorative elements away from this region.\nDo not add event wording, letters, logos, signatures, or visible watermarks to the artwork.`;
+  return `${ARTWORK_ONLY}\nCreate background artwork for an editable ${s.theme} design.\nVisual direction: ${request.prompt}\nPalette: ${s.palette.join(', ')}.\nMotifs: ${s.motifs.join(', ')}.\nMood: ${s.mood}.\nTarget format: ${ratio}.\nReserve the normalized rectangle x=${q.x}, y=${q.y}, width=${q.width}, height=${q.height} as calm, light, low-detail space for dark editable text added by the application. Keep decorative elements away from this region.\n${ARTWORK_ONLY}`;
 }
 export function validateImage(image: ProviderImage): ImageResponse['image'] {
   if (!IMAGE_MIMES.includes(image.mimeType as ImageMime) || !image.data || image.data.length > Math.ceil(AI_LIMITS.imageBytes / 3) * 4
@@ -96,7 +98,7 @@ export function adaptationPrompt(request: AdaptRequest, ratio: string) {
     : request.format === 'square' ? 'Use a compact balanced square composition with decoration around the perimeter and a calm center.'
       : request.format === 'custom' ? 'Recompose naturally for the custom target frame and keep the reserved text region calm.'
         : 'Use a vertical composition with decorative borders or corners and a calm centered text region.';
-  return `Use the supplied source artwork as the visual reference. Preserve its palette, floral/decorative motifs, mood, lighting, artistic treatment and visual identity. Recompose naturally for ${request.target.width} by ${request.target.height} (${ratio}). ${composition} Extend or rearrange the artwork; do not merely stretch or crop the original.\n${artworkPrompt(request, ratio)}\nDo not include letters, words, names, dates, logos, signatures or typography.`;
+  return `Use the supplied source artwork as the visual reference. Preserve its palette, floral/decorative motifs, mood, lighting, artistic treatment and visual identity. Recompose naturally for ${request.target.width} by ${request.target.height} (${ratio}). ${composition} Extend or rearrange the artwork; do not merely stretch or crop the original.\n${artworkPrompt(request, ratio)}\nDo not reproduce or trace readable text or lettering from the source artwork, even if it appears in the reference. Remove source lettering and replace it with decorative detail or useful negative space. Exact wording comes only from FrameFlow TextElements.\n${ARTWORK_ONLY}`;
 }
 export function generateArtwork(request: GenerateRequest, requestId: string, model: string, timeoutMs: number, generate: GenerateImage, disconnected?: AbortSignal, provider: ImageProvider = 'gemini'): Promise<ImageResponse> {
   const ratio = aspectRatio(request.target.width, request.target.height);

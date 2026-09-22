@@ -45,11 +45,11 @@ async function mockImage(page: Page): Promise<ImageResponse> {
     generation: { mode: 'live', provider: 'cloudflare', model: 'mocked-e2e-provider', requestedAspectRatio: '16:9', promptUsed: 'Mocked background-artwork request; no event wording.' } };
 }
 async function fillPrompt(page: Page) {
-  await page.getByLabel('Visual theme').fill(visualPrompt);
+  await page.getByLabel('Artwork direction').fill(visualPrompt);
   await page.getByLabel('Preview format').selectOption('landscape');
 }
 async function fillContent(page: Page) {
-  await page.getByText('Exact event wording', { exact: false }).click();
+  await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
   for (const [role, value] of Object.entries(exactContent)) await page.getByLabel(`Event ${role}`, { exact: true }).fill(value);
 }
 async function assetRecords(page: Page) {
@@ -108,7 +108,7 @@ test('mocked generation previews before one atomic apply, preserves exact editab
     await responseReady; await fulfillImage(route, response);
   });
   await page.getByRole('button', { name: 'Generate design', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Describe your visual theme');
+  await expect(page.getByRole('alert')).toContainText('Describe the artwork');
   expect(requests).toBe(0);
   await fillPrompt(page); await fillContent(page);
   await page.getByRole('button', { name: 'Generate design', exact: true }).click();
@@ -116,7 +116,7 @@ test('mocked generation previews before one atomic apply, preserves exact editab
   const loadingBounds = await page.getByText('Creating your design…', { exact: true }).boundingBox();
   const actionBounds = await page.getByRole('button', { name: 'Cancel generation', exact: true }).boundingBox();
   expect(loadingBounds!.y + loadingBounds!.height).toBeLessThan(actionBounds!.y);
-  await expect(page.getByLabel('Visual theme')).toBeDisabled();
+  await expect(page.getByLabel('Artwork direction')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Cancel generation', exact: true })).toBeVisible();
   expect(await documentJSON(page)).toBe(original);
   await page.screenshot({ path: testInfo.outputPath('ai-mocked-loading.png'), fullPage: true });
@@ -202,10 +202,10 @@ test('mocked preview restores its form across tabs and regeneration preserves ex
   expect((await artworkState(page)).texts.map((node) => node.text)).toEqual(['Keep this existing design']);
   expect((await artworkState(page)).image).toBeNull();
   await page.getByRole('tab', { name: 'AI', exact: true }).click();
-  await expect(page.getByLabel('Visual theme')).toHaveValue(visualPrompt);
+  await expect(page.getByLabel('Artwork direction')).toHaveValue(visualPrompt);
   await expect(page.getByLabel('Preview format')).toHaveValue('landscape');
   await expect(page.getByRole('button', { name: 'Floral', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByText('Exact event wording', { exact: false }).click();
+  await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
   for (const [role, value] of Object.entries(exactContent)) await expect(page.getByLabel(`Event ${role}`, { exact: true })).toHaveValue(value);
   await page.getByRole('button', { name: 'Regenerate', exact: true }).click();
   await expect.poll(() => requests).toBe(2);

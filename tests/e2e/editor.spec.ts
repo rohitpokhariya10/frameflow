@@ -96,7 +96,7 @@ test('upcoming actions are truthful and keyboard tabs work', async ({ page }) =>
   await page.getByRole('button', { name: /Create with AI/ }).click();
   await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: 'Set the atmosphere.' })).toBeVisible();
-  await expect(page.getByLabel('Visual theme')).toBeVisible();
+  await expect(page.getByLabel('Artwork direction')).toBeVisible();
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
 });
 

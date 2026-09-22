@@ -17,16 +17,16 @@ async function image(page: Page, width: number, height: number): Promise<ImageRe
   return { requestId: 'mocked-adaptation', image: { base64, width, height, mimeType: 'image/png' },
     generation: { mode: 'live', provider: 'cloudflare', model: 'mocked-reference-model', requestedAspectRatio: '16:9', promptUsed: 'Use reference artwork. Recompose with quiet text space.' } };
 }
-async function sourceDesign(page: Page) {
+async function sourceDesign(page: Page, content = wording) {
   // Every source generation and adaptation is explicitly mocked in this suite.
   await page.route('**/api/health', (route) => route.fulfill({ json: { status: 'ok', provider: 'cloudflare', aiConfigured: true, aiAvailable: true } }));
   await page.goto('/');
   const original = await image(page, 816, 1024), target = await image(page, 640, 360);
   await page.route('**/api/ai/generate', (route) => route.fulfill({ json: original }));
   await page.getByRole('tab', { name: 'AI', exact: true }).click();
-  await page.getByLabel('Visual theme', { exact: true }).fill('Ivory florals and antique gold, with a calm center');
-  await page.getByText('Exact event wording', { exact: false }).click();
-  for (const [role, text] of Object.entries(wording)) await page.getByLabel(`Event ${role}`, { exact: true }).fill(text);
+  await page.getByLabel('Artwork direction', { exact: true }).fill('Ivory florals and antique gold, with a calm center');
+  await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
+  for (const [role, text] of Object.entries(content)) await page.getByLabel(`Event ${role}`, { exact: true }).fill(text);
   await page.getByRole('button', { name: 'Generate design', exact: true }).click();
   await page.getByRole('button', { name: 'Use this design', exact: true }).click(); await saved(page);
   await page.getByRole('button', { name: 'Adapt format', exact: true }).click();
@@ -136,4 +136,40 @@ for (const failure of ['provider', 'reference', 'storage'] as const) test(`mocke
   await expect(page.getByRole('alert').filter({ hasText: failure === 'provider' ? 'usage limit' : failure === 'reference' ? 'prepare the source' : 'store the artwork' })).toBeVisible();
   expect(await documentJSON(page)).toBe(original); expect(calls).toBe(failure === 'reference' ? 0 : 1);
   expect(await assetInfo(page)).toHaveLength(1); await expect(page.getByRole('button', { name: 'Use this version' })).toHaveCount(0);
+});
+
+
+test('mocked FitnessHUB stays editable above text-free artwork through adaptation and recovery', async ({ page }) => {
+  const content = { eyebrow: '', title: 'FitnessHUB', date: '', venue: 'Grand Opening' };
+  const requests: unknown[] = [];
+  page.on('request', (request) => { if (request.url().includes('/api/ai/')) requests.push(request.postDataJSON()); });
+  // Fixtures contain only colored rectangles: neither image carries FitnessHUB in its pixels.
+  const { original, target } = await sourceDesign(page, content);
+  const source = (await project(page)).variants[0], beforeAssets = await assetInfo(page);
+  expect(source.elements.map((element) => element.text)).toEqual(['FitnessHUB', 'Grand Opening']);
+  await page.route('**/api/ai/adapt', (route) => route.fulfill({ json: target }));
+  await page.getByRole('button', { name: 'Adapt artwork', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Use this version', exact: true })).toBeEnabled();
+  expect(await previewText(page)).toEqual([['FitnessHUB', 'Grand Opening'], ['FitnessHUB', 'Grand Opening']]);
+  expect(await documentJSON(page)).toBe(original);
+  expect(JSON.stringify(requests)).not.toMatch(/FitnessHUB|Grand Opening/);
+  await page.getByRole('button', { name: 'Use this version', exact: true }).click(); await saved(page);
+  const applied = await project(page), adapted = applied.variants[1];
+  expect(applied.variants).toHaveLength(2); expect(applied.variants[0]).toEqual(source);
+  expect(adapted.canvas).toMatchObject({ width: 1600, height: 900 });
+  expect(adapted.elements.map(({ id, text }) => [id, text])).toEqual(source.elements.map(({ id, text }) => [id, text]));
+  await page.getByRole('button', { name: 'Undo', exact: true }).click(); await saved(page);
+  expect(await documentJSON(page)).toBe(original);
+  await page.getByRole('button', { name: 'Redo', exact: true }).click(); await saved(page);
+  expect(await project(page)).toEqual(applied); expect(requests).toHaveLength(2);
+  await page.reload(); await saved(page);
+  expect(await project(page)).toEqual(applied);
+  await page.getByLabel('Active version').selectOption(adapted.id);
+  await page.getByRole('tab', { name: 'Text', exact: true }).click();
+  await page.getByRole('list', { name: 'Text elements' }).getByRole('button', { name: /FitnessHUB/ }).click();
+  await expect(page.getByLabel('Text content')).toHaveValue('FitnessHUB');
+  await page.getByLabel('Text content').fill('FitnessHUB edited'); await page.getByLabel('Text content').blur(); await saved(page);
+  expect((await project(page)).variants[0]).toEqual(source);
+  expect((await project(page)).variants[1].elements.some((element) => element.text === 'FitnessHUB edited')).toBe(true);
+  expect(await assetInfo(page)).toEqual(expect.arrayContaining(beforeAssets)); expect(requests).toHaveLength(2);
 });
