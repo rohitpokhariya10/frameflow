@@ -3,7 +3,7 @@ import type { AdaptRequest, ImageResponse, ProjectDocument } from '@frameflow/sh
 import type { Stage } from 'konva/lib/Stage';
 import type { Text } from 'konva/lib/shapes/Text';
 const key = 'frameflow:project:v1';
-const wording = { eyebrow: '  Together with family  ', title: 'Aarav & Meera\n♥', date: '12 December 2026 · 7:00 PM', venue: 'The Grand Royal Wedding Palace, Connaught Place, New Delhi, India' };
+const wording = { eyebrow: '  Together with family  ', title: 'Aarav & Meera\n♥', date: '2026-12-12', venue: 'The Grand Royal Wedding Palace, Connaught Place, New Delhi, India' };
 const saved = (page: Page) => expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
 const documentJSON = (page: Page) => page.evaluate((storageKey) => localStorage.getItem(storageKey)!, key);
 async function project(page: Page): Promise<ProjectDocument> { return JSON.parse(await documentJSON(page)); }
@@ -26,7 +26,7 @@ async function sourceDesign(page: Page, content = wording) {
   await page.getByRole('tab', { name: 'AI', exact: true }).click();
   await page.getByLabel('Artwork direction', { exact: true }).fill('Ivory florals and antique gold, with a calm center');
   await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
-  for (const [role, text] of Object.entries(content)) await page.getByLabel(`Event ${role}`, { exact: true }).fill(text);
+  for (const [role, text] of Object.entries(content)) await page.getByLabel(role === 'date' ? 'Date' : `Event ${role}`, { exact: true }).fill(text);
   await page.getByRole('button', { name: 'Generate design', exact: true }).click();
   await page.getByRole('button', { name: 'Use this design', exact: true }).click(); await saved(page);
   await page.getByRole('button', { name: 'Adapt format', exact: true }).click();
@@ -61,7 +61,7 @@ test('mocked reference adaptation preserves exact content through comparison, at
   await page.getByRole('button', { name: 'Adapt artwork', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Use this version', exact: true })).toBeEnabled();
   expect(requests).toBe(1); expect(request).toMatchObject({ format: 'landscape', target: { width: 1600, height: 900 }, source: { variantId: 'original', width: 1080, height: 1350 }, referenceImage: { mimeType: 'image/png', width: 407, height: 511 } });
-  expect(JSON.stringify(request)).not.toContain('Aarav'); expect(request?.referenceImage.base64.length).toBeGreaterThan(100);
+  expect(JSON.stringify(request)).not.toContain(wording.date); expect(JSON.stringify(request)).not.toContain('Aarav'); expect(request?.referenceImage.base64.length).toBeGreaterThan(100);
   expect(await documentJSON(page)).toBe(original);
   const sourceFrame = await page.getByTestId('source-frame').boundingBox(), targetFrame = await page.getByTestId('target-frame').boundingBox();
   expect(sourceFrame!.width / sourceFrame!.height).toBeCloseTo(.8, 2); expect(targetFrame!.width / targetFrame!.height).toBeCloseTo(1600 / 900, 2);
@@ -83,6 +83,12 @@ test('mocked reference adaptation preserves exact content through comparison, at
   await page.reload(); await saved(page); expect(await documentJSON(page)).toBe(applied);
   await page.getByLabel('Active version').selectOption(adapted.id); await expect(page.getByTestId('canvas-dimensions')).toHaveText('1600 × 900 px');
   await page.getByRole('tab', { name: 'Text', exact: true }).click();
+  await page.getByRole('list', { name: 'Text elements' }).getByRole('button').filter({ hasText: wording.date }).click();
+  await expect(page.getByLabel('Text content')).toHaveValue(wording.date);
+  await page.getByLabel('Text content').fill('12 December 2026 · 7 PM'); await page.getByLabel('Text content').blur(); await saved(page);
+  expect((await project(page)).variants[0]).toEqual(source);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click(); await saved(page);
+  await expect(page.getByLabel('Text content')).toHaveValue(wording.date);
   await page.getByRole('button', { name: /Aarav & Meera/ }).click();
   await expect(page.getByLabel('Text content')).toHaveValue(wording.title);
   await page.getByLabel('Text content').fill(wording.title + ' editable'); await page.getByLabel('Text content').blur(); await saved(page);

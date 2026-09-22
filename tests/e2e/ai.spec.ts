@@ -11,7 +11,7 @@ const visualPrompt = 'Ivory botanical borders with warm gold details and a quiet
 const exactContent = {
   eyebrow: 'Together, with family',
   title: 'Aarav & Meera\nA celebration',
-  date: '12 December 2026 · 7:00 PM',
+  date: '2026-12-12',
   venue: 'The Grand Royal Wedding Palace, Connaught Place, New Delhi, India',
 };
 const saved = (page: Page) => expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
@@ -49,8 +49,12 @@ async function fillPrompt(page: Page) {
   await page.getByLabel('Preview format').selectOption('landscape');
 }
 async function fillContent(page: Page) {
+  const date = page.getByLabel('Date', { exact: true });
+  await expect(date).toHaveAttribute('type', 'date');
+  expect((await date.boundingBox())!.height).toBeLessThanOrEqual(40);
+  await date.fill('2026-11-01'); await date.fill(''); await expect(date).toHaveValue('');
   await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
-  for (const [role, value] of Object.entries(exactContent)) await page.getByLabel(`Event ${role}`, { exact: true }).fill(value);
+  for (const [role, value] of Object.entries(exactContent)) await page.getByLabel(role === 'date' ? 'Date' : `Event ${role}`, { exact: true }).fill(value);
 }
 async function assetRecords(page: Page) {
   return page.evaluate(async () => {
@@ -165,6 +169,8 @@ test('mocked generation previews before one atomic apply, preserves exact editab
   await expect(page.getByTestId('canvas-dimensions')).toHaveText('1600 × 900 px');
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
   await page.getByRole('tab', { name: 'Text', exact: true }).click();
+  await page.getByRole('list', { name: 'Text elements' }).getByRole('button').filter({ hasText: exactContent.date }).click();
+  await expect(page.getByLabel('Text content')).toHaveValue(exactContent.date);
   await page.getByRole('list', { name: 'Text elements' }).getByRole('button').filter({ hasText: exactContent.title.split('\n')[0] }).click();
   await expect(page.getByLabel('Text content')).toHaveValue(exactContent.title);
   await page.getByLabel('Text content').fill('Still editable after recovery');
@@ -206,7 +212,7 @@ test('mocked preview restores its form across tabs and regeneration preserves ex
   await expect(page.getByLabel('Preview format')).toHaveValue('landscape');
   await expect(page.getByRole('button', { name: 'Floral', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByLabel('Event title', { exact: true })).toBeVisible();
-  for (const [role, value] of Object.entries(exactContent)) await expect(page.getByLabel(`Event ${role}`, { exact: true })).toHaveValue(value);
+  for (const [role, value] of Object.entries(exactContent)) await expect(page.getByLabel(role === 'date' ? 'Date' : `Event ${role}`, { exact: true })).toHaveValue(value);
   await page.getByRole('button', { name: 'Regenerate', exact: true }).click();
   await expect.poll(() => requests).toBe(2);
   await expect(page.getByRole('button', { name: 'Use this design', exact: true })).toBeVisible();
