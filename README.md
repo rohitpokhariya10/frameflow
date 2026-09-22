@@ -42,7 +42,7 @@ Custom canvases accept integer sides from **256–4096 px**, with a maximum area
 | Share a live application | Single Render service serving the editor and API | Deployed; hosted browser regression verified |
 | Provide source and approach | This repository, architecture diagrams, and engineering notes | Available |
 
-The [master brief](FreshFolks-Assessment-Master-Brief.md) records the original specification. The delivered AI integration uses Cloudflare; Gemini remains an alternate generation adapter, not the production provider.
+The delivered AI integration uses Cloudflare; Gemini remains an alternate generation adapter, not the production provider.
 
 ## Quick Reviewer Demo
 
@@ -411,8 +411,7 @@ is controlled by FrameFlow.
 
 Provider artwork resolution is separate from the document's logical dimensions.
 FrameFlow records actual returned dimensions and fits/crops artwork proportionally
-without stretching; PNG export uses the exact logical canvas size. Current release
-evidence is in [Implementation status](IMPLEMENTATION_STATUS.md); the
+without stretching; PNG export uses the exact logical canvas size. The
 [generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) notes
 retain detailed earlier milestone checks.
 
@@ -441,7 +440,6 @@ retain detailed earlier milestone checks.
 - [AI adaptation](docs/AI_ADAPTATION.md) — source reference processing, exact text, variants, and live comparison
 - [Auto Layout](docs/AUTO_LAYOUT.md) — measurement, fitting policy, and invariants
 - [Persistence and history](docs/PERSISTENCE_AND_HISTORY.md) — recovery, snapshots, and IndexedDB lifecycle
-- [Implementation status](IMPLEMENTATION_STATUS.md) — dated verification results and development history
 
 Detailed notes preserve historical milestone decisions and deployment plans. This README describes the current submission and single-service Render deployment.
 

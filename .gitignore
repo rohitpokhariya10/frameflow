@@ -9,3 +9,7 @@ test-results/
 .DS_Store
 *.tsbuildinfo
 *.log
+
+# Local assessment notes
+/FreshFolks-Assessment-Master-Brief.md
+/IMPLEMENTATION_STATUS.md

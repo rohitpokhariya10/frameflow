@@ -4,7 +4,7 @@ Milestone 5 supports two server-side image providers. The current environment se
 **Cloudflare Workers AI / @cf/black-forest-labs/flux-2-klein-4b**. The existing Gemini
 adapter remains intact; its live generation is blocked by this project's zero daily
 Free Tier quota. No automatic fallback occurs. Current live verification is recorded
-in `IMPLEMENTATION_STATUS.md`; historical Gemini failures are retained below.
+in the [README](../README.md#real-ai-verification); historical Gemini failures are retained below.
 
 ## Cloudflare selection and request mapping
 
@@ -215,7 +215,7 @@ set `CLIENT_ORIGIN=https://frameflow-h7fa.onrender.com`, configure the selected
 provider credentials/model/timeout, and use `TRUST_PROXY_HOPS=1`. Keep proxy trust
 0 for direct local access. Express respects Render's `PORT` and listens on
 `0.0.0.0`. The milestone evidence below is historical; current release verification
-is recorded in [Implementation status](../IMPLEMENTATION_STATUS.md).
+is recorded in [README](../README.md#verification-and-testing).
 
 ## Verification
 
@@ -225,7 +225,7 @@ by the test. That synthetic fixture is not a generated AI image or live evidence
 Tests cover preview-before-apply, exact wording, assets, layering, history, recovery,
 missing configuration, failures, stale work, and cancellation alongside prior editor
 regressions. Current command counts and visual-review results are recorded in
-[IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md).
+[README](../README.md#verification-and-testing).
 
 Final Cloudflare milestone regression: **273 unit/API tests across 18 files**, **72
 development browser tests**, and **72 production browser tests** passed, including

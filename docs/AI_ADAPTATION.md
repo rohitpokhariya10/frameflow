@@ -134,7 +134,7 @@ and complete browser comparison/apply/switch/reload flows at 1440Ã—900 and 1366Ã
 Final post-live checks passed: **310 unit/API tests across 22 files**, **86 development
 browser tests**, **86 production browser tests**, typecheck, lint and build. Each browser
 mode includes 14 adaptation checks and 22 existing generation checks at both desktop
-sizes. See [implementation status](../IMPLEMENTATION_STATUS.md). The live harness is outside source
+sizes. The live harness is outside source
 control, permits a single upstream reference request, blocks source generation/retries,
 and compares the browser-prepared reference hash with the binary multipart field before
 forwarding it. It reuses the real M5 artwork and its saved browser profile.
@@ -199,4 +199,4 @@ checks; it was not regenerated for aesthetic refinement.
 - One local project, at most 30 variants and 50 text elements per variant; browser storage
   can be cleared. History and selected-version preference are not persisted.
 - Exact-size PNG export, desktop polish and same-origin Render deployment are implemented.
-  See [Implementation status](../IMPLEMENTATION_STATUS.md) for current release verification.
+  See [README](../README.md#verification-and-testing) for current release verification.
