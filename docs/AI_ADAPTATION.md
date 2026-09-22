@@ -19,6 +19,8 @@ and keeps the source design available. Canvas resizing remains a separate local 
 5. The backend validates the shared runtime contract, canonical base64, signature,
    actual dimensions, declared dimensions, and byte bounds. It composes reference-aware
    instructions and invokes the `AdaptImage` capability. Output uses `ImageResponse`.
+   The prompt explicitly forbids reproducing or tracing source lettering; exact wording
+   comes from FrameFlow TextElements while the reference preserves visual identity.
 6. Independently copy and lay out every source TextElement. Fully decode/store returned
    artwork before publishing the composed preview. Apply adds one new variant.
 
@@ -196,4 +198,5 @@ checks; it was not regenerated for aesthetic refinement.
   not guarantee that remote processing/charging stops.
 - One local project, at most 30 variants and 50 text elements per variant; browser storage
   can be cleared. History and selected-version preference are not persisted.
-- Export, broad polish, deployment and submission remain later milestones.
+- Exact-size PNG export, desktop polish and same-origin Render deployment are implemented.
+  See [Implementation status](../IMPLEMENTATION_STATUS.md) for current release verification.

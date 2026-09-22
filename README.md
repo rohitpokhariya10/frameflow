@@ -18,7 +18,7 @@ The central decision is simple: **AI owns the artwork; FrameFlow owns the words.
 | Text editing | Add headings, subheadings, or body text; drag, resize width, edit typography, duplicate, and delete |
 | Frame-aware placement | Logical coordinates independent of zoom; overflow feedback and recoverable out-of-frame elements |
 | Auto Layout | Measure, wrap, reposition, and reduce text size only when necessary, without changing the wording |
-| AI generation | Describe a visual theme, add optional exact event wording, and review before applying |
+| AI generation | Describe artwork direction, add optional exact event wording, and review before applying |
 | AI adaptation | Recompose source artwork for another format and deterministically lay out copies of the exact text |
 | Variants | Keep the original and adapted design, compare them, and switch between editable versions |
 | Local recovery and history | Save the project and artwork in the browser; undo/redo meaningful edits |
@@ -39,7 +39,7 @@ Custom canvases accept integer sides from **256–4096 px**, with a maximum area
 | Adapt to another aspect ratio | Source-image reference plus a new target composition | Implemented; real portrait-to-landscape adaptation verified |
 | Preserve visual theme | Reference-conditioned palette, motifs, and mood | Visually verified; best-effort generative preservation |
 | Preserve exact editable content | App-controlled TextElements copied and reflowed separately from artwork | Exact strings and editability verified |
-| Share a live application | Single Render service serving the editor and API | Deployed; page and health endpoint checked |
+| Share a live application | Single Render service serving the editor and API | Deployed; hosted browser regression verified |
 | Provide source and approach | This repository, architecture diagrams, and engineering notes | Available |
 
 The [master brief](FreshFolks-Assessment-Master-Brief.md) records the original specification. The delivered AI integration uses Cloudflare; Gemini remains an alternate generation adapter, not the production provider.
@@ -51,7 +51,7 @@ Allow roughly 1–2 minutes of interaction, plus provider generation time. AI la
 1. Open the **[live app](https://frameflow-h7fa.onrender.com)** and choose **Poster** in Design.
 2. Click **Add heading**. In the inspector, replace its content with “The Grand Royal Wedding Palace, Connaught Place, New Delhi, India”. Set **X to 950** and **Y to 1250** to demonstrate overflow.
 3. Click **Auto Layout**. Observe the fitted text, then try Undo and Redo.
-4. Open **AI → Generate**. Use a visual theme such as “Ivory florals, warm gold ornamentation, soft romantic lighting”. Expand **Exact event wording** and enter a title, date, and venue there; these become the generated design's editable text.
+4. Open **AI → Generate**. Use an artwork direction such as “Ivory florals, warm gold ornamentation, soft romantic lighting”. In the expanded **Exact event wording** section, enter a title, date, and venue; these become the generated design's editable text.
 5. Click **Generate design**, inspect the preview, then **Use this design**. Applying generation replaces the active design's artwork and text with the preview; Undo restores the prior design.
 6. Choose **Adapt format → Landscape → Adapt artwork**. Compare Source and Target, then select **Use this version**.
 7. Switch versions, return to editing if comparison is open, and change the target venue to confirm it remains editable.
@@ -100,6 +100,8 @@ Redux stores serializable documents, asset IDs, UI metadata, and bounded history
 ## Why Artwork and Text Are Separate
 
 Image models can create visual compositions, but exact event copy needs a stronger guarantee than generated lettering. FrameFlow asks the model for decorative artwork and renders **names, dates, venues, headings, and supporting wording** itself as TextElements.
+
+The server repeats an authoritative artwork-only rule around the visual brief and explicitly excludes source lettering during adaptation. This discourages baked-in copy even when a visual brief requests a name or logo; model compliance is still best effort.
 
 Optional event-content fields stay in the client. During adaptation, every text string—including spaces and explicit newlines—is copied exactly. Font family, weight, and color are retained; geometry and font size can change to fit the target. The model receives the artwork reference and visual instructions, not the editable text elements.
 
@@ -350,13 +352,13 @@ TRUST_PROXY_HOPS=1
 
 ## Verification and Testing
 
-The latest full verification, recorded on **22 September 2026** for application commit **`75688d5`**, produced:
+The latest full verification, recorded on **22 September 2026** for application commit **`02c8850`**, produced:
 
 | Check | Verified result |
 | --- | --- |
-| Full Unit/API suite | **334 passed across 26 files** |
-| Development browser suite | **122 passed** |
-| Built production browser suite | **122 passed** |
+| Full Unit/API suite | **336 passed across 26 files** |
+| Development browser suite | **124 passed** |
+| Built production browser suite | **124 passed** |
 | Typecheck | Passed |
 | Lint | Passed |
 | Build | Passed |
@@ -375,24 +377,42 @@ PLAYWRIGHT_PRODUCTION=1 npm run test:e2e
 
 Use `PLAYWRIGHT_CHANNEL=chrome` with either test command when using installed Chrome instead of bundled Chromium. Stop an independently running development backend before production verification so the suite starts the built Express server. Screenshots and traces are ignored test artifacts.
 
-**Automated provider operations are mocked.** Production browser counts describe tests against the locally built production app, not 122 tests against the hosted service. The live Render page and `/api/health` returned HTTP 200 during this README review; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. These read-only checks did not make a generation request. The counts above are the latest recorded application results, not new test runs for this documentation edit.
+**Automated provider operations are mocked.** The built production count is against the locally built app. A separate full run against the deployed Render service also passed **124 tests**, with every AI provider call mocked. The hosted page and `/api/health` returned HTTP 200; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. Final screenshot review covered both desktop sizes, including long document titles, inspector/Auto Layout, AI forms, loading/error states, composed comparison and version switching.
 
 ## Real AI Verification
 
-Separate controlled checks previously exercised actual Cloudflare generation and adaptation through FrameFlow:
+The final release check exercised the deployed Render UI and Cloudflare
+`@cf/black-forest-labs/flux-2-klein-4b` with **FitnessHUB Opening**:
 
 | Operation | Observed result |
 | --- | --- |
-| Generation | **HTTP 200**, **JPEG 816×1024** artwork for a **1080×1350** logical poster |
-| Adaptation input | **PNG 407×511**, sent as actual binary `input_image_0` |
-| Adaptation output | **HTTP 200**, **JPEG 1024×576** for a **1600×900** logical landscape |
-| Request discipline | One successful generation; later one adaptation reusing that source, with zero additional source generations and no retries in those successful checks |
+| Generation | **HTTP 200**, **JPEG 816×1024**, for a **1080×1350** logical poster |
+| Adaptation input | Actual source artwork thumbnail: **PNG 407×511**, **255,351 bytes**; the tested server adapter sends binary `input_image_0` |
+| Adaptation output | **HTTP 200**, **JPEG 1024×576**, for a **1600×900** logical landscape |
+| Exact editable text | **Grand Opening** and **FitnessHUB** preserved in source and target TextElements and composed comparison |
+| PNG export | Poster **1080×1350** and landscape **1600×900**, without editor controls |
+| Request discipline | **One live generation + one live adaptation; no provider retries** |
 
-Verification covered actual response/decode, IndexedDB Blob storage, preview-before-Apply, editable wording, refresh recovery, and Undo/Redo without another provider request. The adaptation check additionally confirmed unchanged source artwork, identical text strings, both variants, switching, target editing, and atomic Apply.
+Preview-before-Apply, source preservation and atomic Undo/Redo passed in the live
+flow. A browser-session closure interrupted the subsequent adaptation download
+check. Recovery verification replayed the already returned adaptation locally,
+with all live AI requests blocked, then passed Apply/history, inspector editing,
+source/target switching, refresh, a fresh browser restart and landscape export. The original artwork's
+SHA-256 remained unchanged. This recovery did not regenerate artwork.
 
-Provider artwork resolution is separate from the document's logical dimensions. FrameFlow bounds provider requests, records actual returned dimensions, and fits/crops artwork proportionally without stretching. The exported PNG still uses the exact logical canvas size.
+Visual review found black/gold geometric identity preserved in a recomposed
+landscape with more open space on the right, rather than stretched source pixels.
+Neither raw image contained readable lettering. Decoration still crosses part of
+the default title position in both results; manual repositioning can improve
+contrast. The no-text/quiet-space prompt is best effort, while exact text preservation
+is controlled by FrameFlow.
 
-The real checks establish working generation and reference-based recomposition, not a guarantee of identical style on every request. No new live AI requests were made for this README update. Detailed evidence remains in the [generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) notes.
+Provider artwork resolution is separate from the document's logical dimensions.
+FrameFlow records actual returned dimensions and fits/crops artwork proportionally
+without stretching; PNG export uses the exact logical canvas size. Current release
+evidence is in [Implementation status](IMPLEMENTATION_STATUS.md); the
+[generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) notes
+retain detailed earlier milestone checks.
 
 ## Security
 

@@ -125,8 +125,12 @@ A text-only or empty image response fails explicitly.
 
 The backend builds instructions from the visual prompt, theme, palette, motifs,
 mood, target ratio, and a normalized quiet rectangle. It requests calm, light,
-low-detail space for dark editable text and asks for no wording, lettering, logos,
-signatures, or visible watermarks. Model compliance still needs preview inspection.
+low-detail space for dark editable text. An authoritative artwork-only rule surrounds
+the visual brief, excluding readable text, letters, names, dates, venue copy, logos,
+signatures, typography and watermarks even if the brief requests lettering. Model
+compliance still needs preview inspection. The AI panel labels the visual field
+**Artwork direction** and opens **Exact event wording** by default; those optional
+fields create editable text separately from the image.
 
 Optional eyebrow/title/date/venue fields stay entirely in the client. Their exact
 strings, including spacing and newlines, become ordinary `TextElement` values.
@@ -204,12 +208,14 @@ Copy `server/.env.example` to ignored `server/.env`, configure the selected prov
 and run `npm run dev`. Never use a `VITE_` name for the secret. The frontend uses
 Vite's `/api` proxy locally. No credentials are needed for ordinary editing or mocks.
 
-Deployment architecture is Vercel frontend plus Render backend. Set the frontend's
-`VITE_API_BASE_URL=https://<render-service>/api` at build time; set Render's exact
-`CLIENT_ORIGIN=https://<vercel-app>`, selected provider credentials/model/timeout, and proxy setting
-`TRUST_PROXY_HOPS=1`. Keep proxy trust 0 for direct local access. Express respects
-Render's `PORT` and listens on `0.0.0.0`. The existing built-client static fallback
-is retained for production E2E checks. No deployment was performed in Milestone 5.
+Current production is a single Render Web Service at
+https://frameflow-h7fa.onrender.com. Express serves the built Vite frontend and
+`/api` on the same origin. Leave `VITE_API_BASE_URL` unset (the default is `/api`),
+set `CLIENT_ORIGIN=https://frameflow-h7fa.onrender.com`, configure the selected
+provider credentials/model/timeout, and use `TRUST_PROXY_HOPS=1`. Keep proxy trust
+0 for direct local access. Express respects Render's `PORT` and listens on
+`0.0.0.0`. The milestone evidence below is historical; current release verification
+is recorded in [Implementation status](../IMPLEMENTATION_STATUS.md).
 
 ## Verification
 
