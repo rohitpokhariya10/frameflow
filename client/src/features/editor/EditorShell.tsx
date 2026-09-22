@@ -1,5 +1,6 @@
 import { Frame, MousePointer2, Undo2, Redo2, X } from 'lucide-react';
-import { useAppSelector, useAppDispatch, selectActiveVariant, selectDocument, selectSelectedText } from '../../store';
+import { useAppSelector, useAppDispatch, selectActiveVariant, selectSelectedText } from '../../store';
+import { DesignName } from './DesignName';
 import { DesignPanel } from './DesignPanel';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { TextInspector } from '../text/TextInspector';
@@ -10,7 +11,6 @@ import { recoveryWarningChanged } from '../../store/saveSlice';
 import { ExportButton } from '../export/ExportButton';
 
 export function EditorShell() {
-  const document = useAppSelector(selectDocument);
   const { canvas, id: variantId } = useAppSelector(selectActiveVariant);
   const adapting = useAppSelector((state) => Boolean(state.ai.preview?.adaptation));
   const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' && Boolean(state.ai.preview));
@@ -36,7 +36,7 @@ export function EditorShell() {
           <span>FrameFlow<span className="brand-dot">.</span></span>
         </a>
         <span className="topbar-divider" />
-        <span className="project-name">{document.name}</span>
+        <DesignName />
         <span className="topbar-dimensions" data-testid="canvas-dimensions">{canvas.width} × {canvas.height} <span>px</span></span>
         <div className="topbar-actions">
           <div className="history-controls" role="group" aria-label="Document history">

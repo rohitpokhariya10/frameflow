@@ -5,10 +5,11 @@ import { isProjectDocument } from '../lib/persistence/schema';
 
 interface TextTarget { variantId: string; id: string; timestamp: string; editSession?: string }
 const finitePosition = (position: { x: number; y: number }) => Number.isFinite(position.x) && Number.isFinite(position.y);
+export const DEFAULT_DESIGN_NAME = 'New design';
 
 export function createDocument(id: string, timestamp: string): ProjectDocument {
   return {
-    schemaVersion: 1, id, name: 'Untitled design', createdAt: timestamp, updatedAt: timestamp,
+    schemaVersion: 1, id, name: DEFAULT_DESIGN_NAME, createdAt: timestamp, updatedAt: timestamp,
     variants: [{
       id: 'original', name: 'Original', revision: 0,
       canvas: { width: 1080, height: 1350, backgroundColor: '#FFFEFA' }, elements: [],
@@ -21,6 +22,12 @@ const initialState: { document: ProjectDocument } = { document: createDocument('
 export const editorSlice = createSlice({
   name: 'editor', initialState,
   reducers: {
+    documentRenamed(state, action: PayloadAction<{ name: string; timestamp: string }>) {
+      const name = action.payload.name.trim() || DEFAULT_DESIGN_NAME;
+      if (name.length > 10_000 || name === state.document.name) return;
+      state.document.name = name;
+      state.document.updatedAt = action.payload.timestamp;
+    },
     generatedDesignApplied(state, action: PayloadAction<{ preview: DesignPreview; timestamp: string }>) {
       const { preview, timestamp } = action.payload;
       if (state.document.id !== preview.sourceProjectId) return;
@@ -119,4 +126,4 @@ export const editorSlice = createSlice({
     },
   },
 });
-export const { canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied, adaptedDesignApplied } = editorSlice.actions;
+export const { documentRenamed, canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied, adaptedDesignApplied } = editorSlice.actions;

@@ -2,6 +2,27 @@
 
 Latest status: **2026-09-22**. **Milestones 0–7 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Exact-size PNG export and M7 UI polish are complete, including both desktop visual reviews and full regression verification. Deployment has not started.**
 
+## Design-name follow-up — verified complete
+
+- Resumed at M7 commit `5a2ed39ab15df2047ea84905448c084cddbaa8c0` with seven modified/new title-related files. Preserved the current implementation and tests exactly; no verification-time application/test fixes were required in this continuation. Only this status record changed.
+- Reuses existing `ProjectDocument.name`, normal document saving and snapshot history. No duplicate title field, schema migration, separate persistence key or history infrastructure. New documents and blank displayed names use `New design`; invalid documents missing the required name retain existing safe recovery behavior without overwriting saved data.
+- Accessible `Design name` input uses a local edit draft and selects the name on focus. Enter delegates to blur for exactly one trimmed commit; empty/whitespace commits become `New design`. Escape restores the saved display without dispatch/history changes. Unchanged normalized names are no-ops. Verified one-step Undo and Redo, no double commit after Enter, normal save and exact title restoration after refresh, existing/blank saved names and distinct variant labels.
+- **Visual review passed at 1366×768 and 1440×900:** default, editing, normal and very long titles; long edit drafts stay in the same constrained 220px area, and unfocused long names ellipsize. Visible keyboard focus; brand, dimensions, save state, history controls and Export remain readable and separate. Also reviewed left navigation, fitted text/right inspector, AI panel and mocked adaptation Source/Target comparison. No horizontal overflow or browser page errors.
+- Visual flows replayed previously verified local artwork with every AI endpoint intercepted. Source/target ratios, action visibility, version switching and deterministic `frameflow-landscape-1600x900.png` download passed. **Zero live provider calls.** PNG filename/rendering, provider implementation, adaptation and other M7 behavior remain unchanged.
+- Fresh focused checks: **3 title store tests passed** and **8 title browser tests passed**, covering both desktop sizes. Full regression below passed on the same preserved implementation after execution availability returned; the earlier usage block is resolved.
+
+| Check | Actual result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **334 passed across 26 files**, full Unit/API suite |
+| `npm run build` | Passed |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **122 passed**, development |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **122 passed**, production |
+
+- Final diff/whitespace and security review passed: 118 tracked/new files scanned against configured credential values without exposing them. No secrets, real environment files, generated images, PNG exports, screenshots, traces/videos, temporary files, dependency directories or master-brief changes are included. Review screenshots/scripts stayed outside the repository; test artifacts remain ignored.
+- README already accurately describes completed M7 and undeployed status; left unchanged. Title follow-up delivery uses `feat: add editable design title`; the final response records its hash and push outcome. No remaining title blocker. Deployment, production environment configuration and submission have not started.
+
 ## M7 — reviewer experience polish (verified complete)
 
 - Started from clean `71786f41e3126b8b02ef1b92d896fbebd0bedbd3`, synchronized with origin/main. No post-export edits existed; no export follow-up commit was needed.
