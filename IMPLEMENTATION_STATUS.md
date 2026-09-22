@@ -1,6 +1,35 @@
 # Implementation status
 
-Latest status: **2026-09-22**. **Milestones 0–6 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Exact-size PNG export is complete; the remaining Milestone 7 polish/example and deployment are not started.**
+Latest status: **2026-09-22**. **Milestones 0–7 implemented; real generation and reference-based portrait→landscape adaptation are VERIFIED through Cloudflare Workers AI.** The assessment is not yet finished/deployed. **Exact-size PNG export and M7 UI polish are complete, including both desktop visual reviews and full regression verification. Deployment has not started.**
+
+## M7 — reviewer experience polish (verified complete)
+
+- Started from clean `71786f41e3126b8b02ef1b92d896fbebd0bedbd3`, synchronized with origin/main. No post-export edits existed; no export follow-up commit was needed.
+- Focused presentation changes: active-looking Export button, clearer selected tabs, full form focus outlines, restrained frame shadow, compact inspector hierarchy and friendlier Auto Layout success copy. No canvas coordinates, layout algorithm, document/history, persistence, generation/adaptation request or export rendering changes.
+- Removed the disabled wedding-example advertisement from the empty state and replaced it with a short working-flow hint. No template/example or fake artwork added. A preloaded editable example remains outside this polish scope.
+- Version labels now show index, format, Original/Adapted and dimensions once, without changing saved names/relationships. Adaptation shows a source card, original-preservation explanation, simpler style label and clearer Source/Target comparison captions. Preview dimensions describe the actual canvas instead of the provider output size.
+- AI loading/preview notices have consistent surfaces; availability/stale messages use product wording. API errors map to owned safe UI copy, keeping backend diagnostics out of the editor. Added focused tests for this mapping and version-label formatting; existing browser assertions follow the changed copy without reducing behavior coverage.
+- README now includes problem/assessment mapping, reviewer flow, stack/architecture, API endpoints, environment/security and honest undeployed status/source link. Existing editing, Auto Layout, generation/adaptation, persistence/history, export and limitations content is retained. No fake live URLs.
+- Resumed the existing 18-file working tree at `71786f4` after the earlier usage block cleared. Preserved all M7 implementation; no application fixes were required by verification. Continuation edits only record final verification here and correct stale README polish-status wording.
+- Normal local development used the existing repository Vite process and the standard Express workspace script. Both frontend-proxied and direct `/api/health` reported healthy, configured and available Cloudflare state. No workaround server or live AI request was used.
+- **Manual visual verification passed at 1366×768 and 1440×900:** initial Design/presets, portrait/Story frame, text/inspector, overflow warning and fitted success, AI form/loading/generated preview/error, adaptation form/loading, Source/Target comparison, version switching, landscape and PNG export. Reviewed settled screenshots; source/target previews retain natural aspect ratios. Primary actions, Auto Layout and Duplicate/Delete remain accessible; forms scroll within panels, focus is visible, and there is no document overflow or browser page error.
+- Visual AI flows intercepted every AI endpoint and replayed existing M5/M6 artwork as mocked responses. No new live generation or adaptation occurred. Screenshots, temporary review scripts and PNG downloads remain outside the repository.
+- Final whitespace/security/artifact review passed: no configured credential values in tracked/new files, and no real environment file, generated artwork, exported PNG, screenshot, trace/video, temporary browser artifact, dependency directory or master-brief change is included in the 18 changed files. README remains honest about deployment status. No M7 blocker remains; stop before deployment, production configuration or submission.
+
+Fresh final M7 regression (all provider operations mocked):
+
+| Check | Actual result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | **331 passed across 25 files**, full Unit/API suite |
+| `npm run build` | Passed |
+| `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` | **114 passed**, development |
+| `PLAYWRIGHT_CHANNEL=chrome PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` | **114 passed**, production |
+
+These fresh results supersede the interrupted M7 partial counts. Earlier milestone
+counts below remain historical. M7 delivery uses `style: polish FrameFlow reviewer
+experience`; its commit hash and push outcome are reported in the final delivery message.
 
 ## PNG export — exact logical size
 
@@ -380,7 +409,7 @@ Browser checks exposed a field-label selector mismatch: unit suffixes are now hi
 5. **AI generation — complete, real Cloudflare app-level verification passed.**
 Gemini remains an alternate blocked by its project quota. Milestone 6 is verified; PNG export is complete.
 6. **Reference-image adaptation, variants, comparison — implemented and real portrait→landscape verification passed.**
-7. **PNG export complete.** Editable wedding example and broad final UI/keyboard/responsive polish remain.
+7. **PNG export and UI/UX polish complete; both desktop visual reviews and full Unit/API/development/production regression passed.** Editable wedding example is outside the current polish scope.
 8. Release verification, documentation, deployment, submission.
 
 ## Milestones 0/1 — blockers and limits at completion (historical)

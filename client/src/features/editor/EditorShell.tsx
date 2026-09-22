@@ -43,7 +43,7 @@ export function EditorShell() {
             <button className="icon-button" aria-label="Undo" title="Undo (⌘/Ctrl Z)" disabled={!canUndo} onClick={() => dispatch(undo())}><Undo2 size={16} /></button>
             <button className="icon-button" aria-label="Redo" title="Redo (⌘/Ctrl Shift Z)" disabled={!canRedo} onClick={() => dispatch(redo())}><Redo2 size={16} /></button>
           </div>
-          <span className={`save-status save-${save.status}`} role="status" aria-live="polite"><span />{{ saving: 'Saving…', saved: 'Saved on this device', error: 'Could not save' }[save.status]}</span>
+          <span className={`save-status save-${save.status}`} role="status" aria-live="polite" title={save.status === 'error' ? 'Keep this tab open. Check browser storage, then edit to retry saving.' : 'Saved only in this browser. Export a PNG to keep a copy.'}><span />{{ saving: 'Saving…', saved: 'Saved on this device', error: 'Could not save' }[save.status]}</span>
           <ExportButton />
         </div>
       </header>

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Layer, Rect, Stage, Text } from 'react-konva/lib/ReactKonvaCore';
 import 'konva/lib/shapes/Rect';
-import { Image, Maximize, Minus, Plus, Sparkles, Type } from 'lucide-react';
+import { Maximize, Minus, Plus, Sparkles, Type } from 'lucide-react';
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
 import { fitRequested, tabChanged, zoomChanged, variantSelected } from '../../store/uiSlice';
 import { calculateFitZoom, VIEWPORT } from './viewport';
@@ -11,6 +11,7 @@ import { BackgroundArtwork } from './BackgroundArtwork';
 import { textNodeStyle } from '../text/textGeometry';
 
 import { VariantComparison } from '../variants/VariantComparison';
+import { formatLabel, variantLabel } from '../variants/variantLabel';
 
 export function CanvasWorkspace() {
   const dispatch = useAppDispatch();
@@ -22,7 +23,7 @@ export function CanvasWorkspace() {
   const pair = preview?.adaptation ? { source: preview.adaptation.source, target: preview.variant }
     : compare && !preview && relative ? current.sourceVariantId ? { source: relative, target: current } : { source: current, target: relative } : null;
   const comparing = Boolean(pair);
-  const { canvas, name, elements, id, background } = preview?.variant ?? current;
+  const { canvas, elements, id, background } = preview?.variant ?? current;
   const [artworkError, setArtworkError] = useState('');
   const { zoom, fitRequest, selectedElementId } = useAppSelector((state) => state.ui);
   const actions = useTextActions();
@@ -43,8 +44,8 @@ export function CanvasWorkspace() {
 
   return (
     <main className="canvas-workspace" aria-label="Canvas workspace" id="canvas-interaction" tabIndex={0} data-selection-owner>
-      <div className="workspace-heading"><span>{preview ? preview.adaptation ? 'Adapted preview' : 'Generated preview' : name}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Apply from the AI panel' : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
-      {variants.length > 1 && <div className="variant-switcher"><label>Version<select aria-label="Active version" value={current.id} onChange={(event) => { dispatch(variantSelected(event.target.value)); setCompare(false); }}>{variants.map((variant) => <option key={variant.id} value={variant.id}>{variant.name} · {variant.canvas.width} × {variant.canvas.height}</option>)}</select></label>{relative && !preview && <button className="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Back to editing' : 'Compare versions'}</button>}</div>}
+      <div className="workspace-heading"><span>{preview ? preview.adaptation ? 'Adapted preview' : 'Generated preview' : formatLabel(canvas)}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Review, then apply' : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
+      {variants.length > 1 && <div className="variant-switcher"><label>Version<select aria-label="Active version" value={current.id} onChange={(event) => { dispatch(variantSelected(event.target.value)); setCompare(false); }}>{variants.map((variant, index) => <option key={variant.id} value={variant.id}>{variantLabel(variant, index)}</option>)}</select></label>{relative && !preview && <button className="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Back to editing' : 'Compare versions'}</button>}</div>}
       {background && artworkError && <div className="artwork-error" role="alert">{artworkError}</div>}
       {pair ? <VariantComparison source={pair.source} target={pair.target} /> : <div className="canvas-viewport" ref={viewportRef} data-testid="canvas-viewport" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
         <div className="canvas-scroll-content" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
@@ -69,10 +70,9 @@ export function CanvasWorkspace() {
               <p>A blank canvas for your next idea.</p>
               <div className="empty-actions">
                 <button className="button empty-primary" onClick={() => actions.add('heading')}><Type size={15} />Add heading</button>
-                <span className="action-hint">Make your first words count</span>
+                <span className="action-hint">Edit text, then try Auto Layout</span>
                 <button className="button empty-secondary" onClick={() => dispatch(tabChanged('ai'))}><Sparkles size={14} />Create with AI</button>
-                <button className="example-button" disabled title="Editable example is coming in Milestone 7"><Image size={14} />Open wedding example</button>
-                <span className="action-hint">Example coming in a later update</span>
+                <span className="action-hint">Generate artwork → adapt → export</span>
               </div>
             </div>}
           </div>
@@ -81,10 +81,10 @@ export function CanvasWorkspace() {
       }
       <div className="workspace-footer"><span className="workspace-caption">ROOM TO CREATE</span>
         {!comparing && <div className="zoom-controls" aria-label="Canvas zoom">
-          <button aria-label="Zoom out" disabled={zoom <= VIEWPORT.minZoom} onClick={() => dispatch(zoomChanged(zoom / VIEWPORT.zoomStep))}><Minus size={15} /></button>
+          <button aria-label="Zoom out" title="Zoom out" disabled={zoom <= VIEWPORT.minZoom} onClick={() => dispatch(zoomChanged(zoom / VIEWPORT.zoomStep))}><Minus size={15} /></button>
           <output aria-label="Current zoom">{Math.round(zoom * 100)}%</output>
-          <button aria-label="Zoom in" disabled={zoom >= VIEWPORT.maxZoom} onClick={() => dispatch(zoomChanged(zoom * VIEWPORT.zoomStep))}><Plus size={15} /></button>
-          <span className="zoom-divider" /><button className="fit-button" onClick={() => dispatch(fitRequested())}><Maximize size={14} />Fit</button>
+          <button aria-label="Zoom in" title="Zoom in" disabled={zoom >= VIEWPORT.maxZoom} onClick={() => dispatch(zoomChanged(zoom * VIEWPORT.zoomStep))}><Plus size={15} /></button>
+          <span className="zoom-divider" /><button className="fit-button" title="Fit the whole design in the workspace" onClick={() => dispatch(fitRequested())}><Maximize size={14} />Fit</button>
         </div>
         }
         <span className="workspace-footer-label">{comparing ? 'Source / Target' : `Version ${variants.findIndex((item) => item.id === current.id) + 1}`}</span>

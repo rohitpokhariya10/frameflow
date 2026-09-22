@@ -3,10 +3,44 @@
 A calm creative editor for the FreshFolks assessment. Milestones 0–6 provide canvas
 sizing, interactive text editing, measured Auto Layout, local recovery, undo/redo,
 artwork generation, and reference-based format adaptation. Exact-size PNG export
-is also implemented. **Real generation and portrait→landscape adaptation are verified with Cloudflare Workers AI**;
+and M7 reviewer UI polish are complete. **Real generation and portrait→landscape adaptation are verified with Cloudflare Workers AI**;
 Gemini remains an alternate but this project's Gemini model has zero Free Tier quota.
 The full assessment is not yet finished or deployed. See the current live verification
 result in [implementation status](IMPLEMENTATION_STATUS.md).
+
+## What FrameFlow solves
+
+An event design needs accurate, editable wording and a composition that works in
+more than one format. FrameFlow keeps text separate from AI artwork, so names,
+dates and long venue lines stay exact while the artwork can be recomposed.
+
+## Features and assessment mapping
+
+| Requirement | Where to try it |
+| --- | --- |
+| Configurable canvas | Design → presets or Custom size |
+| Editable text and typography | Text panel and right-hand inspector |
+| Overflow handling | Select text → Auto Layout |
+| AI artwork generation | AI → Generate → preview → Use this design |
+| Reference-based portrait → landscape | AI → Adapt format → Landscape → compare → Use this version |
+| Preserve exact wording | App-rendered text stays editable above generated artwork |
+| Keep both compositions | Version selector and Compare versions |
+| Local recovery and undo/redo | Browser save status and top-bar history controls |
+| PNG download (additional feature) | Export PNG at exact logical canvas dimensions |
+
+## Suggested reviewer flow
+
+1. Open a Poster and add a heading. Replace its content with
+   “The Grand Royal Wedding Palace, Connaught Place, New Delhi, India”. Move it
+   near the edge, then use **Auto Layout** to fit it without changing the words.
+2. Open **AI → Generate**. Describe an ivory floral wedding design, choose a style,
+   and enter exact event wording. Review the preview before **Use this design**.
+3. Choose **Adapt format → Landscape**. Review the new composition beside its
+   source, then select **Use this version**. Switch between both versions.
+4. Edit the wording, try Undo/Redo, refresh to check recovery, and **Export PNG**.
+
+Live AI actions use the configured account's allocation. The automated suites mock
+those actions; the completed M5/M6 live verification is recorded separately.
 
 ## Run locally
 
@@ -82,7 +116,18 @@ If Chromium downloads are unavailable and Chrome is installed, run
 To check the built app through Express, run `npm run build`, then
 `PLAYWRIGHT_PRODUCTION=1 npm run test:e2e` (combine with the channel override if needed).
 
-## Boundaries and decisions
+## Tech stack and architecture
+
+React, TypeScript, Redux Toolkit and Konva render and edit the browser document.
+Vite builds the client. Express runs the AI endpoints; shared TypeScript contracts
+validate requests and documents. Vitest and Playwright cover domain, API and browser
+flows. IndexedDB stores artwork, and localStorage stores the serializable project.
+
+AI produces artwork only. FrameFlow renders editable text using bundled fonts,
+measures overflow with the same renderer, and handles layout itself. This keeps
+wording reliable and avoids depending on image generation for typography.
+
+## Project structure and decisions
 
 - `client/src/features/editor/`: shell, accessible tabs, presets, custom form.
 - `client/src/features/canvas/`: React Konva frame, focused text-node interactions,
@@ -170,7 +215,7 @@ layout changes; scripts/emoji using OS fallback fonts can differ between devices
 Routine AI tests use explicit mocks. The Gemini alternate remains blocked by this
 project’s zero Free Tier image quota. Cloudflare uses its account’s available allocation;
 free usage is limited, and provider quota/errors never trigger automatic retries.
-The wedding example and broader final polish remain later scope. Adaptation preserves visual
+The preloaded wedding example remains outside the completed M7 polish scope. Adaptation preserves visual
 identity best-effort; custom text layouts may need adjustment. The current project
 persists in localStorage; image Blobs use IndexedDB.
 Generated previews may crop artwork to preserve aspect ratio. Inspect results for
@@ -195,3 +240,38 @@ See [implementation status](IMPLEMENTATION_STATUS.md) for actual verification an
 remaining milestones.
 
 See [Auto Layout](docs/AUTO_LAYOUT.md) and [persistence/history](docs/PERSISTENCE_AND_HISTORY.md) for implementation details and limits.
+
+## API endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/health` | Service readiness; no credentials returned |
+| `POST /api/ai/generate` | Validated artwork generation request |
+| `POST /api/ai/adapt` | Validated reference-image adaptation request |
+
+The server validates size and payload bounds and handles timeouts, concurrency and
+rate limits. Provider details stay server-side; the editor shows concise errors.
+See [generation](docs/AI_GENERATION.md) and [adaptation](docs/AI_ADAPTATION.md) for contracts.
+
+## Environment variables and security
+
+Use [server/.env.example](server/.env.example) as the configuration reference.
+`AI_PROVIDER` selects Cloudflare or Gemini. Cloudflare uses `CLOUDFLARE_ACCOUNT_ID`,
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_IMAGE_MODEL`; the alternate uses `GEMINI_API_KEY`
+and `GEMINI_IMAGE_MODEL`. `AI_TIMEOUT_MS`, `PORT`, `CLIENT_ORIGIN` and
+`TRUST_PROXY_HOPS` control server operation. Optional client `VITE_API_BASE_URL`
+selects a separate API origin; never put a credential in a `VITE_` variable.
+
+Keep `.env` local and ignored. Tokens remain on the server and never enter the
+project document or browser bundle. Saved designs are local to the browser;
+clearing browser storage removes them. Exported PNGs contain the visible design.
+
+## Deployment and live demo
+
+Not deployed yet. Live frontend/API URLs and production verification will be added
+after the deployment task. Current local setup and production-build test commands
+above are usable now; no hosted availability is claimed.
+
+## Source repository
+
+[rohitpokhariya10/frameflow](https://github.com/rohitpokhariya10/frameflow)

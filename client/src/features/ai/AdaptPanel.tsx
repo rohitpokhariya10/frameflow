@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { Sparkles } from 'lucide-react';
+import { formatLabel } from '../variants/variantLabel';
 import { useStore } from 'react-redux';
 import { CANVAS_PRESETS, validateCanvasSize, type AdaptFormat, type StyleBrief } from '@frameflow/shared';
 import { selectActiveVariant, useAppDispatch, useAppSelector, type RootState } from '../../store';
@@ -83,7 +85,7 @@ export function AdaptPanel() {
   }
   function apply() {
     const current = store.getState(), ready = current.ai.preview;
-    if (!ready || !adaptationIsCurrent(ready, current.editor.document, current.editor.version, current.ui.activeVariantId, current.ui.selectionVersion)) { setError('The source context changed. Regenerate from the current version.'); return; }
+    if (!ready || !adaptationIsCurrent(ready, current.editor.document, current.editor.version, current.ui.activeVariantId, current.ui.selectionVersion)) { setError('Your source design changed. Regenerate from the current version.'); return; }
     dispatch(adaptedDesignApplied({ preview: ready, timestamp: new Date().toISOString() }));
     if (store.getState().editor.document === current.editor.document) { setError('Could not apply this version. Your source is unchanged.'); return; }
     dispatch(generationCleared()); dispatch(elementSelected(null));
@@ -91,28 +93,29 @@ export function AdaptPanel() {
   return <div className="ai-panel">
     <div className="ai-panel-scroll">
       <div className="section-intro"><span className="eyebrow">ADAPT FORMAT</span><h2>A new shape. The same story.</h2><p>Recompose your artwork. Keep every word.</p></div>
-      <p className="inspector-hint">Source: {source.name} · {source.canvas.width} × {source.canvas.height}</p>
+      <div className="adapt-source"><span className="control-label">Source design</span><strong>{formatLabel(source.canvas)}</strong><span>{source.canvas.width} × {source.canvas.height} px</span><p>Your original stays available.</p></div>
       {!source.background && <p className="ai-notice">Generate artwork for this version before adapting it.</p>}
-      {configured === false && <p className="ai-notice">AI is not configured for this environment.</p>}
+      {configured === null && !healthError && <p className="inspector-hint" role="status">Checking AI availability…</p>}
+      {configured === false && <p className="ai-notice">AI artwork is unavailable right now. You can still edit and export.</p>}
       {healthError && <div className="ai-notice" role="alert">{healthError}<button className="text-link" onClick={() => { setHealthError(''); setRetry(retry + 1); }}>Check connection</button></div>}
       <label className="control-label" htmlFor="adapt-format">Target format</label>
       <select id="adapt-format" value={format} disabled={busy} onChange={(event) => { setFormat(event.target.value as AdaptFormat); setError(''); }}>{CANVAS_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.width} × {preset.height}</option>)}<option value="custom">Custom</option></select>
       {format === 'custom' && <div className="dimension-fields">{(['width', 'height'] as const).map((field) => <label key={field}><span className="control-label">Target {field}</span><input aria-label={`Target ${field}`} inputMode="numeric" value={custom[field]} disabled={busy} onChange={(event) => setCustom({ ...custom, [field]: event.target.value })} /></label>)}</div>}
-      <label className="control-label" htmlFor="adapt-brief">Visual continuity brief</label>
+      <label className="control-label" htmlFor="adapt-brief">Style to preserve</label>
       <textarea id="adapt-brief" maxLength={2000} value={brief} disabled={busy} onChange={(event) => setBrief(event.target.value)} />
       <p className="inspector-hint">Describe artwork only. Names, dates and all existing text stay exact and editable.</p>
       <div ref={feedback}>
-        {preview && <div className="ai-preview-note" role="status"><h3>Adapted preview</h3><p>The source is unchanged. Use this version to add a new editable design.</p><p>{preview.variant.generation?.returnedWidth} × {preview.variant.generation?.returnedHeight} artwork · fitted without stretching</p>{preview.unresolved.length > 0 && <p className="ai-notice">{preview.unresolved.length} text {preview.unresolved.length === 1 ? 'element needs' : 'elements need'} manual adjustment. All wording is preserved.</p>}</div>}
-        {stale && <p className="ai-notice" role="alert">The source context changed. Regenerate from the current version or discard this preview.</p>}
+        {preview && <div className="ai-preview-note" role="status"><h3>Adapted preview</h3><p>The source is unchanged. Use this version to add a new editable design.</p><p>{formatLabel(preview.variant.canvas)} · {preview.variant.canvas.width} × {preview.variant.canvas.height} canvas</p>{preview.unresolved.length > 0 && <p className="ai-notice">{preview.unresolved.length} text {preview.unresolved.length === 1 ? 'element needs' : 'elements need'} manual adjustment. All wording is preserved.</p>}</div>}
+        {stale && <p className="ai-notice" role="alert">Your source design changed. Regenerate from the current version or discard this preview.</p>}
         {(error || ai.error) && <p className="ai-notice" role="alert">{error || ai.error}</p>}
-        {busy && <div className="ai-loading" role="status"><strong>Adapting your artwork…</strong><p>This may take a minute. Your source is safe.</p></div>}
+        {busy && <div className="ai-loading" role="status"><Sparkles size={18} /><strong>Adapting your artwork…</strong><p>This may take a minute. Your source is safe.</p></div>}
       </div>
     </div>
     <div className="ai-panel-actions">
       {preview ? <><button className="button primary-button" disabled={stale} onClick={apply}>Use this version</button><div className="ai-secondary-actions"><button className="button" disabled={configured !== true} onClick={() => void adapt()}>Regenerate</button><button className="button" onClick={() => void discard()}>Discard</button></div></>
         : busy ? <button className="button" onClick={() => { pending.current?.abort(); pending.current = null; dispatch(generationCleared()); }}>Cancel adaptation</button>
           : <button className="button primary-button" disabled={configured !== true || !source.background} onClick={() => void adapt()}>Adapt artwork</button>}
-      <p className="inspector-hint">Reference-based artwork. Exact editable text.</p>
+      <p className="inspector-hint">New composition. Same words. Original kept.</p>
     </div>
   </div>;
 }

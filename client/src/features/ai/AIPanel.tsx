@@ -118,19 +118,20 @@ function GeneratePanel() {
   return <div className="ai-panel">
     <div className="ai-panel-scroll">
       <div className="section-intro"><span className="eyebrow">CREATE WITH AI</span><h2>Set the atmosphere.</h2><p>Original artwork. Your words, editable.</p></div>
-      {configured === false && <p className="ai-notice">AI generation is not configured for this environment.</p>}
+      {configured === null && !healthError && <p className="inspector-hint" role="status">Checking AI availability…</p>}
+      {configured === false && <p className="ai-notice">AI artwork is unavailable right now. You can still add text, edit and export.</p>}
       {healthError && <div className="ai-notice" role="alert">{healthError}<button className="text-link" onClick={() => { setHealthError(''); setRetry(retry + 1); }}>Check connection</button></div>}
       <label className="control-label" htmlFor="ai-prompt">Visual theme</label>
       <textarea id="ai-prompt" placeholder="Ivory florals, warm gold details, soft romantic light…" maxLength={AI_LIMITS.prompt} value={prompt} disabled={busy} onChange={(event) => { setPrompt(event.target.value); setFormError(''); }} />
       <p className="inspector-hint">Describe the visual style, atmosphere and artwork.</p>
-      <div className="theme-options" aria-label="Theme suggestions">{themes.map((item, index) => <button key={item.theme} aria-pressed={index === theme} disabled={busy} onClick={() => setTheme(index)}>{item.theme}</button>)}</div>
+      <span className="control-label theme-label">Style</span><div className="theme-options" role="group" aria-label="Theme suggestions">{themes.map((item, index) => <button key={item.theme} aria-pressed={index === theme} disabled={busy} onClick={() => setTheme(index)}>{item.theme}</button>)}</div>
       <label className="control-label" htmlFor="ai-format">Preview format</label>
       <select id="ai-format" disabled={busy} value={format} onChange={(event) => setFormat(event.target.value)}><option value="current">Current · {variant.canvas.width} × {variant.canvas.height}</option>{CANVAS_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.width} × {preset.height}</option>)}</select>
       <details className="event-fields"><summary>Exact event wording <span>Optional</span></summary><p className="inspector-hint">Added as editable text, separate from the artwork.</p>
         {(Object.keys(content) as (keyof typeof content)[]).map((role) => <label key={role}><span className="control-label">{role[0].toUpperCase() + role.slice(1)}</span><textarea aria-label={`Event ${role}`} value={content[role]} maxLength={TEXT_LIMITS.maxCharacters} disabled={busy} onChange={(event) => setContent({ ...content, [role]: event.target.value })} rows={role === 'venue' ? 2 : 1} /></label>)}
       </details>
       <div ref={feedback}>
-      {ai.preview && <div className="ai-preview-note" role="status"><h3>Generated preview</h3><p>Your current design is unchanged. Use this design to replace its artwork and text.</p><p>{ai.preview.variant.generation?.returnedWidth} × {ai.preview.variant.generation?.returnedHeight} image · aspect-preserving crop</p><p>Check for unwanted lettering or cropping before applying.</p>{ai.preview.unresolved.length > 0 && <p className="ai-notice">Some text needs adjustment: {ai.preview.unresolved.join(', ')}. All wording is preserved.</p>}</div>}
+      {ai.preview && <div className="ai-preview-note" role="status"><h3>Generated preview</h3><p>Your current design is unchanged. Use this design to replace its artwork and text.</p><p>{ai.preview.variant.canvas.width} × {ai.preview.variant.canvas.height} canvas · ready to edit after applying</p><p>Check for unwanted lettering or cropping before applying.</p>{ai.preview.unresolved.length > 0 && <p className="ai-notice">Some text needs manual adjustment. All wording is preserved.</p>}</div>}
       {(formError || ai.error) && <p className="ai-notice" role="alert">{formError || ai.error}</p>}
       {busy && <div className="ai-loading" role="status"><Sparkles size={18} /><strong>Creating your design…</strong><p>This may take a minute. Your current design is safe.</p></div>}
       </div>

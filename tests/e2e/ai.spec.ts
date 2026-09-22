@@ -86,7 +86,7 @@ test('mocked AI configuration state intentionally disables generation', async ({
   let requests = 0;
   await page.route('**/api/ai/generate', (route) => { requests++; return route.abort(); });
   await openAI(page, false);
-  await expect(page.getByText('AI generation is not configured for this environment.')).toBeVisible();
+  await expect(page.getByText('AI artwork is unavailable right now. You can still add text, edit and export.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Generate design', exact: true })).toBeDisabled();
   const button = await page.getByRole('button', { name: 'Generate design', exact: true }).boundingBox();
   expect(button!.y + button!.height).toBeLessThanOrEqual(page.viewportSize()!.height);

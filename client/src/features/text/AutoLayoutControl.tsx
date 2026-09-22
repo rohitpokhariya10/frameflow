@@ -13,7 +13,7 @@ function feedback(result: LayoutResult, original: TextElement) {
   if (result.status === 'unresolved') return result.reason;
   const changes = result.changes.filter((change) => change !== 'font-reduced').map((change) => ({ wrapped: 'Rewrapped', widened: 'Widened', moved: 'Moved' })[change]);
   if (result.changes.includes('font-reduced')) changes.push(`Font reduced from ${Number(original.fontSize.toFixed(2))} to ${Number(result.element.fontSize.toFixed(2))}`);
-  return `${changes.length ? changes.join(' · ') : 'Text box adjusted'}. Text fits inside the safe frame.`;
+  return `Text fitted within the frame. ${changes.length ? changes.join(' · ') + '.' : ''}`;
 }
 
 export function AutoLayoutControl({ element }: { element: TextElement }) {
@@ -45,7 +45,7 @@ export function AutoLayoutControl({ element }: { element: TextElement }) {
   }
   return <div className="auto-layout-control">
     <button className="button auto-layout-button" disabled={busy} onClick={() => void fit()}><ScanLine size={14} />{busy ? 'Fitting…' : 'Auto Layout'}</button>
-    <p className="inspector-hint">Fit this text within the safe canvas area.</p>
+    <p className="inspector-hint">Fit within the frame. Keep every word.</p>
     {overflow && !currentNotice?.unresolved && <p className="layout-warning">Text extends outside the safe frame.</p>}
     <p className={`layout-feedback${currentNotice?.unresolved ? ' layout-warning' : ''}`} role="status" aria-live="polite">{currentNotice?.message ?? ''}</p>
   </div>;

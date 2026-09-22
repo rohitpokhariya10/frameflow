@@ -88,7 +88,7 @@ test('upcoming actions are truthful and keyboard tabs work', async ({ page }) =>
   await page.goto('/');
   await expect(page.getByRole('button', { name: 'Add heading' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Export PNG' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Open wedding example' })).toBeDisabled();
+  await expect(page.getByText('Generate artwork → adapt → export', { exact: true })).toHaveCount(1);
   await page.getByRole('tab', { name: 'Design', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Text', exact: true })).toBeFocused();

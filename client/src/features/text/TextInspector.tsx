@@ -40,7 +40,7 @@ export function TextInspector({ element }: { element: TextElement }) {
         </div>
       </section>
       <section className="inspector-section">
-        <div className="inspector-section-title"><h3>Layout</h3><span>Logical pixels</span></div>
+        <div className="inspector-section-title"><h3>Layout</h3><span>Canvas pixels</span></div>
         <div className="inspector-row geometry-row">
           <NumberField label="X" value={element.x} onEndSession={() => dispatch(endTextSession())} onCommit={(x, session) => actions.move(element, { x, y: element.y }, session)} />
           <NumberField label="Y" value={element.y} onEndSession={() => dispatch(endTextSession())} onCommit={(y, session) => actions.move(element, { x: element.x, y }, session)} />

@@ -102,7 +102,7 @@ test('mocked adaptation rejects an edited source and keeps stale artwork out of 
   await page.getByLabel('Text content').fill('New source wording'); await page.getByLabel('Text content').blur(); await saved(page);
   const edited = await documentJSON(page); release();
   await expect(page.getByRole('button', { name: 'Use this version', exact: true })).toBeDisabled();
-  await expect(page.getByText('The source context changed.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Your source design changed.', { exact: false })).toBeVisible();
   expect(await documentJSON(page)).toBe(edited);
   await page.getByRole('button', { name: 'Discard', exact: true }).click(); await expect.poll(() => assetInfo(page).then((assets) => assets.length)).toBe(1);
 });
@@ -133,7 +133,7 @@ for (const failure of ['provider', 'reference', 'storage'] as const) test(`mocke
   if (failure === 'reference') await page.evaluate(() => { HTMLImageElement.prototype.decode = async () => { throw new Error('Mock decode failure'); }; });
   if (failure === 'storage') await page.evaluate(() => { IDBObjectStore.prototype.put = () => { throw new DOMException('Mock full storage', 'QuotaExceededError'); }; });
   await page.getByRole('button', { name: 'Adapt artwork', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: failure === 'provider' ? 'quota' : failure === 'reference' ? 'prepare the source' : 'store the artwork' })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: failure === 'provider' ? 'usage limit' : failure === 'reference' ? 'prepare the source' : 'store the artwork' })).toBeVisible();
   expect(await documentJSON(page)).toBe(original); expect(calls).toBe(failure === 'reference' ? 0 : 1);
   expect(await assetInfo(page)).toHaveLength(1); await expect(page.getByRole('button', { name: 'Use this version' })).toHaveCount(0);
 });
