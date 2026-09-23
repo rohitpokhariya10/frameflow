@@ -1,4 +1,4 @@
-# FrameFlow
+# FrameFlow for FreshFolk
 
 A focused design editor for creating event artwork, fitting exact text, and adapting a composition to a new format.
 
