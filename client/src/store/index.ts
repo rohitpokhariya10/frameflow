@@ -6,8 +6,9 @@ import { historyReducer, initialHistory, undo, redo } from './history';
 import { saveSlice } from './saveSlice';
 import { aiSlice, adaptationIsCurrent } from './aiSlice';
 import { projectReset } from './projectReset';
+import { decompositionSlice } from './decompositionSlice';
 
-const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer });
+const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer, decomposition: decompositionSlice.reducer });
 function reducer(state: ReturnType<typeof combined> | undefined, action: UnknownAction) {
   if (projectReset.match(action)) return { ...freshState(action.payload), save: { ...saveSlice.getInitialState(), status: 'saved' as const } };
   if (state && generatedDesignApplied.match(action) && action.payload.preview.sourceVersion !== state.editor.version) return state;
@@ -30,7 +31,7 @@ function reducer(state: ReturnType<typeof combined> | undefined, action: Unknown
   return next;
 }
 
-const freshState = (document: ReturnType<typeof createDocument>) => ({ editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState() });
+const freshState = (document: ReturnType<typeof createDocument>) => ({ editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState(), decomposition: decompositionSlice.getInitialState() });
 export const createEditorStore = (document = createDocument(crypto.randomUUID(), new Date().toISOString())) => configureStore({
   reducer,
   preloadedState: freshState(document),

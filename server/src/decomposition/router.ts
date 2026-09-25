@@ -1,0 +1,68 @@
+import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
+import cors from 'cors';
+import { rateLimit } from 'express-rate-limit';
+import busboy from 'busboy';
+import { randomUUID } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdir, readFile, unlink, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { validDecompositionReview, type DecompositionCapabilities, type DecompositionClientContext } from '@frameflow/shared';
+import { DecompositionRepository, type ArtifactRecord, type SourceAsset } from './repository.js';
+import { ArtifactStore } from './artifactStore.js';
+import { normalizeDecompositionOptions, type DecompositionConfig } from './config.js';
+import { issueSession, optionalOwner, protectMutation, requireDecompositionAuth, revokeSession, verifyOperatorPassword } from './auth.js';
+import { DecompositionError } from './errors.js';
+import { normalizeSource } from './phases/source.js';
+const owner=(res:Response)=>res.locals.decompositionOwner as string;
+const param=(req:Request,key='id')=>String(req.params[key]);
+async function receiveUpload(req:Request, config:DecompositionConfig):Promise<Buffer>{
+  const directory=resolve(config.dataDir,'uploads');await mkdir(directory,{recursive:true,mode:0o700});const file=resolve(directory,`${randomUUID()}.tmp`);let count=0;let tooLarge=false;let fileTask:Promise<void>|undefined;
+  try{
+    await new Promise<void>((resolveUpload,reject)=>{
+      let parser:ReturnType<typeof busboy>;try{parser=busboy({headers:req.headers,limits:{files:1,fields:0,parts:1,fileSize:config.maxUploadBytes}});}catch{reject(new DecompositionError('INVALID_UPLOAD','Upload one PNG, JPEG or WebP as multipart form data.'));return;}
+      parser.on('file',(name,stream)=>{count++;if(name!=='image'){stream.resume();reject(new DecompositionError('INVALID_UPLOAD','Use the multipart image field.'));return;}stream.on('limit',()=>{tooLarge=true;});fileTask=pipeline(stream,createWriteStream(file,{flags:'wx',mode:0o600}));fileTask.catch(reject);});
+      parser.on('filesLimit',()=>reject(new DecompositionError('INVALID_UPLOAD','Upload one image at a time.')));parser.on('fieldsLimit',()=>reject(new DecompositionError('INVALID_UPLOAD','Unexpected upload fields.')));parser.on('partsLimit',()=>{if(count>1)reject(new DecompositionError('INVALID_UPLOAD','Upload one image at a time.'));});parser.on('error',reject);req.on('aborted',()=>reject(new DecompositionError('UPLOAD_ABORTED','Upload interrupted.')));parser.on('close',resolveUpload);req.pipe(parser);
+    });
+    await fileTask;if(tooLarge)throw new DecompositionError('UPLOAD_TOO_LARGE','Image exceeds the upload byte limit.',413);if(count!==1||!fileTask)throw new DecompositionError('INVALID_UPLOAD','Choose one image to upload.');return await readFile(file);
+  }finally{await unlink(file).catch(()=>{});}
+}
+function clientContext(value:unknown):DecompositionClientContext|undefined{if(value===undefined)return;if(!value||typeof value!=='object'||Array.isArray(value))throw new DecompositionError('INVALID_CONTEXT','Invalid project context.');const v=value as Record<string,unknown>;for(const key of ['projectId','variantId','operationToken'])if(typeof v[key]!=='string'||(v[key] as string).length>200)throw new DecompositionError('INVALID_CONTEXT','Invalid project context.');if(!Number.isSafeInteger(v.variantRevision)||Number(v.variantRevision)<0||(v.sourceAssetId!==undefined&&(typeof v.sourceAssetId!=='string'||v.sourceAssetId.length>200)))throw new DecompositionError('INVALID_CONTEXT','Invalid project context.');return{projectId:v.projectId as string,variantId:v.variantId as string,operationToken:v.operationToken as string,variantRevision:Number(v.variantRevision),sourceAssetId:v.sourceAssetId as string|undefined};}
+export function createDecompositionRouter(config:DecompositionConfig, repository=new DecompositionRepository(config.dataDir), store=new ArtifactStore(config.dataDir,repository,config.maxJobBytes)){
+  const router=express.Router();
+  router.use(cors({origin:config.allowedOrigins,credentials:true,methods:['GET','POST','OPTIONS'],allowedHeaders:['Content-Type','Idempotency-Key','X-FrameFlow-CSRF'],exposedHeaders:['X-Request-Id','Retry-After']}));
+  router.use((req,_res,next)=>{if(req.headers.origin&&!config.allowedOrigins.includes(req.headers.origin))return next(new DecompositionError('ORIGIN_DENIED','This origin is not allowed.',403));next();});
+  router.get('/capabilities',(req,res)=>{const authenticated=!!optionalOwner(req,config,repository);const result:DecompositionCapabilities={enabled:config.enabled,configured:!!config.falKey,authenticated,authMode:config.authMode,limits:{uploadBytes:config.maxUploadBytes,minSide:config.minSide,maxSide:config.maxSide,maxPixels:config.maxPixels,maxObjects:config.maxObjects,maxCalls:config.maxCallsPerJob,retentionDays:config.retentionDays},message:!config.enabled?'Image decomposition is disabled.':!config.falKey?'Set server FAL_KEY to enable live decomposition. Upload validation and existing editing remain available.':!authenticated?'Sign in to start decomposition.':'Ready. Configured credentials do not verify credits or model quality.'};res.json(result);});
+  router.get('/health',async(_req,res)=>{let writable=true;try{await access(config.dataDir,constants.W_OK);}catch{writable=false;}const workerFresh=repository.workerFresh();res.status(writable&&workerFresh?200:503).json({status:writable&&workerFresh?'ready':'not_ready',storageWritable:writable,workerFresh,databaseReady:repository.db.open});});
+  router.use(protectMutation(config));
+  router.use('/session',express.json({limit:'4kb'}));
+  const loginLimiter=rateLimit({windowMs:60000,limit:5,standardHeaders:'draft-8',legacyHeaders:false,handler:(_req,_res,next)=>next(new DecompositionError('RATE_LIMIT','Wait a minute before signing in again.',429,true))});
+  router.post('/session',loginLimiter,async(req,res)=>{if(!config.enabled)throw new DecompositionError('DISABLED','Image decomposition is disabled.',503);if(!req.body||typeof req.body.password!=='string'||!await verifyOperatorPassword(req.body.password,config.passwordHash))throw new DecompositionError('INVALID_CREDENTIALS','The operator password is incorrect or has not been configured.',401);issueSession(res,config,repository);res.json({authenticated:true});});
+  router.use(requireDecompositionAuth(config,repository));
+  router.use((_req,_res,next)=>config.enabled?next():next(new DecompositionError('DISABLED','Image decomposition is disabled.',503)));
+  router.post('/logout',(req,res)=>{revokeSession(req,res,config,repository);res.json({authenticated:false});});
+  router.post('/assets',rateLimit({windowMs:60000,limit:10,standardHeaders:'draft-8',legacyHeaders:false}),async(req,res)=>{
+    const original=await receiveUpload(req,config);let normalized:Awaited<ReturnType<typeof normalizeSource>>;
+    try{normalized=await normalizeSource(original,{maxBytes:config.maxUploadBytes,minSide:config.minSide,maxSide:config.maxSide,maxPixels:config.maxPixels});}catch(error){if(error instanceof Error&&'code'in error)throw new DecompositionError(String(error.code),error.message,422);throw error;}
+    const originalArtifact=await store.write({ownerId:owner(res),kind:'source-original',mimeType:normalized.mimeType,width:normalized.width,height:normalized.height},normalized.original);
+    let masterArtifact:ArtifactRecord|undefined;
+    try{masterArtifact=await store.write({ownerId:owner(res),kind:'source-master',mimeType:'image/png',width:normalized.width,height:normalized.height},normalized.master);
+      const source:SourceAsset={id:randomUUID(),ownerId:owner(res),originalArtifactId:originalArtifact.artifactId,masterArtifactId:masterArtifact.artifactId,originalSha256:normalized.originalSha256,workingMasterSha256:normalized.workingMasterSha256,width:normalized.width,height:normalized.height,mimeType:normalized.mimeType,orientationNormalized:normalized.orientationNormalized,hasAlpha:normalized.hadAlpha,metadata:{colorSpace:'srgb',precision:'8-bit SDR'},createdAt:Date.now()};repository.addSource(source);res.status(201).json({id:source.id,width:source.width,height:source.height,originalSha256:source.originalSha256,workingMasterSha256:source.workingMasterSha256,previewArtifactId:source.masterArtifactId});
+    }catch(error){await store.remove(originalArtifact);if(masterArtifact)await store.remove(masterArtifact);throw error;}
+  });
+  router.use('/jobs/:id/review',express.json({limit:'1mb',strict:true}));router.use(express.json({limit:'24kb',strict:true}));
+  const jobLimiter=rateLimit({windowMs:60000,limit:3,standardHeaders:'draft-8',legacyHeaders:false,handler:(_req,_res,next)=>next(new DecompositionError('RATE_LIMIT','Wait a minute before starting another decomposition.',429,true))});
+  router.post('/jobs',jobLimiter,(req,res)=>{if(!config.falKey)throw new DecompositionError('FAL_NOT_CONFIGURED','Live decomposition requires the server FAL_KEY. Existing editing remains available.',503);const key=req.header('Idempotency-Key');if(!key||!/^[a-zA-Z0-9_-]{8,128}$/.test(key))throw new DecompositionError('INVALID_IDEMPOTENCY_KEY','Supply an Idempotency-Key of 8–128 safe characters.');if(!req.body||typeof req.body.sourceId!=='string'||Object.keys(req.body).some((k)=>!['sourceId','options','context'].includes(k)))throw new DecompositionError('INVALID_REQUEST','Supply a previously uploaded source ID, options and optional project context.');const options=normalizeDecompositionOptions(req.body.options??{},config);const job=repository.createJob(owner(res),req.body.sourceId,options,key,clientContext(req.body.context),{timeoutMs:config.jobTimeoutMs,retentionDays:config.retentionDays,maxQueue:config.maxQueue});res.status(202).json({...repository.summarize(job),statusUrl:`/api/decomposition/jobs/${job.id}`});});
+  router.get('/jobs',(_req,res)=>res.json({jobs:repository.listJobs(owner(res)).map((job)=>repository.summarize(job))}));
+  router.get('/jobs/:id',(req,res)=>res.json(repository.summarize(repository.requireOwnedJob(param(req),owner(res)))));
+  router.get('/jobs/:id/events',(req,res)=>{const job=repository.requireOwnedJob(param(req),owner(res));const after=Number(req.query.after??0);if(!Number.isSafeInteger(after)||after<0)throw new DecompositionError('INVALID_CURSOR','Event cursor must be a nonnegative integer.');res.json({events:repository.events(job.id,after)});});
+  router.post('/jobs/:id/cancel',(req,res)=>res.json(repository.summarize(repository.cancelJob(param(req),owner(res)))));
+  router.post('/jobs/:id/review',(req,res)=>{const job=repository.requireOwnedJob(param(req),owner(res));const source=repository.getSource(job.sourceId,owner(res))!;if(!validDecompositionReview(req.body,source.width,source.height))throw new DecompositionError('INVALID_REVIEW','Review points, strokes and rectangles must lie inside the source image and meet the correction limits.');res.json(repository.summarize(repository.reviewJob(job.id,owner(res),req.body)));});
+  router.post('/jobs/:id/retry',(req,res)=>{if(!req.body||!Number.isSafeInteger(req.body.expectedRevision))throw new DecompositionError('INVALID_RETRY','Supply the current expectedRevision.');const reconcile=req.body.reconcile;if(reconcile!==undefined&&(!reconcile||typeof reconcile!=='object'||typeof reconcile.requestId!=='string'||(reconcile.providerRequestId!==undefined&&!/^[a-zA-Z0-9_-]{1,200}$/.test(reconcile.providerRequestId))||(reconcile.allowNewAttempt!==undefined&&typeof reconcile.allowNewAttempt!=='boolean')))throw new DecompositionError('INVALID_RECONCILIATION','Invalid provider reconciliation.');res.json(repository.summarize(repository.retryJob(param(req),owner(res),req.body.expectedRevision,reconcile)));});
+  router.get('/jobs/:id/result',(req,res)=>{const job=repository.requireOwnedJob(param(req),owner(res));if(!job.manifest||!['completed','partial'].includes(job.state))throw new DecompositionError('RESULT_NOT_READY',`Result is not ready; job is ${job.state}.`,409);res.json(job.manifest);});
+  router.get('/artifacts/:artifactId',async(req,res)=>{const artifact=repository.getArtifact(param(req,'artifactId'),owner(res));if(!artifact)throw new DecompositionError('ARTIFACT_NOT_FOUND','Artifact not found.',404);const bytes=await store.read(artifact);res.set({'Content-Type':artifact.mimeType,'Content-Length':String(artifact.bytes),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store','Content-Disposition':`${req.query.download==='1'?'attachment':'inline'}; filename="${artifact.artifactId}.${artifact.storageKey.split('.').at(-1)}"`});res.send(bytes);});
+  router.post('/jobs/:id/delete',async(req,res)=>{const job=repository.deleteJob(param(req),owner(res));for(const artifact of repository.listArtifacts(job.id))await store.remove(artifact);res.json({deleted:true});});
+  const errors:ErrorRequestHandler=(error:unknown,_req,res,next)=>{void next;if(res.headersSent)return;const e=error instanceof DecompositionError?error:error&&typeof error==='object'&&'status'in error&&Number(error.status)===413?new DecompositionError('TOO_LARGE','The request is too large.',413):new DecompositionError('INTERNAL','Decomposition could not complete this action. Retry or check server storage.',500,true);res.status(e.status).json({error:{code:e.code,message:e.message,retryable:e.retryable,requestId:res.locals.requestId}});};router.use(errors);
+  return router;
+}
