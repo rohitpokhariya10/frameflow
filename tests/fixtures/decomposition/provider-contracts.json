@@ -1,0 +1,9 @@
+{
+  "_description": "Synthetic URL-only contract fixtures. No customer media or live inference. Schemas verified 2026-09-25.",
+  "qwen": { "images": [{ "url": "https://v3b.fal.media/files/test/qwen.png", "width": 512, "height": 768 }], "seed": 7, "has_nsfw_concepts": [false] },
+  "sam2": { "combined_mask": { "url": "https://v3b.fal.media/files/test/combined.png" }, "individual_masks": [{ "url": "https://v3b.fal.media/files/test/sam2.png", "width": 512, "height": 768 }] },
+  "sam3": { "masks": [{ "url": "https://v3b.fal.media/files/test/sam3.png" }], "scores": [0.97], "boxes": [[0.5, 0.5, 0.25, 0.5]], "metadata": [{ "index": 0, "score": 0.97, "box": [0.5, 0.5, 0.25, 0.5] }] },
+  "birefnet": { "image": { "url": "https://v3b.fal.media/files/test/matting.png" } },
+  "finegrain": { "image": { "url": "https://v3b.fal.media/files/test/erase.jpg", "content_type": "image/jpeg" }, "used_seed": 9 },
+  "flux": { "images": [{ "url": "https://v3b.fal.media/files/test/fill.png", "content_type": "image/png" }], "seed": 10, "has_nsfw_concepts": [false], "prompt": "Continue the blue shirt." }
+}

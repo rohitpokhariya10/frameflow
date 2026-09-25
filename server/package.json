@@ -7,17 +7,30 @@
     "dev": "tsx watch --conditions=development --env-file-if-exists=.env src/index.ts",
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "worker": "node --env-file-if-exists=.env dist/decomposition/workerEntry.js",
+    "worker:dev": "tsx watch --conditions=development --env-file-if-exists=.env src/decomposition/workerEntry.ts",
+    "decomp:setup": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/setup.ts",
+    "decomp:smoke": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/smoke.ts",
+    "decomp:backup": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/setup.ts backup"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.10.1",
     "@frameflow/shared": "*",
     "@google/genai": "^2.23.0",
+    "archiver": "^8.0.0",
+    "better-sqlite3": "^13.0.3",
+    "busboy": "^1.6.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
-    "image-size": "^2.0.4"
+    "image-size": "^2.0.4",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/busboy": "^1.5.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "tsx": "^4.23.15"

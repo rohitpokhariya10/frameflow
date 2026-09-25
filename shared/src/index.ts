@@ -90,3 +90,4 @@ export function validateCanvasSize(width: string | number, height: string | numb
   return { valid: true, size };
 }
 export * from './ai.js';
+export * from './decomposition.js';
