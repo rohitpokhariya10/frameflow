@@ -20,3 +20,4 @@ Remaining: live Fal quality verification; broader API/worker/browser operational
 Next: live verification when configured, then phase 6 only after approval.
 
 Phase 01 completion commit: `2f752a7`. Phase 02 gate: six analysis/coordinate cases passed.
+Phase 02 completion commit: `2e4ede0`. Phase 03 gate: endpoint-specific proposals pass offline smoke and candidate tests; live pending.
