@@ -21,3 +21,4 @@ Next: live verification when configured, then phase 6 only after approval.
 
 Phase 01 completion commit: `2f752a7`. Phase 02 gate: six analysis/coordinate cases passed.
 Phase 02 completion commit: `2e4ede0`. Phase 03 gate: endpoint-specific proposals pass offline smoke and candidate tests; live pending.
+Phase 03 completion commit: `130edbf`. Phase 04 gate: distinct mock person/board masks, duplicates and geometry checks, zero board/person overlap.
