@@ -94,9 +94,10 @@ export class DecompositionRepository {
       this.persist(next); this.event(next,'checkpoint',next.progress,next.error?.code); return next;
     })();
   }
-  claimJob(workerId: string, leaseMs = 60000): JobRecord | undefined {
+  /** A worker only claims jobs created for its provider mode, so a stray mock/live worker cannot fail the other mode's jobs. */
+  claimJob(workerId: string, leaseMs = 60000, providerMode?: 'mock' | 'live'): JobRecord | undefined {
     return this.db.transaction(() => {
-      const now = Date.now(); const active = this.db.prepare("SELECT id FROM decomposition_jobs WHERE state IN ('running','cancel_requested') AND lease_until>? AND tombstoned_at IS NULL").get(now); if(active)return; const current = decode<JobRecord>(this.db.prepare("SELECT json FROM decomposition_jobs WHERE state IN ('queued','running','cancel_requested') AND lease_until<=? AND tombstoned_at IS NULL ORDER BY rowid LIMIT 1").get(now)); if (!current) return;
+      const now = Date.now(); const active = this.db.prepare("SELECT id FROM decomposition_jobs WHERE state IN ('running','cancel_requested') AND lease_until>? AND tombstoned_at IS NULL").get(now); if(active)return; const current = decode<JobRecord>(this.db.prepare("SELECT json FROM decomposition_jobs WHERE state IN ('queued','running','cancel_requested') AND lease_until<=? AND tombstoned_at IS NULL AND (? IS NULL OR COALESCE(json_extract(json,'$.data.verificationMode'),'live')=?) ORDER BY rowid LIMIT 1").get(now, providerMode ?? null, providerMode ?? null)); if (!current) return;
       const job: JobRecord = {...current,state:current.cancelRequested?'cancel_requested':'running',leaseOwner:workerId,leaseUntil:now+leaseMs,fence:current.fence+1,updatedAt:now}; this.persist(job); return job;
     })();
   }

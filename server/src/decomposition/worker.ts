@@ -1,3 +1,4 @@
+import { DecompositionError } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import type { DecompositionConfig } from './config.js';
 import type { DecompositionRepository } from './repository.js';
@@ -13,7 +14,7 @@ export class DecompositionWorker {
   stop() { this.stopping = true; }
   async tick() {
     this.repository.workerHeartbeat(this.id);
-    const job = this.repository.claimJob(this.id, this.config.leaseMs); if (!job) return false;
+    const job = this.repository.claimJob(this.id, this.config.leaseMs, this.config.providerMode); if (!job) return false;
     const context = new PipelineContext(job, this.repository, this.store, this.config, this.provider, this.id);
     const heartbeat = setInterval(() => this.repository.heartbeat(job.id, this.id, job.fence, this.config.leaseMs), Math.min(10000, this.config.leaseMs / 3));
     try {
@@ -21,13 +22,15 @@ export class DecompositionWorker {
         for (const request of this.repository.providerRequests(job.id)) await this.provider?.cancel(request);
         const latest = this.repository.getJob(job.id)!; latest.state = 'cancelled'; latest.progress = 'Cancelled; completed inference may still be charged'; this.repository.updateJob(latest, { workerId: this.id, fence: latest.fence, revision: latest.revision });
       } else {
-        if (job.data.verificationMode !== this.config.providerMode) throw new Error('Job provider mode differs from worker configuration.');
+        if (job.data.verificationMode !== this.config.providerMode) throw new DecompositionError('WORKER_MODE_MISMATCH', 'The API and worker use different provider modes. Stop old workers, restart the API and one worker with the same DECOMP_PROVIDER_MODE, then retry this job.', 409);
         if (this.config.providerMode === 'mock') await attachMockProvider(context);
         await runPhase(context);
       }
     } catch (error) {
       const latest = this.repository.getJob(job.id);
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'PHASE_FAILED';
+      // Internal detail for operators only; the persisted message stays generic for uncoded errors. Never includes bytes, URLs or keys.
+      console.error(JSON.stringify({ event: 'decomposition_phase_failed', jobId: job.id, workerId: this.id, providerMode: this.config.providerMode, phase: job.phase + 1, stepId: context.step.id, code, name: error instanceof Error ? error.name : typeof error, message: error instanceof Error ? error.message.replace(/https?:\/\/\S+/g, '[url]').slice(0, 500) : String(error).slice(0, 500), at: error instanceof Error ? error.stack?.split('\n').slice(1, 4).map((line) => line.trim()) : undefined }));
       if (latest && !latest.tombstonedAt && latest.leaseOwner === this.id && latest.fence === job.fence) {
         if (latest.cancelRequested) { for (const request of this.repository.providerRequests(job.id)) await this.provider?.cancel(request); latest.state = 'cancelled'; latest.progress = 'Cancelled'; }
         else if (code === 'STALE_LEASE') return true;
