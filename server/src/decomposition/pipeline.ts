@@ -1,3 +1,6 @@
+import sharp from 'sharp';
+import { extractVisibleLayers } from './phases/extract.js';
+import { mockReviewObjects } from './providers/mock.js';
 import type { DecompositionReview } from '@frameflow/shared';
 import type { PipelineContext } from './context.js';
 import { createAnalysis } from './phases/analysis.js';
@@ -34,8 +37,26 @@ export async function runPhase(context: PipelineContext) {
   const source = context.repository.getSource(job.sourceId, job.ownerId);
   if (!source) throw new DecompositionError('SOURCE_NOT_FOUND', 'The validated source is unavailable.', 404);
   const phase = job.phase + 1;
-  if (phase > 5) throw new DecompositionError('DEMO_SCOPE', 'This iteration stops at refined masks in phase 5.', 409);
+  if (phase > 6) throw new DecompositionError('DEMO_SCOPE', 'This iteration stops at native extraction in phase 6.', 409);
   const master = await context.artifact(source.masterArtifactId);
+  if (phase === 6) {
+    const refined = job.data.refined as {id:string;label:string;alphaArtifactId:string;maskArtifactId:string}[];
+    if (!refined?.length) throw new DecompositionError('MASKS_REQUIRED','Accept refined masks before extraction.',409);
+    const selections = [];
+    for (const object of refined) selections.push({id:object.id,label:object.label,mask:await decodeMask(await context.artifact(object.alphaArtifactId),{encoding:'luminance'})});
+    const result = await extractVisibleLayers(master,selections);
+    const metadata = [];
+    for (const [i,layer] of [...result.layers,...(result.residual?[result.residual]:[])].entries()) {
+      const name = job.data.verificationMode === 'mock' && ['person','board'].includes(layer.label) ? layer.label : layer.id === 'residual' ? 'residual' : `object-${seq(i)}`;
+      const rgba = await context.put('extracted-layer',layer.rgba,`06-extracted/${name}.png`);
+      await context.put('extracted-alpha',layer.alpha,`06-extracted/${name}-alpha.png`);
+      for (const [surface,color] of [['white','#ffffff'],['dark','#18202c']]) await context.put('extracted-preview',await sharp(layer.rgba).flatten({background:color}).png().toBuffer(),`06-extracted/${name}-on-${surface}.png`);
+      metadata.push({objectId:layer.id,label:layer.label,bbox:layer.bbox,rgbaArtifactId:rgba.artifactId,alphaMode:'straight',workingMasterSha256:source.workingMasterSha256});
+    }
+    await context.put('extraction-metadata',json({phase:6,providerMode:job.data.verificationMode,liveVerified:false,nativeWidth:source.width,nativeHeight:source.height,objects:metadata,rgbProvenance:'Original working-master RGB',coverage:result.coverage}),'06-extracted/metadata.json','application/json');
+    context.job.state='completed';context.job.review=undefined;context.job.data.extracted=metadata;
+    context.finish(6,'Phase 6 of 6 — Extracted native layers ready');return;
+  }
   if (phase === 1) {
     await context.artifact(source.originalArtifactId); // Hash integrity is verified by the artifact store.
     await context.put('source-master', master, '01-original/working-master.png');
@@ -79,14 +100,18 @@ export async function runPhase(context: PipelineContext) {
     context.job.data.candidates = saved;
     const overlay = await context.put('segmentation-overlay', await overlayMasks(analysis, overlays), '04-sam2/overlay.png');
     await context.put('candidate-metadata', json({ candidates: saved, rejected: result.rejected, analysisTransform: transform, reviewRequired: true, warnings: result.warnings, suggestedTargetLabels: job.options.targetLabels }), '04-sam2/candidates.json', 'application/json');
+    if (job.data.verificationMode === 'mock') {
+      context.job.data.reviewSubmission={expectedRevision:context.job.revision,action:'accept-masks',objects:mockReviewObjects};
+      context.finish(4,'Phase 4 of 6 — Known fixture masks selected (mock)');return;
+    }
     context.review('OWNERSHIP_CONFIRMATION_REQUIRED', 'Select the intended objects, name them, and confirm their visible masks. Add negative points on face, shirt and fingers near a board.', ['accept-masks', 'guided-refine'], [overlay.artifactId]);
     context.finish(4, 'Object candidates ready for review'); return;
   }
   const correction = job.data.reviewSubmission as DecompositionReview | undefined;
   if (!correction) throw new DecompositionError('REVIEW_REQUIRED', 'Confirm the candidate masks before refinement.', 409);
   if (correction.action === 'approve-result' && job.data.refined) {
-    job.state = job.data.refinementHasDefects ? 'partial' : 'completed'; job.data.resultReviewed = true; job.review = undefined;
-    context.finish(5, job.state === 'completed' ? 'Phase 5 complete — reviewed masks ready' : 'Phase 5 partial — reviewed masks and warnings saved'); return;
+    job.state = 'running'; job.data.resultReviewed = true; job.review = undefined;
+    context.finish(5, 'Phase 5 of 6 — Refined masks accepted; extracting source pixels'); return;
   }
   const candidates = job.data.candidates as SavedCandidate[];
   const selected = (correction.objects ?? []).filter((object) => object.selected !== false);
@@ -122,6 +147,7 @@ export async function runPhase(context: PipelineContext) {
   context.job.data.refined = refined; context.job.data.refinementHasDefects = result.reviewRequired;
   result.warnings.forEach((warning) => context.warn(warning));
   await context.put('refinement-summary', json({ phase: 5, verificationMode: job.data.verificationMode ?? 'live', objects: refined, analysisTransform: transform, provenance: context.job.data.inferences, warnings: result.warnings, originalPixelsExtracted: false }), '05-refined/summary.json', 'application/json');
+  if (job.data.verificationMode === 'mock') {context.warn('Mock fixture masks; soft edges remain for visual inspection.');context.finish(5,'Phase 5 of 6 — Refined fixture masks ready');return;}
   context.review('REFINEMENT_VISUAL_REVIEW', 'Inspect refined masks and alpha on light/dark surfaces. Check face and finger exclusions. Approve the inspection or correct the masks; this demo stops at phase 5.', ['approve-result', 'accept-masks'], refined.map((r) => r.overlayArtifactId));
   context.finish(5, 'Phase 5 refined masks ready for inspection');
 }

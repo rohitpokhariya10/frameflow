@@ -33,3 +33,18 @@ Focused extraction/analysis tests: 8 passed; server typecheck passed. Soft recom
 has <=1 channel-value rounding; extracted straight RGB/alpha are exact. Mock person alpha
 remains a diagnostic soft-edge proposal requiring review, not live-verified hair quality.
 No live calls or credential inspection in this iteration; recorded live blocker: FAL_KEY not configured.
+
+## Browser wiring (phases 1–6 only)
+AI panel now has Decompose. Explicit `DECOMP_PROVIDER_MODE=mock` (development only)
+uses the owned fixture through existing API/jobs/worker; arbitrary artwork fails with
+MOCK_FIXTURE_REQUIRED rather than fake segmentation. Live mode never falls back.
+Worker freshness is checked before job creation. Refresh reconnects the saved job.
+Phase-6 artifacts use existing authenticated artifact routes, with white/dark surfaces
+and metadata links. Source remains the original Blob, without editable text.
+Verification: workspace typecheck and build passed; one Chromium upload/job/artifact/
+refresh smoke (`node tests/decomposition-ui-smoke.mjs`) passed on localhost:3001:
+job 815ffde9-6fc7-49bc-873e-62985ef2c84f, phase 6 completed, 34 artifacts, person/board visible.
+No live inference run. Local env is explicitly mock/development; existing Fal key untouched.
+Startup: `npm run build`, then `npm start` and `npm run worker -w @frameflow/server`.
+Env: DECOMPOSITION_ENABLED=true, DECOMP_PROVIDER_MODE=mock, DECOMP_AUTH_MODE=development,
+DECOMP_DATA_DIR=./data/decomposition-ui-demo. Phase 7 remains outside scope.

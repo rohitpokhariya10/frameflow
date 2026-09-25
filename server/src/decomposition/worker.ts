@@ -4,6 +4,7 @@ import type { DecompositionRepository } from './repository.js';
 import type { ArtifactStore } from './artifactStore.js';
 import type { DurableFalClient } from './providers/falClient.js';
 import { PipelineContext } from './context.js';
+import { attachMockProvider } from './providers/mock.js';
 import { runPhase } from './pipeline.js';
 
 export class DecompositionWorker {
@@ -19,7 +20,11 @@ export class DecompositionWorker {
       if (job.cancelRequested) {
         for (const request of this.repository.providerRequests(job.id)) await this.provider?.cancel(request);
         const latest = this.repository.getJob(job.id)!; latest.state = 'cancelled'; latest.progress = 'Cancelled; completed inference may still be charged'; this.repository.updateJob(latest, { workerId: this.id, fence: latest.fence, revision: latest.revision });
-      } else await runPhase(context);
+      } else {
+        if (job.data.verificationMode !== this.config.providerMode) throw new Error('Job provider mode differs from worker configuration.');
+        if (this.config.providerMode === 'mock') await attachMockProvider(context);
+        await runPhase(context);
+      }
     } catch (error) {
       const latest = this.repository.getJob(job.id);
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'PHASE_FAILED';

@@ -51,6 +51,7 @@ export interface DecompositionJobSummary {
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
 export interface DecompositionCapabilities {
+  providerMode?: 'mock' | 'live'; workerAvailable?: boolean;
   enabled: boolean; configured: boolean; authenticated: boolean; authMode: 'local-operator' | 'development';
   limits: { uploadBytes: number; minSide: number; maxSide: number; maxPixels: number; maxObjects: number; maxCalls: number; retentionDays: number };
   message: string;

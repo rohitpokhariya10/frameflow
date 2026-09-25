@@ -3,12 +3,12 @@ import type { DecompositionCapabilities, DecompositionClientContext, Decompositi
 import { useAppDispatch, useAppSelector, selectActiveVariant } from '../../store';
 import { decompositionActions, decompositionContextMatches } from '../../store/decompositionSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
-import { decompositionApi as api, rememberJob } from './api';
+import { decompositionApi as api, rememberJob, recoveredJob } from './api';
 import { MaskReview } from './MaskReview';
 import { InspectionViewer } from './InspectionViewer';
 import './decomposition.css';
 
-export function DecompositionPanel({ onClose }: { onClose: () => void }) {
+export function DecompositionPanel({ onClose, embedded = false }: { onClose?: () => void; embedded?: boolean }) {
   const dispatch = useAppDispatch();
   const projectId = useAppSelector((s) => s.editor.document.id);
   const variant = useAppSelector(selectActiveVariant);
@@ -21,6 +21,7 @@ export function DecompositionPanel({ onClose }: { onClose: () => void }) {
   const [labels, setLabels] = useState('');
   const [jobs, setJobs] = useState<DecompositionJobSummary[]>([]);
   const mounted = useRef(true);
+  const recovered = useRef(false);
   const current = useRef({ projectId, variant });
   useEffect(() => { current.current = { projectId, variant }; }, [projectId, variant]);
   useEffect(() => {
@@ -69,23 +70,32 @@ export function DecompositionPanel({ onClose }: { onClose: () => void }) {
     const latest = current.current;
     if (decompositionContextMatches(captured, latest.projectId, latest.variant.id, latest.variant.revision, latest.variant.background?.assetId)) dispatch(decompositionActions.received({ token: captured.operationToken, job: value }));
   });
+  useEffect(() => {
+    if (!capabilities?.authenticated || recovered.current || context) return;
+    recovered.current = true; const id = recoveredJob(projectId); if (!id) return;
+    let active = true;
+    void api.job(id).then(value => { if (!active) return; const v=current.current.variant;const captured={projectId,variantId:v.id,variantRevision:v.revision,sourceAssetId:v.background?.assetId,operationToken:crypto.randomUUID()};dispatch(decompositionActions.attached(captured));dispatch(decompositionActions.received({token:captured.operationToken,job:value})); }).catch(()=>undefined);
+    return () => {active=false;};
+  },[capabilities,context,projectId,dispatch]);
   const review = (body: DecompositionReview) => { if (job) void run(() => update(() => api.review(job.id, body))); };
-  return <div className="decomp-backdrop"><div className="decomp-panel" role="dialog" aria-modal="true" aria-label="Image decomposition">
-    <div className="decomp-row"><h2>Image decomposition</h2><button onClick={onClose} aria-label="Close image decomposition">Close</button></div>
-    <p>Inspect original → analysis → Qwen proposals → SAM2 candidates → refined SAM3 masks and alpha. This demo stops at phase 5.</p>
+  return <div className={embedded ? "decomp-inline" : "decomp-backdrop"}><div className="decomp-panel" role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label="Image decomposition">
+    <div className="decomp-row"><h2>Image decomposition</h2>{onClose && <button onClick={onClose} aria-label="Close image decomposition">Close</button>}</div>
+    <p>Inspect original → analysis → Qwen proposals → SAM2 candidates → refined SAM3 masks and alpha. Then extract original pixels into transparent PNGs. Stops at phase 6.</p>
     {(message || error) && <p role="alert">{message || error}</p>}
     {!capabilities ? <p>Checking decomposition service…</p> : !capabilities.enabled ? <p>{capabilities.message}</p> : <>
       {!capabilities.authenticated ? <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await api.login(password); setPassword(''); setCapabilities(await api.capabilities()); }); }}>
         <label>Operator password <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><button disabled={busy || !password}>Sign in</button>
       </form> : <>
+        <p role="status">{capabilities.providerMode === 'mock' ? 'Mock inference — local demo only. Use the owned fixture; other artwork requires Live Fal.' : 'Live Fal — paid inference; no mock fallback.'}</p>
+        {capabilities.providerMode === 'mock' && <button disabled={busy} onClick={() => void run(async () => {const response=await fetch('/api/decomposition/fixture');if(!response.ok)throw new Error('Demo fixture unavailable');setFile(new File([await response.blob()], 'person-board-fixture.png', {type:'image/png'}));})}>Use demo fixture</button>}
         {!capabilities.configured && <p role="status">{capabilities.message}</p>}
         <div className="decomp-row"><label>Source image <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFile(e.target.files?.[0] || null)} /></label><button onClick={() => setFile(null)} disabled={!variant.background}>Use current artwork</button></div>
         <p>{file ? file.name : variant.background ? 'Current artwork: original stored image bytes' : 'Choose a PNG, JPEG or WebP.'} · Retained {capabilities.limits.retentionDays} days</p>
         <label>Optional target names, separated by commas <input placeholder="person, board" value={labels} onChange={(e) => setLabels(e.target.value)} maxLength={600} /></label>
         
         <button className="decomp-primary" disabled={busy || !capabilities.configured || (!file && !variant.background)} onClick={() => void start()}>Start decomposition</button>
-        <p>At most 20 model submissions. A call limit is not a dollar estimate.</p>
-        {job && <section aria-label="Decomposition job"><div className="decomp-row"><h3>{job.progress || `Phase ${job.phase} of 5`}</h3><span>{job.state.replaceAll('_', ' ')} · {job.callsUsed} calls</span></div>
+        <p>{capabilities.providerMode === 'mock' ? 'Deterministic fixture responses; no paid calls.' : 'At most 20 model submissions. A call limit is not a dollar estimate.'}</p>
+        {job && <section aria-label="Decomposition job"><div className="decomp-row"><h3>Phase {job.phase} of 6 — {job.progress || `Phase ${job.phase} of 6`}</h3><span>{job.state.replaceAll('_', ' ')} · {job.callsUsed} calls</span></div>
           {job.error && <p role="alert">{job.error.message}</p>}{job.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
           {['queued', 'running', 'needs_review', 'cancel_requested'].includes(job.state) && <button disabled={busy || job.state === 'cancel_requested'} onClick={() => void run(() => update(() => api.cancel(job.id)))}>Cancel job</button>}
           {job.state === 'failed' && <button disabled={busy} onClick={() => void run(() => update(() => api.retry(job.id, job.revision)))}>Retry failed step</button>}

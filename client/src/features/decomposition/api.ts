@@ -35,3 +35,7 @@ export function rememberJob(projectId: string, jobId: string) {
     return true;
   } catch { return false; }
 }
+
+export function recoveredJob(projectId: string): string | undefined {
+  try { const ids = JSON.parse(localStorage.getItem(recoveryKey) || '{}')[projectId]; return Array.isArray(ids) && typeof ids[0] === 'string' ? ids[0] : undefined; } catch { return undefined; }
+}

@@ -9,7 +9,7 @@ interface UiState {
   activeVariantId: string;
   fitRequest: number;
   selectionVersion: number;
-  aiMode: 'generate' | 'adapt';
+  aiMode: 'generate' | 'adapt' | 'decompose';
 }
 const initialState: UiState = {
   activeLeftTab: 'design', zoom: 1, selectedElementId: null, activeVariantId: 'original', fitRequest: 0, selectionVersion: 0, aiMode: 'generate',
@@ -21,7 +21,7 @@ export const uiSlice = createSlice({
       if (state.activeVariantId === action.payload) return;
       state.activeVariantId = action.payload; state.selectedElementId = null; state.selectionVersion++; state.fitRequest++;
     },
-    aiModeChanged(state, action: PayloadAction<'generate' | 'adapt'>) { state.aiMode = action.payload; },
+    aiModeChanged(state, action: PayloadAction<'generate' | 'adapt' | 'decompose'>) { state.aiMode = action.payload; },
     elementSelected(state, action: PayloadAction<string | null>) { state.selectedElementId = action.payload; },
     tabChanged(state, action: PayloadAction<LeftTab>) { state.activeLeftTab = action.payload; },
     zoomChanged(state, action: PayloadAction<number>) {
