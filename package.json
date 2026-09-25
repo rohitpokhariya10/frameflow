@@ -23,7 +23,8 @@
     "decomp:setup": "npm run decomp:setup -w @frameflow/server",
     "decomp:verify": "vitest run server/src/decomposition/phases/source.test.ts server/src/decomposition/phases/analysis.test.ts server/src/decomposition/phases/candidates.test.ts server/src/decomposition/providers",
     "decomp:smoke": "npm run decomp:smoke -w @frameflow/server --",
-    "decomp:backup": "npm run decomp:backup -w @frameflow/server --"
+    "decomp:backup": "npm run decomp:backup -w @frameflow/server --",
+    "decomp:extract-demo": "node --import tsx --conditions=development server/src/decomposition/extractDemo.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

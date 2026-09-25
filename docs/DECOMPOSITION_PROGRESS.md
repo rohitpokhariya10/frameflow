@@ -1,7 +1,7 @@
-# Decomposition checkpoint — phases 1–5 only
+# Decomposition checkpoint — phases 1–6 offline demo
 
 Branch: `feat/image-decomposition-phases-1-10`. Original specification and initial checkpoint already pushed.
-Scope superseded by user: stop after phase 5. No live calls; FAL_KEY is not configured.
+Scope extended by user: implement phase 6 only, then stop. No live calls; FAL_KEY is not configured.
 
 Phase 1: IMPLEMENTED / OFFLINE VERIFIED — source validation, immutable original/master hashes.
 Phase 2: IMPLEMENTED / OFFLINE VERIFIED — exact native/analysis transforms, no upscaling.
@@ -14,12 +14,22 @@ Verification: typecheck passed; 30 focused source/analysis/candidate/provider te
 Artifacts: `artifacts/decomposition/offline-demo/index.html` and phase directories (22 files).
 Sample: owned synthetic 320×400 person holding board. Provider mock mode is explicit; live adapters remain intact.
 Runtime databases and demo outputs ignored. Prior 11 unrelated modified files preserved and excluded from commits.
-Earlier phase-6/extraction and phase-10 drafts remain uncommitted and unused; do not resume them without approval.
+Phase-6 extraction drafts completed for the offline demo. Phase-10 drafts remain uncommitted and unused.
 
 Remaining: live Fal quality verification; broader API/worker/browser operational validation is not claimed by this offline demo.
-Next: live verification when configured, then phase 6 only after approval.
+Next: live Phase 3–6 verification. Phase 7 is not authorized.
 
 Phase 01 completion commit: `2f752a7`. Phase 02 gate: six analysis/coordinate cases passed.
 Phase 02 completion commit: `2e4ede0`. Phase 03 gate: endpoint-specific proposals pass offline smoke and candidate tests; live pending.
 Phase 03 completion commit: `130edbf`. Phase 04 gate: distinct mock person/board masks, duplicates and geometry checks, zero board/person overlap.
 Phase 04 completion commit: `bdcacae`. Phase 05 gate: five mock responses through endpoint-specific normalization, SAM3 native crops and constrained BiRefNet alpha; inspection remains review-required.
+
+Phase 6: IMPLEMENTED / OFFLINE VERIFIED. `npm run decomp:extract-demo` consumes existing
+phase-5 files and validates hashes; native masks are not transformed twice. Outputs in
+`artifacts/decomposition/offline-demo/06-extracted/`: person/board RGBA, alpha/visible masks,
+white/dark previews, residual and placement metadata. HTML inspection updated.
+128000 opaque pixels checked across objects/residual, zero RGB mismatches; board/person overlap 0.
+Focused extraction/analysis tests: 8 passed; server typecheck passed. Soft recomposition
+has <=1 channel-value rounding; extracted straight RGB/alpha are exact. Mock person alpha
+remains a diagnostic soft-edge proposal requiring review, not live-verified hair quality.
+No live calls or credential inspection in this iteration; recorded live blocker: FAL_KEY not configured.
