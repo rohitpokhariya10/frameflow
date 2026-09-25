@@ -18,3 +18,5 @@ Earlier phase-6/extraction and phase-10 drafts remain uncommitted and unused; do
 
 Remaining: live Fal quality verification; broader API/worker/browser operational validation is not claimed by this offline demo.
 Next: live verification when configured, then phase 6 only after approval.
+
+Phase 01 completion commit: `2f752a7`. Phase 02 gate: six analysis/coordinate cases passed.
