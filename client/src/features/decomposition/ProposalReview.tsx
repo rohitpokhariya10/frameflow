@@ -1,0 +1,33 @@
+import { useEffect, useRef, useState } from 'react';
+import type { DecompositionJobSummary, DecompositionReview, ProposalReviewTarget } from '@frameflow/shared';
+import { validDecompositionReview } from '@frameflow/shared';
+import { artifactUrl } from './api';
+import { MaskCanvas } from './MaskCanvas';
+import { submitReviewOnce } from './reviewSubmission';
+export function ProposalReview({ job, onSubmit, busy }: { job: DecompositionJobSummary; onSubmit: (body: DecompositionReview) => Promise<void>; busy: boolean }) {
+  const key = `frameflow:proposal-review:${job.id}:${job.revision}`;
+  const [targets, setTargets] = useState<ProposalReviewTarget[]>(() => {
+    try { const saved: unknown = JSON.parse(sessionStorage.getItem(key) || 'null'); if (validDecompositionReview(saved, job.sourceWidth!, job.sourceHeight!) && saved.targets && saved.expectedRevision === job.revision) return saved.targets; } catch { /* in-memory editing still works */ }
+    return job.proposalTargets ?? [];
+  });
+  const [active, setActive] = useState(targets[0]?.id ?? '');
+  const [selected, setSelected] = useState<string[]>([]);
+  const [status, setStatus] = useState({ pending: false, error: '' }); const lock = useRef(false);
+  const current = targets.find(t => t.id === active);
+  const update = (change: Partial<ProposalReviewTarget>) => setTargets(all => all.map(t => t.id === active ? { ...t, ...change } : t));
+  useEffect(() => { try { sessionStorage.setItem(key, JSON.stringify({ expectedRevision: job.revision, action: 'save-proposals', targets })); } catch { /* optional recovery */ } }, [key, job.revision, targets]);
+  const send = (action: 'save-proposals' | 'approve-proposals') => void submitReviewOnce(lock, { expectedRevision: job.revision, action, targets }, onSubmit, setStatus);
+  const disabled = busy || status.pending;
+  return <section aria-label="Proposal review"><h3>Review discovered layers</h3><p>{job.review?.message}</p>
+    <div className="decomp-layer-grid">{job.proposals?.map(p => <article key={p.id}><strong>{p.label}</strong><img src={artifactUrl(p.artifactId)} alt={`Proposal ${p.id}`} className="decomp-checker" />{p.alphaArtifactId && <details><summary>Proposal alpha</summary><img src={artifactUrl(p.alphaArtifactId)} alt={`${p.label} alpha`} /></details>}<p>{p.registered ? 'Region can guide source segmentation.' : 'Geometry differs from the source. Name the target or paint guidance on the original.'}</p><button disabled={disabled || !current} onClick={() => update({ maskArtifactId: undefined, proposalIds: [...new Set([...(current?.proposalIds ?? []), p.id])] })}>Add proposal to target</button><details><summary>Advanced proposal evidence</summary><pre>{JSON.stringify({ proposalId: p.id, seed: p.seed, bounds: p.bounds, coverage: p.coverage, registered: p.registered, fingerprint: p.requestFingerprint }, null, 2)}</pre></details></article>)}</div>
+    <h4>Targets to isolate</h4>{targets.map(t => <div className="decomp-row" key={t.id}><input aria-label={`Group ${t.label}`} type="checkbox" checked={selected.includes(t.id)} onChange={e => setSelected(ids => e.target.checked ? [...ids, t.id] : ids.filter(id => id !== t.id))} /><button disabled={disabled} onClick={() => setActive(t.id)}>{t.label} · {t.rejected ? 'Rejected' : t.approved ? 'Approved' : 'Needs review'}</button></div>)}
+    <div className="decomp-row"><button disabled={disabled || targets.length >= 12} onClick={() => { const id = `target-${crypto.randomUUID()}`; setTargets(all => [...all, { id, label: 'New target', proposalIds: [], approved: false, rejected: false, groupMode: 'single', role: 'unknown' }]); setActive(id); }}>Create target</button><button disabled={disabled || selected.length < 2} onClick={() => { const members = targets.filter(t => selected.includes(t.id)), id = `target-${crypto.randomUUID()}`; const group: ProposalReviewTarget = { id, label: members.map(t => t.label).join(' + ').slice(0, 100), proposalIds: [...new Set(members.flatMap(t => t.proposalIds))], approved: false, rejected: false, memberTargetIds: members.filter(m => m.maskArtifactId).map(m => m.id), groupMode: 'group', role: 'object', points: members.flatMap(t => t.points ?? []).slice(-64), strokes: members.flatMap(t => t.strokes ?? []).slice(-100) }; setTargets(all => [...all.filter(t => !selected.includes(t.id)), group]); setSelected([]); setActive(id); }}>Group selected targets</button></div>
+    {current && <><label>Target name <input maxLength={100} value={current.label} onChange={e => update({ label: e.target.value })} /></label><label>Role <select value={current.role} onChange={e => update({ role: e.target.value as ProposalReviewTarget['role'] })}>{['foreground','background','text','object','unknown'].map(role => <option key={role}>{role}</option>)}</select></label>
+      <div className="decomp-row"><button disabled={disabled} onClick={() => update({ approved: true, rejected: false })}>Approve target</button><button disabled={disabled} onClick={() => update({ approved: false, rejected: true })}>Reject target</button><button disabled={disabled || current.proposalIds.length < 2} onClick={() => { const separate = current.proposalIds.map((id, i) => ({ ...current, id: `target-${crypto.randomUUID()}`, label: `${current.label} part ${i + 1}`.slice(0, 100), proposalIds: [id], groupMode: 'single' as const, memberTargetIds: undefined, approved: false, maskArtifactId: undefined, points: [], strokes: [] })); setTargets(all => [...all.filter(t => t.id !== current.id), ...separate]); setActive(separate[0].id); }}>Keep proposals separate</button></div>
+      <p>Provisional guidance on the original image. This is not accepted ownership.</p>
+      <label>Assigned proposals <select multiple aria-label="Assigned proposals" value={current.proposalIds} onChange={e => update({ maskArtifactId: undefined, proposalIds: Array.from(e.target.selectedOptions, o => o.value) })}>{job.proposals?.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
+      <MaskCanvas key={current.id} sourceId={job.sourcePreviewArtifactId!} maskId={current.maskArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} edits={{ points: current.points, strokes: current.strokes, box: current.userBox }} onChange={edits => update({ points: edits.points, strokes: edits.strokes, userBox: edits.box })} disabled={disabled} />
+    </>}
+    {status.error && <p role="alert">{status.error}</p>}<div className="decomp-row"><button disabled={disabled} onClick={() => send('save-proposals')}>Save proposal review (no AI)</button><button disabled={disabled || !targets.some(t => t.approved && !t.rejected)} onClick={() => send('approve-proposals')}>Continue to source segmentation</button></div>
+  </section>;
+}

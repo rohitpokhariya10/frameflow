@@ -4,6 +4,8 @@ import { useAppDispatch, useAppSelector, selectActiveVariant } from '../../store
 import { decompositionActions, decompositionContextMatches } from '../../store/decompositionSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
 import { decompositionApi as api, rememberJob, recoveredJob } from './api';
+import { ProposalReview } from './ProposalReview';
+import { AlphaReview } from './AlphaReview';
 import { MaskReview } from './MaskReview';
 import { InspectionViewer } from './InspectionViewer';
 import './decomposition.css';
@@ -83,7 +85,7 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
   };
   return <div className={embedded ? "decomp-inline" : "decomp-backdrop"}><div className="decomp-panel" role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label="Image decomposition">
     <div className="decomp-row"><h2>Image decomposition</h2>{onClose && <button onClick={onClose} aria-label="Close image decomposition">Close</button>}</div>
-    <p>Name a target to segment it from the original image. Inspect ownership, correct with points or a brush, then confirm alpha and extract original pixels. Qwen proposals and raw masks are inspection evidence. Stops at phase 6.</p>
+    <p>Review discovered layers, confirm their source masks, then inspect alpha before extracting original pixels. Each review can be saved and resumed. Stops at phase 6.</p>
     {(message || error) && <p role="alert">{message || error}</p>}
     {!capabilities ? <p>Checking decomposition service…</p> : !capabilities.enabled ? <p>{capabilities.message}</p> : <>
       {!capabilities.authenticated ? <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await api.login(password); setPassword(''); setCapabilities(await api.capabilities()); }); }}>
@@ -102,8 +104,10 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
           {job.error && <p role="alert">{job.error.message}</p>}{job.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
           {['queued', 'running', 'needs_review', 'cancel_requested'].includes(job.state) && <button disabled={busy || job.state === 'cancel_requested'} onClick={() => void run(() => update(() => api.cancel(job.id)))}>Cancel job</button>}
           {job.state === 'failed' && <button disabled={busy} onClick={() => void run(() => update(() => api.retry(job.id, job.revision)))}>Retry failed step</button>}
-          {job.state === 'needs_review' && job.candidates?.length && job.sourcePreviewArtifactId && job.review?.actions.some(action => ['accept-masks', 'guided-refine', 'manual-masks'].includes(action)) ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
-          {job.state === 'needs_review' && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => void run(() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] }))}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
+          {job.state === 'needs_review' && job.review?.gate === 'qwen-proposal-review' && <ProposalReview key={`${job.id}-${job.revision}`} job={job} onSubmit={review} busy={busy} />}
+          {job.state === 'needs_review' && job.review?.gate === 'alpha-review' && <AlphaReview key={`${job.id}-${job.revision}`} job={job} onSubmit={review} busy={busy} />}
+          {job.state === 'needs_review' && job.review?.gate !== 'alpha-review' && job.candidates?.length && job.sourcePreviewArtifactId && job.review?.actions.some(action => ['accept-masks', 'guided-refine', 'manual-masks'].includes(action)) ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
+          {job.state === 'needs_review' && !job.review?.gate && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => void run(() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] }))}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
           <InspectionViewer job={job} />
         </section>}
         <details><summary>Recover jobs ({jobs.length})</summary><p>Opening a job only attaches its viewer. Closing this panel or changing designs does not cancel server work.</p>{jobs.map((saved) => <div className="decomp-row" key={saved.id}><button onClick={() => void run(async () => attach(await api.job(saved.id)))}>{saved.id.slice(0, 8)} · {saved.state} · phase {saved.phase}</button><button onClick={() => void run(async () => { await api.remove(saved.id); setJobs(await api.jobs()); if (job?.id === saved.id) dispatch(decompositionActions.detached()); })}>Delete job and artifacts</button></div>)}</details>

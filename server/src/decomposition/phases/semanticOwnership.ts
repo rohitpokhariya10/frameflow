@@ -92,7 +92,7 @@ export async function recoverSemanticOwnership(master: Buffer, infer: Infer, evi
     const a = maskBounds(members[0])!, b = maskBounds(members[1])!;
     const dx = Math.max(0, a.x - b.x - b.width, b.x - a.x - a.width), dy = Math.max(0, a.y - b.y - b.height, b.y - a.y - a.height);
     const relation = Math.hypot(dx, dy) <= Math.min(width, height) * 0.02;
-    if (relation) {
+    if (relation || evidence.target.userConfirmedGroup) {
       const combined = unionMasks(members[0], members[1]);
       const score = scoreSemanticMask(combined, { ...evidence, members }, undefined, -1); scores.push(score);
       if (!score.reasons.length) { mask = combined; unionSources = [...evidence.target.memberHints]; }

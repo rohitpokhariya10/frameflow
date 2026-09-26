@@ -3,7 +3,7 @@ import type { DecompositionJobSummary, DecompositionReview } from '@frameflow/sh
 import { validDecompositionReview } from '@frameflow/shared';
 import { artifactUrl } from './api';
 import { submitReviewOnce } from './reviewSubmission';
-import { nativePointer } from './geometry';
+import { MaskCanvas } from './MaskCanvas';
 
 export type ReviewCandidate = NonNullable<DecompositionJobSummary['candidates']>[number];
 export function MaskReview({ job, candidates, sourceId, width, height, onSubmit, busy }: {
@@ -11,6 +11,7 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
   onSubmit: (review: DecompositionReview) => void | Promise<void>; busy: boolean;
 }) {
   const [advanced, setAdvanced] = useState(false);
+  const [groupLabel, setGroupLabel] = useState('');
   const semanticCandidates = candidates.filter(c => c.source !== 'sam2' && c.source !== undefined);
   const visibleCandidates = advanced || !semanticCandidates.length ? candidates : semanticCandidates;
   const [active, setActive] = useState(visibleCandidates[0]?.id || '');
@@ -26,9 +27,6 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
   useEffect(() => {
     try { sessionStorage.setItem(draftKey, JSON.stringify({ expectedRevision: job.revision, action: 'accept-masks', objects })); } catch { /* Keep editing in memory when storage is unavailable. */ }
   }, [draftKey, job.revision, objects]);
-  const [tool, setTool] = useState<'positive' | 'negative' | 'add' | 'subtract' | 'box'>('positive');
-  const [radius, setRadius] = useState(10);
-  const stroke = useRef<{ x: number; y: number }[] | null>(null);
   const selected = objects.find((object) => object.id === active);
   const candidate = candidates.find((object) => object.id === active);
   const update = (change: Partial<(typeof objects)[number]>) => setObjects((all) => all.map((object) => object.id === active ? { ...object, ...change } : object));
@@ -36,51 +34,28 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
   const [submission, setSubmission] = useState({ pending: false, error: '' });
   const send = (action: DecompositionReview['action']) => {
     if (busy) return;
-    void submitReviewOnce(submissionLock, { expectedRevision: job.revision, action, objects }, onSubmit, setSubmission);
+    void submitReviewOnce(submissionLock, { expectedRevision: job.revision, action, objects, ...(['merge-targets','split-target'].includes(action) ? { group: { label: groupLabel || selected?.label || 'Target group', memberIds: action === 'split-target' ? [active] : objects.filter(o => o.selected).map(o => o.id) } } : {}) }, onSubmit, setSubmission);
   };
   const submitting = busy || submission.pending;
   return <section aria-label="Mask review">
     <h3>Review masks</h3><p>{job.review?.message}</p>
-    <p>Check each object, especially fingers and faces near a board. Paint only pixels visible in the source. Refine with AI makes a new source-image segmentation request. Saving manual edits uses no AI.</p>
+    <p>Paint visible source pixels. Positive points can include missing regions. AI correction returns here for inspection; confirming ownership starts edge refinement.</p>
     <p><strong>Included ({objects.filter(o => o.selected).length}):</strong> {objects.filter(o => o.selected).map(o => advanced ? `${o.label} (${o.candidateId})` : o.label).join(', ') || 'None — choose the intended object below.'}</p>
-    <p>Viewing a candidate does not change which objects are included. If no full automatic candidate exists, choose the closest mask, name the complete target (for example person with phone), add positive points to missing regions and refine. Use only this candidate excludes all other fragments.</p>
+    <p>Choose the target and include it. Exclude targets you do not want to extract.</p>
     <button disabled={submitting || !active} onClick={() => setObjects(all => all.map(object => ({ ...object, selected: object.id === active })))}>Use only this candidate</button>
     <label><input type="checkbox" checked={advanced} onChange={e => { setAdvanced(e.target.checked); if (!e.target.checked && semanticCandidates.length && !semanticCandidates.some(c => c.id === active)) setActive(semanticCandidates[0].id); }} /> Advanced / raw proposals</label>
     <div className="decomp-row"><label>Object <select value={active} onChange={(e) => setActive(e.target.value)}>{visibleCandidates.map((c) => <option key={c.id} value={c.id}>{c.label} — {c.qualityStatus === 'needs-correction' ? 'Needs correction' : 'Inspect target'}{advanced ? ` · ${c.id} (${((c.statistics?.areaFraction ?? 0) * 100).toFixed(1)}%)` : ''}</option>)}</select></label>
       {selected && <><label>Name (user target) <input aria-label="Name" list={`targets-${job.id}`} maxLength={100} value={selected.label} onChange={(e) => update({ label: e.target.value })} /></label><label><input type="checkbox" checked={selected.selected !== false} onChange={(e) => update({ selected: e.target.checked })} /> Include this object</label></>}
     </div>
     <datalist id={`targets-${job.id}`}>{job.options?.targetLabels?.map(label => <option key={label} value={label} />)}</datalist>
-    <div className="decomp-row"><label>Correction <select value={tool} onChange={(e) => setTool(e.target.value as typeof tool)}><option value="positive">Positive point</option><option value="negative">Negative point</option><option value="add">Add brush</option><option value="subtract">Subtract brush</option><option value="box">Bounding box</option></select></label>
-      <label>Brush radius (source pixels) <input type="number" min={1} max={256} value={radius} onChange={(e) => setRadius(Math.max(1, Math.min(256, Number(e.target.value))))} /></label>
-      <button onClick={() => update({ points: [], strokes: [], box: undefined })}>Clear corrections</button>
-    </div>
-    <div className="decomp-review-image" style={{ width: `min(100%, ${65 * width / height}vh)`, aspectRatio: `${width}/${height}`, touchAction: 'none' }} onPointerDown={(e) => {
-      const point = nativePointer(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), width, height); if (!point || !selected) return;
-      e.currentTarget.setPointerCapture(e.pointerId);
-      if (tool === 'positive' || tool === 'negative') { update({ points: [...(selected.points ?? []), { ...point, label: tool === 'positive' ? 1 as const : 0 as const }].slice(-64) }); return; }
-      stroke.current = [point];
-    }} onPointerMove={(e) => {
-      if (!stroke.current) return;
-      const point = nativePointer(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), width, height);
-      if (point && stroke.current.length < 1000) stroke.current.push(point);
-    }} onPointerUp={() => {
-      if (!stroke.current || !selected) return;
-      if (tool === 'box') {
-        const first = stroke.current[0], last = stroke.current.at(-1)!;
-        setObjects((all) => all.map((object) => object.id === active ? { ...object, box: { x: Math.min(first.x, last.x), y: Math.min(first.y, last.y), width: Math.max(1, Math.abs(last.x - first.x)), height: Math.max(1, Math.abs(last.y - first.y)) } } : object));
-      } else if (tool === 'add' || tool === 'subtract') update({ strokes: [...(selected.strokes ?? []), { mode: tool, radius, points: stroke.current }].slice(-100) });
-      stroke.current = null;
-    }}>
-      <img draggable={false} src={artifactUrl(sourceId)} alt="Source image for mask correction" />
-      {candidate && <div className="decomp-mask-overlay" role="img" aria-label={`Selected ownership for ${candidate.id}`} style={{ maskImage: `url("${artifactUrl(candidate.maskArtifactId)}")` }} />}
-      <svg viewBox={`0 0 ${width} ${height}`} aria-hidden="true">{selected?.points?.map((p, index) => <circle key={`p${index}`} cx={p.x} cy={p.y} r={Math.max(width / 100, 3)} fill={p.label ? '#19e993' : '#ff4160'} />)}{selected?.strokes?.map((s, i) => <polyline key={`s${i}`} points={s.points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={s.mode === 'add' ? '#19e993' : '#ff4160'} strokeWidth={s.radius * 2} strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />)}</svg>
-    </div>
+    {candidate && selected && <div aria-label={`Selected ownership for ${candidate.id}`}><MaskCanvas key={candidate.id} sourceId={sourceId} maskId={candidate.maskArtifactId} width={width} height={height} edits={selected} onChange={update} disabled={submitting} /></div>}
     {candidate?.target && <p>Target: {selected?.label} · Provider: SAM 3.1 · {candidate.qualityStatus === 'needs-correction' ? 'Needs correction' : 'Needs visual confirmation'} · Revision {candidate.revisionId || job.revision}</p>}
     {advanced && candidate && <><p><strong>{candidate.id}</strong> · {job.artifacts.find(a => a.artifactId === candidate.overlayArtifactId)?.relativePath || 'Saved candidate'}<br />{candidate.source === 'sam3' ? 'Source-image semantic ownership; generated RGB is not used.' : candidate.source === 'synthesized' ? `Synthesized from ${candidate.sourceCandidateIds?.join(', ')}; Qwen ${candidate.proposalId}. Grouping requires review.` : `Raw source support. Qwen matches: ${candidate.proposalMatches?.map(match => match.proposalId).join(', ') || 'none reliable'}.`}<br />Cyan is selected ownership; the remaining source is context only. Renaming does not expand a mask.</p><a href={artifactUrl(candidate.maskArtifactId)} target="_blank" rel="noreferrer">Inspect actual black/white mask</a></>}
+    <div className="decomp-row"><label>Group name <input value={groupLabel} maxLength={100} onChange={e => setGroupLabel(e.target.value)} /></label><button disabled={submitting || objects.filter(o => o.selected).length < 2} onClick={() => send('merge-targets')}>Merge included targets</button><button disabled={submitting || !active} onClick={() => send('split-target')}>Split target</button></div>
     <p>Positive = should belong, including missing regions. Negative = should not belong. Refine with AI runs one targeted attempt and returns a mask for inspection.</p>
     <p>Saved on this object: {selected?.points?.filter(p => p.label === 1).length ?? 0} positive / {selected?.points?.filter(p => p.label === 0).length ?? 0} negative points. {selected?.selected === false ? 'Excluded: these corrections will not be used. Include this object to refine it.' : 'Included in refinement.'}</p>
     {candidate?.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
     {submission.error && <p role="alert">{submission.error}</p>}
-    <div className="decomp-row"><button disabled={submitting || !objects.some((o) => o.selected)} onClick={() => send('accept-masks')}>{submission.pending ? 'Submitting review…' : 'Confirm visible masks'}</button><button disabled={submitting || selected?.selected === false || (!selected?.points?.length && !selected?.box)} onClick={() => send('guided-refine')}>Refine with AI</button><button disabled={submitting || !objects.some(o => o.selected)} onClick={() => send('manual-masks')}>Save manual mask (no AI)</button></div>
+    <div className="decomp-row"><button disabled={submitting || !objects.some((o) => o.selected)} onClick={() => send('accept-masks')}>{submission.pending ? 'Submitting review…' : 'Confirm ownership and refine edges'}</button><button disabled={submitting || selected?.selected === false || (!selected?.points?.length && !selected?.box)} onClick={() => send('guided-refine')}>Refine with AI</button><button disabled={submitting || !objects.some(o => o.selected)} onClick={() => send('manual-masks')}>Save manual mask (no AI)</button></div>
   </section>;
 }

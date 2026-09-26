@@ -1,4 +1,7 @@
 import sharp from 'sharp';
+import { initializeProposalReview, applyProposalReview, proposalGate } from './phases/proposalReview.js';
+import { regroupMasks, reviewAlpha } from './phases/maskReviewActions.js';
+import { decodeRgba } from './image/extract.js';
 import { semanticDiscovery, semanticReview } from './phases/semanticPipeline.js';
 import { extractVisibleLayers } from './phases/extract.js';
 import { mockReviewObjects } from './providers/mock.js';
@@ -32,7 +35,7 @@ async function proposals(context: PipelineContext): Promise<LayerProposal[]> {
   return output;
 }
 
-/** Concrete five-stage demo. There is no dispatch path to extraction or completion. */
+/** Durable review gates surround source segmentation and alpha; dispatch stops at phase 6. */
 export async function runPhase(context: PipelineContext) {
   const { job } = context;
   const source = context.repository.getSource(job.sourceId, job.ownerId);
@@ -41,11 +44,18 @@ export async function runPhase(context: PipelineContext) {
   if (phase > 6) throw new DecompositionError('DEMO_SCOPE', 'This iteration stops at native extraction in phase 6.', 409);
   const master = await context.artifact(source.masterArtifactId);
   if (phase === 6) {
+    if (job.data.reviewWorkflow === 2 && !job.data.resultReviewed) throw new DecompositionError('FINAL_REVIEW_REQUIRED', 'Approve the current alpha revision before extracting pixels.', 409);
     const refined = job.data.refined as {id:string;label:string;alphaArtifactId:string;maskArtifactId:string}[];
     if (!refined?.length) throw new DecompositionError('MASKS_REQUIRED','Accept refined masks before extraction.',409);
     const selections = [];
     for (const object of refined) selections.push({id:object.id,label:object.label,mask:await decodeMask(await context.artifact(object.alphaArtifactId),{encoding:'luminance'})});
     const result = await extractVisibleLayers(master,selections);
+    const native = await decodeRgba(master);
+    for (const [i, selection] of selections.entries()) {
+      const pixels = Buffer.from(native.data);
+      for (let p = 0; p < selection.mask.data.length; p++) pixels[p * 4 + 3] = Math.round(pixels[p * 4 + 3] * selection.mask.data[p] / 255);
+      await context.put('native-extracted-layer', await sharp(pixels, { raw: { width: source.width, height: source.height, channels: 4 } }).png().toBuffer(), `06-extracted/object-${seq(i)}-native.png`);
+    }
     const metadata = [];
     for (const [i,layer] of [...result.layers,...(result.residual?[result.residual]:[])].entries()) {
       const name = job.data.verificationMode === 'mock' && ['person','board'].includes(layer.label) ? layer.label : layer.id === 'residual' ? 'residual' : `object-${seq(i)}`;
@@ -80,16 +90,25 @@ export async function runPhase(context: PipelineContext) {
     const saved: SavedProposal[] = [];
     for (const [i, proposal] of result.proposals.entries()) {
       const record = await context.put('qwen-proposal', proposal.rgba, `03-qwen/proposal-${seq(i)}.png`);
+      const alpha = await context.put('qwen-alpha', await encodeMask(proposal.alpha), `03-qwen/proposal-${seq(i)}-alpha.png`);
       const { id, label, width, height, registered, warnings } = proposal;
-      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed: request?.sentSeed, prompt: request?.effectiveInput?.prompt, requestFingerprint: request?.requestFingerprint, promptNote: 'Fixed image caption for discovery only; explicit target intent belongs to source SAM segmentation.' } });
+      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ alphaArtifactId: alpha.artifactId, bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed: request?.sentSeed, prompt: request?.effectiveInput?.prompt, requestFingerprint: request?.requestFingerprint, promptNote: 'Fixed image caption for discovery only; explicit target intent belongs to source SAM segmentation.' } });
     }
     context.job.data.proposals = saved;
     result.warnings.forEach((warning) => context.warn(warning));
     await context.put('proposal-metadata', json({ proposals: saved, warnings: result.warnings, provenance: context.job.data.inferences }), '03-qwen/proposals.json', 'application/json');
-    context.finish(3, 'Qwen proposals saved; source masks are next'); return;
+    await initializeProposalReview(context, master);
+    context.finish(3, 'Review discovered layers before source segmentation'); return;
   }
   if (phase === 4) {
-    if (job.data.verificationMode !== 'mock' && await semanticDiscovery(context, master, await proposals(context))) return;
+    if (job.data.reviewWorkflow === 2) {
+      const review = job.data.reviewSubmission as DecompositionReview | undefined;
+      if (!job.data.proposalReviewApproved) {
+        if (!review || !['save-proposals','approve-proposals'].includes(review.action)) { proposalGate(context); context.save(); return; }
+        if (!await applyProposalReview(context, master, review)) return;
+      }
+      if (await semanticDiscovery(context, master, await proposals(context))) return;
+    } else if (job.data.verificationMode !== 'mock' && await semanticDiscovery(context, master, await proposals(context))) return;
     const result = await segmentObjects(analysis, context.infer, { proposals: await proposals(context), maxObjects: job.options.maxObjects });
     const saved: SavedCandidate[] = []; const overlays: { mask: Mask }[] = [];
     for (const candidate of result.candidates) {
@@ -114,14 +133,19 @@ export async function runPhase(context: PipelineContext) {
   const correction = job.data.reviewSubmission as DecompositionReview | undefined;
   if (!correction) throw new DecompositionError('REVIEW_REQUIRED', 'Confirm the candidate masks before refinement.', 409);
   if (!validDecompositionReview(correction, source.width, source.height)) throw new DecompositionError('INVALID_REVIEW', 'Review coordinates or structure are invalid.', 400);
+  if (['merge-targets','split-target'].includes(correction.action)) { await regroupMasks(context, master, correction); return; }
+  if (['manual-alpha','restore-interior','back-to-semantic'].includes(correction.action)) { await reviewAlpha(context, master, correction); return; }
   if (correction.action === 'approve-result' && job.data.refined) {
     if ((job.data.refined as { refinementAccepted?: boolean }[]).some(item => item.refinementAccepted === false)) {
       context.review('TARGET_NOT_RECOVERED', 'A rejected semantic mask cannot be approved. Correct the target or save a manual mask.', ['guided-refine', 'manual-masks']); context.save(); return;
     }
+    const records = job.data.refined as { revisionId?: string; maskRevisionId?: string; alphaRevisionId?: string; overlayRevisionId?: string; qualityStatus?: string }[];
+    if (records.some(r => r.revisionId && (r.maskRevisionId !== r.revisionId || r.alphaRevisionId !== r.revisionId || r.overlayRevisionId !== r.revisionId))) throw new DecompositionError('REVISION_MISMATCH', 'Reload matching mask, alpha and overlay before approval.', 409);
+    for (const r of records) r.qualityStatus = 'PASS';
     job.state = 'running'; job.data.resultReviewed = true; job.review = undefined;
     context.finish(5, 'Phase 5 of 6 — Refined masks accepted; extracting source pixels'); return;
   }
-  if (job.data.verificationMode !== 'mock' || correction.action === 'manual-masks') { await semanticReview(context, master, correction); return; }
+  if (job.data.reviewWorkflow === 2 || job.data.verificationMode !== 'mock' || correction.action === 'manual-masks') { await semanticReview(context, master, correction); return; }
   const candidates = job.data.candidates as SavedCandidate[];
   const selected = (correction.objects ?? []).filter((object) => object.selected !== false);
   if (!selected.length || selected.length > job.options.maxObjects) throw new DecompositionError('OBJECT_SELECTION_REQUIRED', `Select between 1 and ${job.options.maxObjects} objects.`, 409);

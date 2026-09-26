@@ -16,13 +16,18 @@ export interface DecompositionPoint { x: number; y: number; label: 0 | 1 }
 export interface DecompositionStroke { mode: 'add' | 'subtract'; radius: number; points: { x: number; y: number }[] }
 export interface DecompositionReview {
   expectedRevision: number;
-  action: 'manual-masks' | 'accept-masks' | 'guided-refine' | 'accept-visible-only' | 'approve-generation' | 'approve-result';
+  action: 'save-proposals' | 'approve-proposals' | 'merge-targets' | 'split-target' | 'manual-alpha' | 'restore-interior' | 'back-to-semantic' | 'manual-masks' | 'accept-masks' | 'guided-refine' | 'accept-visible-only' | 'approve-generation' | 'approve-result';
   objects?: { id: string; candidateId?: string; label?: string; points?: DecompositionPoint[]; box?: DecompositionBox; strokes?: DecompositionStroke[]; selected?: boolean; completeHidden?: boolean }[];
+  targets?: ProposalReviewTarget[];
+  group?: { label: string; memberIds: string[] };
+  alphaValue?: number;
   order?: string[];
   occlusion?: { frontObjectId: string; backObjectId: string }[];
   hiddenRegions?: { objectId: string; strokes: DecompositionStroke[]; prompt: string }[];
 }
-export interface DecompositionReviewRequest { code: string; message: string; actions: string[]; artifactIds: string[] }
+export type ReviewGate = 'qwen-proposal-review' | 'semantic-mask-review' | 'alpha-review';
+export type QualityTier = 'PASS' | 'REVIEW' | 'FAIL';
+export interface DecompositionReviewRequest { gate?: ReviewGate; code: string; message: string; actions: string[]; artifactIds: string[] }
 export interface DecompositionArtifactRef {
   artifactId: string; relativePath: string; sha256: string; mimeType: string; bytes: number; width: number; height: number;
 }
@@ -48,6 +53,7 @@ export interface DecompositionJobSummary {
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
   candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[];
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
@@ -85,10 +91,22 @@ export function validDecompositionManifest(value: unknown): value is Decompositi
   return [value.preview,value.qualityReport,value.provenance].every((ref) => ref === undefined || validDecompositionArtifact(ref));
 }
 export function validDecompositionReview(value: unknown, width: number, height: number): value is DecompositionReview {
-  if (!object(value) || !integer(value.expectedRevision) || !['manual-masks','accept-masks','guided-refine','accept-visible-only','approve-generation','approve-result'].includes(String(value.action))) return false;
+  if (!object(value) || !integer(value.expectedRevision) || !['save-proposals','approve-proposals','merge-targets','split-target','manual-alpha','restore-interior','back-to-semantic','manual-masks','accept-masks','guided-refine','accept-visible-only','approve-generation','approve-result'].includes(String(value.action))) return false;
   if (value.order !== undefined && (!strings(value.order) || value.order.length > 12 || new Set(value.order).size !== value.order.length)) return false;
   if (value.occlusion !== undefined && (!Array.isArray(value.occlusion) || value.occlusion.length > 144 || !value.occlusion.every((edge) => object(edge) && typeof edge.frontObjectId === 'string' && typeof edge.backObjectId === 'string' && edge.frontObjectId.length <= 100 && edge.backObjectId.length <= 100 && edge.frontObjectId !== edge.backObjectId))) return false;
   if (value.hiddenRegions !== undefined && (!Array.isArray(value.hiddenRegions) || value.hiddenRegions.length > 2 || !value.hiddenRegions.every((region) => object(region) && typeof region.objectId === 'string' && region.objectId.length <= 100 && typeof region.prompt === 'string' && region.prompt.length > 0 && region.prompt.length <= 2000 && Array.isArray(region.strokes) && region.strokes.length > 0 && region.strokes.length <= 100 && region.strokes.every((stroke) => object(stroke) && ['add','subtract'].includes(String(stroke.mode)) && finite(stroke.radius) && stroke.radius >= 1 && stroke.radius <= 256 && Array.isArray(stroke.points) && stroke.points.length > 0 && stroke.points.length <= 1000 && stroke.points.every((p) => object(p) && finite(p.x) && finite(p.y) && p.x >= 0 && p.y >= 0 && p.x < width && p.y < height))))) return false;
+  if (value.alphaValue !== undefined && (!integer(value.alphaValue) || value.alphaValue < 0 || value.alphaValue > 255)) return false;
+  if (value.group !== undefined && (!object(value.group) || typeof value.group.label !== 'string' || !value.group.label.trim() || value.group.label.length > 100 || !strings(value.group.memberIds) || !value.group.memberIds.length || value.group.memberIds.length > 6 || new Set(value.group.memberIds).size !== value.group.memberIds.length)) return false;
+  if (value.targets !== undefined) {
+    if (!Array.isArray(value.targets) || value.targets.length > 12 || new Set(value.targets.map(t => object(t) ? t.id : null)).size !== value.targets.length) return false;
+    for (const target of value.targets) {
+      if (!object(target) || typeof target.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(target.id) || typeof target.label !== 'string' || !target.label.trim() || target.label.length > 100 || !strings(target.proposalIds) || target.proposalIds.length > 6 || new Set(target.proposalIds).size !== target.proposalIds.length || typeof target.approved !== 'boolean' || typeof target.rejected !== 'boolean' || (target.approved && target.rejected) || !['single','group'].includes(String(target.groupMode)) || !['foreground','background','text','object','unknown'].includes(String(target.role))) return false;
+      if (target.memberTargetIds !== undefined && (!strings(target.memberTargetIds) || target.memberTargetIds.length > 6 || new Set(target.memberTargetIds).size !== target.memberTargetIds.length)) return false;
+      if (!validDecompositionReview({ expectedRevision: value.expectedRevision, action: 'manual-masks', objects: [{ id: target.id, label: target.label, points: target.points, box: target.userBox, strokes: target.strokes }] }, width, height)) return false;
+    }
+  }
+  if (['save-proposals','approve-proposals'].includes(String(value.action)) && !value.targets) return false;
+  if (['merge-targets','split-target'].includes(String(value.action)) && !value.group) return false;
   if (value.objects === undefined) return true;
   if (!Array.isArray(value.objects) || value.objects.length > 64) return false;
   const point = (p: unknown) => object(p) && finite(p.x) && finite(p.y) && p.x >= 0 && p.y >= 0 && p.x < width && p.y < height;
@@ -106,5 +124,26 @@ export type ReviewCorrection = DecompositionReview;
 /** User intent is distinct from model labels and source-image evidence. */
 export interface SemanticTarget {
   id: string; label: string; providerPrompt: string; compositionMode: 'single' | 'group';
-  memberHints?: string[]; origin: 'user' | 'proposal'; proposalId?: string;
+  memberHints?: string[]; proposalIds?: string[]; userConfirmedGroup?: boolean; role?: ProposalReviewTarget['role']; origin: 'user' | 'proposal'; proposalId?: string;
+}
+
+export interface ProposalReviewTarget {
+  id: string; label: string; proposalIds: string[]; approved: boolean; rejected: boolean;
+  memberTargetIds?: string[]; groupMode: 'single' | 'group'; role: 'foreground' | 'background' | 'text' | 'object' | 'unknown';
+  points?: DecompositionPoint[]; strokes?: DecompositionStroke[]; userBox?: DecompositionBox;
+  provisionalMaskRevision?: string; maskArtifactId?: string; overlayArtifactId?: string;
+}
+export interface ProposalSummary {
+  id: string; label: string; artifactId: string; alphaArtifactId?: string; width: number; height: number;
+  registered: boolean; warnings: string[]; bounds?: DecompositionBox | null; coverage?: number;
+  seed?: number; requestFingerprint?: string;
+}
+export interface ReviewedMask {
+  id: string; label: string; maskArtifactId: string; alphaArtifactId: string; overlayArtifactId: string;
+  revisionId: string; maskRevisionId: string; alphaRevisionId: string; overlayRevisionId: string;
+  qualityStatus?: QualityTier; warnings: string[];
+}
+export interface SemanticTargetGroup {
+  id: string; label: string; memberTargets: string[]; relationshipEvidence: string[];
+  groupMaskRevision: string; provenance: { operation: 'user-group'; sourceRevision: number; timestamp: string };
 }
