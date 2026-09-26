@@ -91,3 +91,5 @@ export function validateCanvasSize(width: string | number, height: string | numb
 }
 export * from './ai.js';
 export * from './decomposition.js';
+
+export { nativePointer } from './decompositionCoordinates.js';

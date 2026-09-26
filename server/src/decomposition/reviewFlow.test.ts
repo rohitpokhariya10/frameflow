@@ -35,15 +35,15 @@ it('persists full-person candidate identity and both point labels through review
       candidates.push({ id, label, maskArtifactId: artifact.artifactId, overlayArtifactId: artifact.artifactId, warnings: [], statistics: measureMask(mask), selected: false });
     }
     const options = normalizeDecompositionOptions({ targetLabels: ['person', 'background'] }, config);
-    for (const candidateId of ['candidate-6', 'candidate-5']) {
-      repo.createJob('operator', 'source', options, candidateId);
+    for (const [candidateId, action] of [['candidate-6', 'accept-masks'], ['candidate-5', 'accept-masks'], ['candidate-5', 'guided-refine']] as const) {
+      repo.createJob('operator', 'source', options, `${candidateId}-${action}`);
       let job = repo.claimJob('worker')!;
       job.phase = 4; job.state = 'needs_review';
       job.review = { code: 'OWNERSHIP', message: 'Select person', actions: ['accept-masks'], artifactIds: [] };
       job.data = { verificationMode: 'live', candidates, analysisArtifactId: source.artifactId, analysisTransform: createTransform(256, 256, 1024) };
       job = repo.updateJob(job, { workerId: 'worker', fence: job.fence, revision: job.revision });
       const points = [{ x: 128, y: 80, label: 1 as const }, { x: 10, y: 128, label: 0 as const }];
-      repo.reviewJob(job.id, 'operator', { expectedRevision: job.revision, action: 'accept-masks', objects: candidates.map(c => ({ id: c.id, candidateId: c.id, selected: c.id === candidateId, label: 'person', points: c.id === candidateId ? points : [] })) });
+      repo.reviewJob(job.id, 'operator', { expectedRevision: job.revision, action, objects: candidates.map(c => ({ id: c.id, candidateId: c.id, selected: c.id === candidateId, label: 'person_with_phone', points: c.id === candidateId ? points : [] })) });
       job = repo.getJob(job.id)!;
       expect(job.state).toBe('queued');
       expect(job.phase).toBe(4);
@@ -55,8 +55,8 @@ it('persists full-person candidate identity and both point labels through review
         expect(['sam3', 'birefnet']).toContain(model);
         const transform = request.transform!;
         if (model === 'sam3') {
-          expect(request.key).toContain('candidate-6');
-          expect(request.prompt).toBe('person');
+          expect(request.key).toContain(candidateId);
+          expect(request.prompt).toBe('person with phone');
           expect(request.points).toEqual(points.map(p => ({ ...p, x: p.x - transform.crop.x, y: p.y - transform.crop.y })));
         }
         return [await sharp(personPng).extract({ left: transform.crop.x, top: transform.crop.y, width: transform.crop.width, height: transform.crop.height }).png().toBuffer()];
@@ -71,7 +71,7 @@ it('persists full-person candidate identity and both point labels through review
       try { expect(await worker.tick()).toBe(true); expect(dispatch).toHaveBeenCalledTimes(1); }
       finally { dispatch.mockRestore(); }
       const finished = repo.getJob(job.id)!;
-      if (candidateId === 'candidate-5') {
+      if (candidateId === 'candidate-5' && action === 'accept-masks') {
         expect(infer).not.toHaveBeenCalled();
         expect(finished.review?.code).toBe('GUIDANCE_MASK_CONFLICT');
         expect(finished.review?.message).toContain('POSITIVE_POINT_OUTSIDE_MASK');
@@ -80,7 +80,7 @@ it('persists full-person candidate identity and both point labels through review
         expect(finished.phase).toBe(5);
         expect(finished.review?.code).toBe('REFINEMENT_VISUAL_REVIEW');
         expect(refined).toHaveLength(1);
-        expect(refined[0]).toMatchObject({ id: 'candidate-6', input: { candidateId: 'candidate-6', positivePointCount: 1, negativePointCount: 1 } });
+        expect(refined[0]).toMatchObject({ id: candidateId, input: { candidateId, positivePointCount: 1, negativePointCount: 1 } });
         expect(measureMask(await decodeMask(await store.read(repo.getArtifact(refined[0].maskArtifactId)!), { encoding: 'luminance' })).area).toBe(measureMask(person).area);
         expect(refined[0].warnings).not.toContain('POSITIVE_GUIDANCE_MISSING');
         expect(infer).toHaveBeenCalledTimes(2);

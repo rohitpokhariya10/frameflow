@@ -47,7 +47,7 @@ export interface DecompositionJobSummary {
   warnings: string[]; review?: DecompositionReviewRequest; error?: { code: string; message: string; retryable: boolean };
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
-  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }

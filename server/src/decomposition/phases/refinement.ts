@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { clampRect, createTransform, nativeToModel } from '../image/coordinates.js';
 import type { ImageTransform } from '../image/coordinates.js';
-import { binaryMask, constrainMatte, decodeMask, mapMaskToNative, maskBounds, morphMask, overlapMasks, validateGuidance } from '../image/masks.js';
+import { binaryMask, constrainMatte, decodeMask, mapMaskToNative, maskBounds, morphMask, overlapMasks, validateGuidance, measureMask } from '../image/masks.js';
 import type { Mask } from '../image/masks.js';
 import type { Rect } from '../image/types.js';
 import { ProviderError } from '../providers/adapters.js';
@@ -19,6 +19,8 @@ export type RefinementObject = {
   /** Explicit user confirmation of visible ownership permits retaining the accepted mask on refinement failure. */
   ownershipConfirmed?: boolean;
   softEdges?: boolean;
+  /** Explicit corrective review may expand/resegment support; output still requires review. */
+  correctionMode?: boolean;
 };
 export type RefinedObject = {
   id: string;
@@ -32,6 +34,7 @@ export type RefinedObject = {
 };
 
 function paddedBounds(object: RefinementObject): Rect {
+  if (object.correctionMode) return { x: 0, y: 0, width: object.mask.width, height: object.mask.height };
   const bounds = maskBounds(object.mask);
   if (!bounds) throw new ProviderError('EMPTY_MASK', 'The selected object has no visible pixels.');
   const padding = Math.max(16, Math.ceil(Math.max(bounds.width, bounds.height) * 0.1));
@@ -67,7 +70,7 @@ function mappedGuidance(object: RefinementObject, transform: ImageTransform) {
     const mapped = nativeToModel({ x: point.x + 0.5, y: point.y + 0.5 }, transform);
     return { x: Math.min(transform.modelWidth - 1, Math.max(0, Math.floor(mapped.x))), y: Math.min(transform.modelHeight - 1, Math.max(0, Math.floor(mapped.y))), label: point.label, ...(point.objectId === undefined ? {} : { objectId: point.objectId }) };
   };
-  const boxes = (object.boxes ?? [object.box ?? maskBounds(object.mask)!]).map(box => {
+  const boxes = (object.boxes ?? [object.box ?? (object.correctionMode ? transform.crop : maskBounds(object.mask)!)]).map(box => {
     const origin = nativeToModel(box, transform);
     const result = clampRect({ x: origin.x, y: origin.y, width: box.width * transform.scaleX, height: box.height * transform.scaleY }, transform.modelWidth, transform.modelHeight);
     return result;
@@ -83,6 +86,16 @@ function ordinaryOutputFailure(error: unknown): boolean {
 export async function refineObjects(master: Buffer, infer: Infer, objects: RefinementObject[]): Promise<{ objects: RefinedObject[]; warnings: string[]; reviewRequired: boolean }> {
   if (objects.length > 6) throw new ProviderError('OBJECT_LIMIT', 'Refinement supports at most six selected objects.');
   const metadata = await sharp(master).metadata();
+  // Validate every input before making any paid call, including later objects in a batch.
+  for (const object of objects) {
+    if (object.mask.width !== metadata.width || object.mask.height !== metadata.height) throw new ProviderError('MASK_DIMENSION_MISMATCH', 'Support must use working-master coordinates.');
+    for (const point of object.points ?? []) {
+      if (![point.x, point.y].every(Number.isFinite) || ![0, 1].includes(point.label) || point.x < 0 || point.y < 0 || point.x >= object.mask.width || point.y >= object.mask.height) throw new ProviderError('GUIDANCE_BOUNDS', 'Points must lie inside the working master.');
+    }
+    for (const box of object.boxes ?? (object.box ? [object.box] : [])) {
+      if (![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.x < 0 || box.y < 0 || box.width <= 0 || box.height <= 0 || box.x + box.width > object.mask.width || box.y + box.height > object.mask.height) throw new ProviderError('GUIDANCE_BOUNDS', 'Boxes must lie inside the working master.');
+    }
+  }
   const results: RefinedObject[] = [];
   for (const object of objects) {
     if (object.mask.width !== metadata.width || object.mask.height !== metadata.height) throw new ProviderError('MASK_DIMENSION_MISMATCH', 'Refinement support must use working-master coordinates.');
@@ -101,10 +114,10 @@ export async function refineObjects(master: Buffer, infer: Infer, objects: Refin
     if (!object.ownershipConfirmed) warnings.push('OWNERSHIP_CONFIRMATION_REQUIRED');
     if (/\b(board|sign|placard|poster)\b/i.test(object.label) && (!object.excludedMask || (object.points?.filter(point => point.label === 0).length ?? 0) < 2)) warnings.push('BOARD_FACE_FINGERS_EXCLUSIONS_REQUIRED');
     // Verify the original selection too. Refinement is never permission to repair an unsafe ownership decision silently.
-    warnings.push(...validateGuidance(support, { positivePoints: object.points?.filter(point => point.label === 1), negativePoints: object.points?.filter(point => point.label === 0), excludedMask: object.excludedMask }));
-    for (let attempt = 0; attempt < 2; attempt++) {
+    if (!object.correctionMode) warnings.push(...validateGuidance(support, { positivePoints: object.points?.filter(point => point.label === 1), negativePoints: object.points?.filter(point => point.label === 0), excludedMask: object.excludedMask }));
+    for (let attempt = 0; attempt < (object.correctionMode ? 1 : 2); attempt++) {
       let outputs: Buffer[];
-      try { outputs = await infer('sam3', { image, prompt: /^Object \d+$/.test(object.label) ? 'the selected foreground object' : object.label, ...guidance, maxMasks: 3, transform, key: `phase05-${object.id}-guided-${attempt}` }); }
+      try { outputs = await infer('sam3', { image, prompt: /^Object \d+$/.test(object.label) ? 'the selected foreground object' : object.label.replaceAll('_', ' '), ...guidance, maxMasks: 3, transform, key: `phase05-${object.id}-guided-${attempt}` }); }
       catch (error) {
         if (!ordinaryOutputFailure(error)) throw error;
         warnings.push((error as ProviderError).code); break;
@@ -117,20 +130,23 @@ export async function refineObjects(master: Buffer, infer: Infer, objects: Refin
           if (modelMask.width !== transform.modelWidth || modelMask.height !== transform.modelHeight) continue;
           candidate = mapMaskToNative(modelMask, transform);
         } catch { continue; }
-        const failures = validateGuidance(candidate, { positivePoints: object.points?.filter(point => point.label === 1), negativePoints: object.points?.filter(point => point.label === 0), excludedMask: object.excludedMask, requiredMask: required });
-        if (overlapMasks(candidate, permitted).inclusionA < 0.995) failures.push('NEIGHBORING_OBJECT_LEAK');
+        const failures = validateGuidance(candidate, { positivePoints: object.points?.filter(point => point.label === 1), negativePoints: object.points?.filter(point => point.label === 0), excludedMask: object.excludedMask, requiredMask: object.correctionMode ? undefined : required });
+        if (!object.correctionMode && overlapMasks(candidate, permitted).inclusionA < 0.995) failures.push('NEIGHBORING_OBJECT_LEAK');
+        if (object.correctionMode && measureMask(candidate).areaFraction > 0.9) failures.push('CORRECTION_EXCESSIVE_COVERAGE');
+        if (object.correctionMode && !overlapMasks(candidate, support).intersection) failures.push('OBJECT_IDENTITY_DISJOINT');
         if (failures.length) continue;
         valid.push({ mask: candidate, score: overlapMasks(candidate, support).iou });
       }
       valid.sort((a, b) => b.score - a.score);
-      if (valid[0] && valid[0].score >= 0.8) {
+      if (valid[0] && (object.correctionMode || valid[0].score >= 0.8)) {
         visibleOwnership = valid[0].mask; alpha = visibleOwnership; refinementAccepted = true; break;
       }
       // One additional attempt is only useful with explicit user exclusions; identical unconstrained rerolls are omitted.
       if (!(object.points?.some(point => point.label === 0))) break;
     }
+    if (object.correctionMode && refinementAccepted) warnings.push('CORRECTED_OBJECT_REQUIRES_VISUAL_REVIEW');
     if (!refinementAccepted) warnings.push('REFINEMENT_REJECTED_VISIBLE_SUPPORT_RETAINED');
-    const softEdges = object.softEdges ?? /\b(person|portrait|hair|fur|cat|dog)\b/i.test(object.label);
+    const softEdges = object.softEdges ?? /\b(person|portrait|hair|fur|cat|dog)\b/i.test(object.label.replaceAll('_', ' '));
     if (softEdges && refinementAccepted) {
       try {
         const outputs = await infer('birefnet', { image, transform, key: `phase05-${object.id}-matting` });

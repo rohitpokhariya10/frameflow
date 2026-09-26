@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { binaryMask, decodeMask, deduplicateMasks, measureMask, overlapMasks, validateGuidance } from '../image/masks.js';
+import { binaryMask, decodeMask, deduplicateMasks, measureMask, overlapMasks, validateGuidance, emptyMask, unionMasks } from '../image/masks.js';
 import type { Mask } from '../image/masks.js';
 import { ProviderError } from '../providers/adapters.js';
 import type { InferenceRequest, Infer } from '../providers/inference.js';
@@ -14,7 +14,8 @@ export type SegmentationTarget = {
 };
 export type ObjectCandidate = {
   id: string; label: string; labelSource: 'target-prompt' | 'generic';
-  source: 'sam2' | 'sam3'; mask: Mask;
+  source: 'sam2' | 'sam3' | 'synthesized'; mask: Mask;
+  sourceCandidateIds?: string[]; proposalId?: string;
   statistics: ReturnType<typeof measureMask>;
   proposalMatches: { proposalId: string; iou: number; visibleAgreement: number; proposedVisibleFraction: number }[];
   warnings: string[];
@@ -73,6 +74,28 @@ export async function segmentObjects(analysis: Buffer, infer: Infer, options: { 
     if (overlapMasks(kept[i].mask, kept[j].mask).intersection > 0) {
       kept[i].warnings.push('OVERLAPPING_VISIBLE_OWNERSHIP'); kept[j].warnings.push('OVERLAPPING_VISIBLE_OWNERSHIP');
     }
+  }
+  // Only combine source-derived masks supported by a registered Qwen alpha proposal.
+  // These are reviewable geometric groupings, not invented Qwen labels or observed RGB.
+  const raw = [...kept];
+  for (const proposal of (options.proposals ?? []).slice(0, 6)) {
+    if (!proposal.registered || proposal.width !== width || proposal.height !== height || proposal.alpha.width !== width || proposal.alpha.height !== height || proposal.warnings.length || kept.length >= 64) continue;
+    const support = binaryMask(proposal.alpha);
+    const parts = raw.filter(candidate => overlapMasks(candidate.mask, support).inclusionA >= 0.95);
+    if (parts.length < 2) continue;
+    let combined = emptyMask(width, height);
+    const sources: string[] = [];
+    for (const part of [...parts].sort((a, b) => b.statistics.area - a.statistics.area)) {
+      if (overlapMasks(part.mask, combined).inclusionA >= 0.95) continue;
+      combined = unionMasks(combined, part.mask); sources.push(part.id);
+    }
+    const agreement = overlapMasks(combined, support);
+    const bestSingle = Math.max(...raw.map(candidate => overlapMasks(candidate.mask, support).iou), 0);
+    if (sources.length < 2 || agreement.inclusionB < 0.8 || agreement.iou < bestSingle + 0.1 || measureMask(combined).areaFraction >= 1) continue;
+    kept.push({ id: `semantic-${proposal.id}`, label: `Proposal group ${proposal.id}`, labelSource: 'generic', source: 'synthesized', mask: combined,
+      statistics: measureMask(combined), sourceCandidateIds: sources, proposalId: proposal.id,
+      proposalMatches: [{ proposalId: proposal.id, iou: agreement.iou, visibleAgreement: agreement.inclusionA, proposedVisibleFraction: agreement.inclusionB }],
+      warnings: ['SYNTHESIZED_GROUP_REQUIRES_OWNERSHIP_REVIEW'] });
   }
   if (!kept.length) warnings.push('NO_VALID_CANDIDATES');
   if (kept.length > maxObjects) warnings.push('OBJECT_SELECTION_REQUIRED');

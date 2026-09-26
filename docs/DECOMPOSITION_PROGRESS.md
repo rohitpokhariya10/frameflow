@@ -121,3 +121,50 @@ artifacts/decomposition/review-transition/. Images/runtime evidence are not comm
 Final root build passed after removing the duplicate old-phase heading; mocked browser check
 rerun against this final build. No Phase 6 approval or Phase 7+ work performed. API and one live
 worker remain running. Open Recover jobs → 9d5e91d1 to inspect the live Phase-5 result.
+
+## 2026-09-26 — Semantic grouping and guided expansion
+
+Implemented; focused verification in progress. Root A: Qwen returns image proposals with
+no semantic labels. Phase 4 only saved overlap scores; it exposed independent SAM2 masks.
+Root B: both input guidance preflight and conservative output IoU/dilation gates blocked
+intentional expansion. These gates remain for accept-masks, not guided-refine.
+
+Phase 4 now offers additional source-mask unions only for registered matching geometry,
+>=95% per-part inclusion, >=80% proposal coverage and >=0.1 IoU improvement over any single
+candidate. Nested redundant masks are omitted from contributors; raw options remain.
+Synthesized IDs record proposalId/sourceCandidateIds; no Qwen RGB enters source masks.
+These heuristic groups require review, and labels stay generic until user assignment.
+UI exposes RAW/SYNTHESIZED provenance and offers user target names in the name input.
+Use only this candidate, include summary, errors and duplicate guards remain intact.
+
+Guided correction uses full-source context resized aspect-preservingly to <=1024, so a
+fragment bbox cannot clip missing regions. Valid source points map with pixel-center
+rounding; the old 0.8 IoU and tiny-support dilation gate do not apply. One SAM3 attempt;
+output must satisfy all positive/negative points, exclude confirmed neighboring ownership,
+retain some identity overlap and occupy <=90% of canvas. Empty/full/invalid geometry fails.
+Successful correction always requires visual review. Confirm stays conservative. Existing
+per-job budget and BiRefNet constraints remain. User target underscores normalize to spaces.
+Coordinate conversion moved unchanged to shared code, re-exported at the existing client
+path, so a letterboxed UI→native→model regression uses the exact UI implementation.
+
+27 focused tests passed: semantic/candidate/refinement/review worker/analysis/provider and
+client submission suites. Root typecheck, focused lint, and root build passed after fixing
+a test-only cross-workspace rootDir import. Mocked browser test also verifies synthesized
+provenance and Use only excludes raw fragments. No whole-repository suite run.
+One authorized fresh live test: 7b3b804b-2a42-48d9-9b38-7dd1e693fdb7, existing uploaded
+girl-with-phone source, user target person_with_phone, maxCalls=4. Result recorded below.
+
+Live result: BLOCKED, no retry. Qwen completed (four 576×704 proposals; all geometry
+mismatched, therefore retained but not unioned). Starting SAM2 failed with PROVIDER_NETWORK:
+"Provider connection failed or timed out." Final job state failed/phase3/revision11,
+callsUsed=1; only Qwen was submitted. No Phase-5 live inference was reached in this run.
+Do not describe the girl+phone mask as live-verified. Existing artifacts and source retained.
+Final focused suite: 28 tests passed, including removing a negative point region from old
+support, guided expansion through durable review/live-mode worker with mocked inference,
+and conservative confirmation. Final root build passed. Real browser mocked-HTTP check
+passed synthesized grouping selection/provenance, point payloads, errors and double-click
+protection. No further paid requests. Next: visually verify one guided result when provider
+connectivity is restored; no Phase 7+ work. Current implementation uses explicit user target
+assignment, not automatic semantic labeling of Qwen images; unsupported/misaligned groups
+remain raw candidates with a guided fallback. Grouping and 90% correction coverage cap are
+review heuristics, not proofs of semantic correctness.
