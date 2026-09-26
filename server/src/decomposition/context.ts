@@ -128,7 +128,9 @@ export class PipelineContext {
       if (unfinished && unfinished.inputHash !== inputHash) throw new ProviderError('QWEN_REQUEST_CHANGED', 'A Qwen request is already pending with different settings. Preserve/reconcile its saved request ID before starting another paid attempt.');
       this.job.data.qwenRequest = qwen; this.job.data.qwenSeed = qwen.sentSeed; this.save();
     }
-    const savedRequest = qwen && this.repository.providerRequests(this.job.id).find(record => record.inputHash === inputHash && record.endpoint === qwen.model);
+    // Discovery requests resume (or recover) their original step across retries, so a retry never pays twice.
+    const discoveryModel = qwen?.model ?? seedream?.model;
+    const savedRequest = discoveryModel && this.repository.providerRequests(this.job.id).find(record => record.inputHash === inputHash && record.endpoint === discoveryModel);
     const savedStep = savedRequest && this.repository.steps(this.job.id).find(step => step.id === savedRequest.stepId);
     const callStep = this.repository.createStep(this.job, savedStep ? savedStep.phase : this.step.phase, inputHash, savedStep ? savedStep.objectId : key ?? model, savedStep ? savedStep.attempt : Number(this.job.data.attempt ?? 1));
     const existing = this.repository.getProviderRequest(callStep.id, inputHash);

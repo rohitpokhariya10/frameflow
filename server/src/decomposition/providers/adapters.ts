@@ -155,13 +155,14 @@ function parseImage(value: unknown): ProviderImage {
   let url: string;
   try { url = imageUrl(source.url); } catch { throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Provider returned an invalid image URL.'); }
   const result: ProviderImage = { url };
+  // Providers may send explicit nulls for unknown metadata (observed live on Seedream); null means absent, never zero.
   for (const dimension of ['width', 'height'] as const) {
-    if (source[dimension] !== undefined) {
+    if (source[dimension] !== undefined && source[dimension] !== null) {
       if (!Number.isSafeInteger(source[dimension]) || (source[dimension] as number) < 1 || (source[dimension] as number) > 16384) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Provider image dimensions are invalid.');
       result[dimension] = source[dimension] as number;
     }
   }
-  if (source.content_type !== undefined) {
+  if (source.content_type !== undefined && source.content_type !== null) {
     if (typeof source.content_type !== 'string' || !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'].includes(source.content_type)) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Provider returned an unsupported image encoding.');
     result.contentType = source.content_type;
   }

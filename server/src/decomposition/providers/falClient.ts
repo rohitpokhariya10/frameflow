@@ -120,6 +120,40 @@ export class DurableFalClient {
     this.update(record, { status: 'CANCELLED', diagnostic });
   }
 
+  /**
+   * The provider finished (and charged) this request. Only a local schema rejection is recoverable: record it so a
+   * later attempt re-reads the stored result instead of paying again. Empty/over-limit/safety outcomes stay provider failures.
+   */
+  private normalizeCompleted(record: ProviderRequestRecord, model: Model, raw: unknown): NormalizedProviderOutput {
+    try { return normalizeProviderOutput(model, raw); }
+    catch (error) {
+      if (!(error instanceof ProviderError) || error.code !== 'PROVIDER_SCHEMA_CHANGED') throw error;
+      this.update(record, { status: 'FAILED', diagnostic: LOCAL_NORMALIZATION_FAILED });
+      throw new ProviderError(PROVIDER_RESULT_UNPARSED, 'The provider completed this request, but its result could not be read locally. It can be recovered from the saved request ID without a new paid call.');
+    }
+  }
+
+  /**
+   * Free recovery of an already-completed request by its saved provider request ID: confirms completion and re-reads
+   * the stored result through the current adapter. Never submits. Used automatically for locally-rejected results and
+   * explicitly by operators for records diagnosed before this distinction existed.
+   */
+  async recoverCompleted(record: ProviderRequestRecord, model: Model): Promise<ProviderAdvance> {
+    if (!record.providerRequestId) throw new ProviderError('SUBMISSION_UNKNOWN', 'No durable provider request identifier exists.');
+    let raw: unknown;
+    try {
+      if (await this.transport.status(record.endpoint, record.providerRequestId) !== 'COMPLETED') throw new ProviderError('PROVIDER_RESULT_NOT_COMPLETED', 'The saved request is not completed.');
+      raw = await this.transport.result(record.endpoint, record.providerRequestId);
+    } catch (error) {
+      const code = error instanceof ProviderError ? error.code : 'PROVIDER_NETWORK';
+      // Keep the record recoverable; a lookup failure must not turn into a fallback or a replacement call.
+      throw new ProviderError(PROVIDER_RESULT_UNPARSED, `The completed result could not be re-read (${code}). Retry recovery later; no new paid call was made.`, false);
+    }
+    const output = this.normalizeCompleted(record, model, raw);
+    this.update(record, { status: 'COMPLETED', output, diagnostic: 'RECOVERED_COMPLETED_RESULT', returnedSeed: output.seed, seed: output.seed ?? record.seed });
+    return { state: 'completed', output, request: record };
+  }
+
   async advance(input: AdvanceInput): Promise<ProviderAdvance> {
     let record = this.repository.getProviderRequest(input.stepId, input.inputHash);
     if (input.cancelled) {
@@ -149,6 +183,8 @@ export class DurableFalClient {
       if (!record.output) throw new ProviderError('PROVIDER_OUTPUT_UNAVAILABLE', 'Saved provider output is unavailable.');
       return { state: 'completed', output: record.output as NormalizedProviderOutput, request: record };
     }
+    // A completed, already-paid result that only failed local parsing is re-read for free, never resubmitted.
+    if (record.status === 'FAILED' && record.diagnostic === LOCAL_NORMALIZATION_FAILED && record.providerRequestId) return this.recoverCompleted(record, input.model);
     if (record.status === 'FAILED' || record.status === 'CANCELLED') throw new ProviderError(record.diagnostic ?? 'PROVIDER_FAILED', 'This provider attempt has ended. Review the failure before explicitly retrying.');
     if (!record.providerRequestId) throw new ProviderError('SUBMISSION_UNKNOWN', 'No durable provider request identifier exists.');
     if (this.now() - record.createdAt > (this.options.phaseTimeoutMs ?? 300_000)) {
@@ -163,10 +199,12 @@ export class DurableFalClient {
         this.update(record, { status: status === 'IN_QUEUE' ? 'QUEUED' : 'IN_PROGRESS', nextPollAt: this.nextPoll(record) });
         return { state: 'pending', nextPollAt: record.nextPollAt, request: record };
       }
-      const output = normalizeProviderOutput(input.model, await this.transport.result(record.endpoint, record.providerRequestId));
+      const raw = await this.transport.result(record.endpoint, record.providerRequestId);
+      const output = this.normalizeCompleted(record, input.model, raw);
       this.update(record, { status: 'COMPLETED', output, returnedSeed: output.seed, seed: output.seed ?? record.seed });
       return { state: 'completed', output, request: record };
     } catch (error) {
+      if (error instanceof ProviderError && error.code === PROVIDER_RESULT_UNPARSED) throw error;
       const normalized = error instanceof ProviderError ? error : new ProviderError('PROVIDER_NETWORK', 'Provider lookup failed.', true);
       if (normalized.retryable && record.attempts < (this.options.maxLookupRetries ?? 3)) {
         this.update(record, { attempts: record.attempts + 1, nextPollAt: this.nextPoll(record, normalized.retryAfterMs), diagnostic: normalized.code });
@@ -177,6 +215,9 @@ export class DurableFalClient {
     }
   }
 }
+
+export const LOCAL_NORMALIZATION_FAILED = 'LOCAL_NORMALIZATION_FAILED';
+export const PROVIDER_RESULT_UNPARSED = 'PROVIDER_RESULT_UNPARSED';
 
 /** Decode pixels, not provider width metadata. Call before persisting any provider image. */
 export async function validateProviderImage(bytes: Buffer, model: Model, maxPixels = 12_000_000) {

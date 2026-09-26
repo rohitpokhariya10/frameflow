@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
-import { buildProviderInput, normalizeProviderOutput, SEEDREAM_MAX_LAYERS } from './adapters.js';
+import { buildProviderInput, normalizeProviderOutput, ProviderError, SEEDREAM_MAX_LAYERS } from './adapters.js';
 import { prepareSeedreamRequest } from './seedreamRequest.js';
 import { DurableFalClient } from './falClient.js';
 import type { FalTransport } from './falClient.js';
@@ -122,4 +122,100 @@ it('reuses identical Seedream discovery within a job and across same-owner jobs 
     repo.db.prepare('UPDATE decomposition_jobs SET tombstoned_at=1 WHERE id IN (?,?)').run(first.job.id, second.job.id);
     expect(repo.findReusableSeedream('operator', saved.inputHash, 'future-job')).toBeUndefined();
   } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it('treats null image width/height/content type as missing metadata, as returned live', () => {
+  const output = normalizeProviderOutput('seedream', { layers: [
+    { image: { url: imageUrl, content_type: null, width: null, height: null }, z_index: 0, bounding_box: null, name: null, description: null },
+    { image: { url: imageUrl, content_type: 'image/png', width: null, height: null }, z_index: 1, bounding_box: { absolute: [1, 2, 30, 40], normalized: [1, 2, 30, 40] }, name: 'Panel', description: null }] });
+  expect(output.images).toEqual([{ url: imageUrl }, { url: imageUrl, contentType: 'image/png' }]);
+  expect(output.layers).toEqual([{ zIndex: 0 }, { zIndex: 1, name: 'Panel', bboxAbsolute: [1, 2, 30, 40], bboxNormalized: [1, 2, 30, 40] }]);
+  expect(() => normalizeProviderOutput('seedream', { layers: [{ image: { url: imageUrl, width: 0 }, z_index: 0 }] })).toThrow(/dimensions/);
+});
+
+describe('completed result recovery', () => {
+  const liveLike = (base: string, crop: string) => ({ layers: [
+    { image: { url: base, content_type: 'image/png', width: null, height: null }, z_index: 0, bounding_box: null, name: null, description: null },
+    { image: { url: crop, content_type: 'image/png', width: null, height: null }, z_index: 1, bounding_box: { absolute: [100, 120, 300, 320], normalized: [195, 188, 586, 500] }, name: 'Panel', description: 'Rounded panel' }] });
+  /** A clock that moves 5s per read, far in the past, so queue polling never sleeps for long in tests. */
+  const fastClock = () => { let t = Date.now() - 10_000_000; return () => (t += 5000); };
+
+  it('marks a locally rejected completed result recoverable and re-reads it for free', async () => {
+    const dir = await mkdtemp(resolve(tmpdir(), 'frameflow-seedream-recover-')), repo = new DecompositionRepository(dir);
+    try {
+      repo.addSource({ id: 'source', ownerId: 'operator', originalArtifactId: 'source', masterArtifactId: 'source', originalSha256: 'sha', workingMasterSha256: 'sha', width: 512, height: 512, hasAlpha: false, mimeType: 'image/png', orientationNormalized: false, metadata: {}, createdAt: Date.now() });
+      const config = readDecompositionConfig({ DECOMP_DATA_DIR: dir });
+      repo.createJob('operator', 'source', normalizeDecompositionOptions({}, config), 'recover');
+      const job = repo.claimJob('worker')!, step = repo.createStep(job, 3, 'fingerprint');
+      let parserAccepts = false, statusFails = false;
+      const transport = { submit: vi.fn(async () => ({ requestId: 'paid-seedream' })), status: vi.fn(async () => { if (statusFails) throw new ProviderError('PROVIDER_NETWORK', 'down', true); return 'COMPLETED'; }),
+        result: vi.fn(async () => parserAccepts ? liveLike('https://fal.media/b.png', 'https://fal.media/c.png') : { layers: [{ image: { url: imageUrl, width: 'bad' }, z_index: 0 }] }) } as unknown as FalTransport;
+      const client = new DurableFalClient(repo, transport, { maxGlobalCalls: 10, now: fastClock(), random: () => 0.5 });
+      const input = { jobId: job.id, stepId: step.id, model: 'seedream' as const, inputHash: 'fingerprint', input: { image_url: imageUrl } };
+      await client.advance(input);
+      await expect(client.advance(input)).rejects.toMatchObject({ code: 'PROVIDER_RESULT_UNPARSED' });
+      expect(repo.getProviderRequest(step.id, 'fingerprint')).toMatchObject({ status: 'FAILED', diagnostic: 'LOCAL_NORMALIZATION_FAILED', providerRequestId: 'paid-seedream' });
+      // Recovery lookups that fail keep the record recoverable and never become a fallback-eligible error.
+      parserAccepts = true; statusFails = true;
+      await expect(client.advance(input)).rejects.toMatchObject({ code: 'PROVIDER_RESULT_UNPARSED' });
+      expect(repo.getProviderRequest(step.id, 'fingerprint')).toMatchObject({ status: 'FAILED', diagnostic: 'LOCAL_NORMALIZATION_FAILED' });
+      statusFails = false;
+      const recovered = await client.advance(input);
+      expect(recovered.state === 'completed' && recovered.output.layers?.[1]).toMatchObject({ name: 'Panel', zIndex: 1, bboxAbsolute: [100, 120, 300, 320] });
+      expect(repo.getProviderRequest(step.id, 'fingerprint')).toMatchObject({ status: 'COMPLETED', diagnostic: 'RECOVERED_COMPLETED_RESULT' });
+      expect(transport.submit).toHaveBeenCalledTimes(1);
+      // Records diagnosed before this distinction existed are only recovered explicitly, never resubmitted.
+      const legacyStep = repo.createStep(job, 3, 'legacy');
+      const legacy = repo.reserveProviderRequest({ jobId: job.id, stepId: legacyStep.id, endpoint: 'bytedance/seedream/v5/pro/layerize', inputHash: 'legacy', adapterVersion: '1' }, 10, 2);
+      repo.updateProviderRequest(legacy.id, { status: 'FAILED', diagnostic: 'PROVIDER_SCHEMA_CHANGED', providerRequestId: 'legacy-paid' });
+      const legacyInput = { ...input, stepId: legacyStep.id, inputHash: 'legacy' };
+      await expect(client.advance(legacyInput)).rejects.toMatchObject({ code: 'PROVIDER_SCHEMA_CHANGED' });
+      const explicit = await client.recoverCompleted(repo.getProviderRequest(legacyStep.id, 'legacy')!, 'seedream');
+      expect(explicit.state).toBe('completed');
+      expect((await client.advance(legacyInput)).state).toBe('completed');
+      expect(transport.submit).toHaveBeenCalledTimes(1);
+    } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('recovers on retry through the pipeline context, persists artifacts/cache, and serves identical requests without another submit', async () => {
+    const dir = await mkdtemp(resolve(tmpdir(), 'frameflow-seedream-retry-')), repo = new DecompositionRepository(dir), store = new ArtifactStore(dir, repo);
+    try {
+      const config = readDecompositionConfig({ DECOMP_DATA_DIR: dir, DECOMP_PROVIDER_MODE: 'live' });
+      const image = await sharp({ create: { width: 512, height: 640, channels: 3, background: '#445566' } }).png().toBuffer();
+      const source = await store.write({ ownerId: 'operator', kind: 'source', mimeType: 'image/png', width: 512, height: 640 }, image);
+      repo.addSource({ id: 'source', ownerId: 'operator', originalArtifactId: source.artifactId, masterArtifactId: source.artifactId, originalSha256: sha256(image), workingMasterSha256: sha256(image), width: 512, height: 640, hasAlpha: false, mimeType: 'image/png', orientationNormalized: false, metadata: {}, createdAt: Date.now() });
+      const base = await sharp({ create: { width: 560, height: 700, channels: 3, background: '#ffffff' } }).png().toBuffer();
+      const crop = await sharp({ create: { width: 400, height: 400, channels: 4, background: { r: 240, g: 120, b: 20, alpha: 1 } } }).png().toBuffer();
+      let parserAccepts = false;
+      const transport = { submit: vi.fn(async () => ({ requestId: 'paid-seedream' })), status: vi.fn(async () => 'COMPLETED'),
+        result: vi.fn(async () => parserAccepts ? liveLike('https://fal.media/base.png', 'https://fal.media/crop.png') : { layers: [{ image: { url: imageUrl, width: 'bad' }, z_index: 0 }] }),
+        upload: vi.fn(async () => 'https://fal.media/upload.png'), download: vi.fn(async (url: string) => url.endsWith('base.png') ? base : crop), cancel: vi.fn() } as unknown as FalTransport;
+      const provider = new DurableFalClient(repo, transport, { maxGlobalCalls: 10, now: fastClock(), random: () => 0.5 });
+      const makeContext = (key: string) => { repo.createJob('operator', 'source', normalizeDecompositionOptions({}, config), key); const job = repo.claimJob('worker')!; job.data.verificationMode = 'live'; return new PipelineContext(job, repo, store, config, provider, 'worker'); };
+
+      const first = makeContext('first');
+      await expect(first.infer('seedream', { image, key: 'phase03-discovery' })).rejects.toMatchObject({ code: 'PROVIDER_RESULT_UNPARSED' });
+      expect(first.job.data.seedreamInference).toBeUndefined();
+      // Retry: a new attempt number creates a new phase step, but the saved paid request is resumed and recovered.
+      parserAccepts = true;
+      first.job.data.attempt = 2; first.save();
+      const retried = new PipelineContext(repo.getJob(first.job.id)!, repo, store, config, provider, 'worker');
+      const recovered = await retried.infer('seedream', { image, key: 'phase03-discovery' });
+      expect(transport.submit).toHaveBeenCalledTimes(1); expect(transport.upload).toHaveBeenCalledTimes(1);
+      expect(recovered.requestId).toBe('paid-seedream'); expect(recovered.layers?.[1]).toMatchObject({ name: 'Panel', zIndex: 1 });
+      const cached = retried.job.data.seedreamInference as CachedInference;
+      expect(cached).toMatchObject({ requestId: 'paid-seedream', seedream: { providerRequestId: 'paid-seedream', deterministic: false } });
+      expect(cached.artifactIds).toHaveLength(2);
+      for (const id of cached.artifactIds) expect(repo.getArtifact(id)).toBeDefined();
+      const results = (transport.result as ReturnType<typeof vi.fn>).mock.calls.length;
+      await retried.infer('seedream', { image, key: 'phase03-discovery' });
+      expect((transport.result as ReturnType<typeof vi.fn>).mock.calls.length).toBe(results);
+      retried.review('TEST', 'Pause', []); retried.save();
+      expect(repo.findReusableSeedream('operator', cached.inputHash, 'another-job')?.id).toBe(first.job.id);
+      const second = makeContext('second');
+      const reused = await second.infer('seedream', { image, key: 'phase03-discovery' });
+      expect(reused.layers).toEqual(recovered.layers);
+      expect(transport.submit).toHaveBeenCalledTimes(1);
+    } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }
+  });
 });

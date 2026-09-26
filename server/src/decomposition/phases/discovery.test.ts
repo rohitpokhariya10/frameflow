@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
-import { discoverLayers, normalizeSeedreamLayers, prepareSeedreamInput, resolveDiscoveryPlan, MAX_DISCOVERY_PROPOSALS } from './discovery.js';
+import { bboxScaleFit, discoverLayers, normalizeSeedreamLayers, prepareSeedreamInput, resolveDiscoveryPlan, MAX_DISCOVERY_PROPOSALS, REGISTRATION_REVISION } from './discovery.js';
 import { ProviderError } from '../providers/adapters.js';
 import type { ProviderLayerMetadata } from '../providers/adapters.js';
 import type { Infer, InferenceOutput } from '../providers/inference.js';
@@ -49,6 +49,46 @@ describe('seedream discovery normalization', () => {
     expect(phone.bounds).toEqual({ x: 120, y: 100, width: 40, height: 60 });
     expect(phone.metadataWarnings).toEqual([]);
     expect(result.warnings).toEqual([]);
+  });
+
+  it('registers the observed live pattern: full-canvas base plus per-layer uniformly scaled bbox crops', async () => {
+    // Geometry observed from a live layerize response: 896x1120 provider canvas for an 819x1024 analysis input,
+    // non-base layers cropped to their bbox and each upscaled by its own uniform factor.
+    type Box = [number, number, number, number];
+    const panel: Box = [118, 294, 785, 926], headline: Box = [118, 54, 744, 269], tag: Box = [595, 359, 756, 400], stretched: Box = [474, 578, 874, 800];
+    const buffers = [await layerPng(896, 1120), await layerPng(810, 766), await layerPng(1092, 377), await layerPng(587, 152), await layerPng(930, 300, { x: 10, y: 10, width: 900, height: 280 })];
+    const layers: ProviderLayerMetadata[] = [{ zIndex: 0 }, { zIndex: 1, name: 'Panel', bboxAbsolute: panel }, { zIndex: 2, name: 'Headline', bboxAbsolute: headline }, { zIndex: 3, name: 'Tag', bboxAbsolute: tag }, { zIndex: 4, name: 'Stretched', bboxAbsolute: stretched }];
+    const result = await normalizeSeedreamLayers(819, 1024, buffers, layers);
+    expect(result.baseLayer).toMatchObject({ width: 819, height: 1024, sourceRegistration: { method: 'full-canvas', providerWidth: 896, providerHeight: 1120, revision: REGISTRATION_REVISION } });
+    const byLabel = Object.fromEntries(result.proposals.map(p => [p.label, p]));
+    const sx = 819 / 896, sy = 1024 / 1120;
+    for (const [label, box, provider] of [['Panel', panel, [810, 766]], ['Headline', headline, [1092, 377]], ['Tag', tag, [587, 152]]] as const) {
+      const p = byLabel[label];
+      expect(p).toMatchObject({ registered: true, warnings: [], width: 819, height: 1024, sourceRegistration: { method: 'bbox-scaled', providerWidth: provider[0], providerHeight: provider[1], providerBbox: box, revision: REGISTRATION_REVISION } });
+      const r = p.sourceRegistration;
+      expect(r.cropScaleX! / r.cropScaleY!).toBeCloseTo(provider[0] / (box[2] - box[0]) / (provider[1] / (box[3] - box[1])), 6);
+      expect(r.cropScale).toBeGreaterThan(1);
+      // Placement: the crop lands exactly on the bbox mapped into analysis pixels, with the bbox aspect ratio.
+      expect(p.bounds).toEqual({ x: Math.round(box[0] * sx), y: Math.round(box[1] * sy), width: Math.round((box[2] - box[0]) * sx), height: Math.round((box[3] - box[1]) * sy) });
+      expect(Math.abs(p.bounds!.width / p.bounds!.height / ((box[2] - box[0]) / (box[3] - box[1])) - 1)).toBeLessThan(0.03);
+    }
+    expect(byLabel.Tag.sourceRegistration.aspectError).toBeCloseTo(0.0165, 3);
+    // Non-uniform geometry is never stretched into place.
+    expect(byLabel.Stretched).toMatchObject({ registered: false, warnings: ['PROPOSAL_GEOMETRY_MISMATCH'], width: 930, height: 300, sourceRegistration: { method: 'unregistered', providerBbox: stretched } });
+    expect(byLabel.Stretched.sourceRegistration.aspectError).toBeGreaterThan(0.5);
+    expect(result.proposals.map(p => p.zIndex)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('accepts only uniform crop scales within tolerance', () => {
+    expect(bboxScaleFit(810, 766, [118, 294, 785, 926])).toMatchObject({ ok: true });
+    expect(bboxScaleFit(587, 152, [595, 359, 756, 400])).toMatchObject({ ok: true });
+    expect(bboxScaleFit(930, 300, [474, 578, 874, 800]).ok).toBe(false);
+    expect(bboxScaleFit(1000, 1100, [0, 0, 100, 100]).ok).toBe(false);
+    expect(bboxScaleFit(1000, 1000, [0, 0, 100, 100]).ok).toBe(false);
+    expect(bboxScaleFit(30, 30, [0, 0, 200, 200]).ok).toBe(false);
+    // Tiny boxes tolerate one-pixel rounding, large boxes do not tolerate visible distortion.
+    expect(bboxScaleFit(300, 105, [0, 0, 100, 34]).ok).toBe(true);
+    expect(bboxScaleFit(1000, 1030, [0, 0, 1000, 1000]).ok).toBe(false);
   });
 
   it('never stretches a provider canvas with a different aspect ratio into place', async () => {
@@ -132,18 +172,40 @@ describe('discovery provider selection and fallback', () => {
     expect(infer).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back when Seedream returns nothing usable, and keeps Seedream evidence if Qwen also finds nothing', async () => {
-    const mismatched = output([await layerPng(512, 512), await layerPng(512, 700, { x: 0, y: 0, width: 50, height: 50 })], [{ zIndex: 0 }, { zIndex: 1, name: 'Woman' }]);
+  it('falls back when Seedream output is genuinely unusable, and keeps Seedream evidence if Qwen also finds nothing', async () => {
+    // Full-canvas, fully opaque layers carry no object support: a provider-unusable result, not a geometry problem.
+    const nonObject = output([await layerPng(512, 512), await layerPng(512, 512)], [{ zIndex: 0 }, { zIndex: 1, name: 'Woman' }]);
     const rgba = await qwenRgba();
     let qwenWorks = true;
-    const infer = vi.fn<Infer>(async model => model === 'seedream' ? mismatched : qwenWorks ? Object.assign([rgba], { seed: 1 }) : Promise.reject(new ProviderError('PROVIDER_EMPTY_OUTPUT', 'empty')));
+    const infer = vi.fn<Infer>(async model => model === 'seedream' ? nonObject : qwenWorks ? Object.assign([rgba], { seed: 1 }) : Promise.reject(new ProviderError('PROVIDER_EMPTY_OUTPUT', 'empty')));
     const recovered = await discoverLayers(await analysisPng(), infer, { plan });
     expect(recovered).toMatchObject({ provider: 'qwen', fallbackFrom: 'seedream', attempts: [{ provider: 'seedream', outcome: 'unreliable', code: 'DISCOVERY_UNRELIABLE' }, { provider: 'qwen', outcome: 'used' }] });
     qwenWorks = false;
     const kept = await discoverLayers(await analysisPng(), infer, { plan });
     expect(kept).toMatchObject({ provider: 'seedream', attempts: [{ provider: 'seedream', outcome: 'unreliable' }, { provider: 'qwen', outcome: 'failed', code: 'PROVIDER_EMPTY_OUTPUT' }] });
     expect(kept.fallbackFrom).toBeUndefined();
-    expect(kept.proposals[0]).toMatchObject({ label: 'Woman', registered: false });
+    expect(kept.proposals[0]).toMatchObject({ label: 'Woman', warnings: ['PROPOSAL_NON_OBJECT_SUPPORT'] });
+  });
+
+  it('does not pay for Qwen when a paid Seedream result only fails local geometry registration', async () => {
+    // A crop whose aspect cannot be reconciled with its box: real provider layers, our placement cannot use them.
+    const mismatched = output([await layerPng(512, 512), await layerPng(200, 50, { x: 0, y: 0, width: 50, height: 50 })], [{ zIndex: 0 }, { zIndex: 1, name: 'Woman', bboxAbsolute: [10, 10, 110, 110] }]);
+    const infer = vi.fn<Infer>(async () => mismatched);
+    const result = await discoverLayers(await analysisPng(), infer, { plan });
+    expect(infer.mock.calls.map(c => c[0])).toEqual(['seedream']);
+    expect(result).toMatchObject({ provider: 'seedream', attempts: [{ provider: 'seedream', outcome: 'unreliable', code: 'DISCOVERY_GEOMETRY_UNREGISTERED' }] });
+    expect(result.warnings).toContain('DISCOVERY_GEOMETRY_UNREGISTERED');
+    expect(result.proposals[0]).toMatchObject({ label: 'Woman', registered: false, warnings: ['PROPOSAL_GEOMETRY_MISMATCH'] });
+  });
+
+  it('does not pay for Qwen when a completed Seedream result is rejected by the local parser', async () => {
+    const infer = vi.fn<Infer>(async model => { if (model === 'seedream') throw new ProviderError('PROVIDER_RESULT_UNPARSED', 'local parser rejected a completed result'); throw new Error('Qwen must not be called'); });
+    await expect(discoverLayers(await analysisPng(), infer, { plan })).rejects.toMatchObject({ code: 'PROVIDER_RESULT_UNPARSED' });
+    // Local normalization of already-returned layers is classified the same way.
+    const misaligned = Object.assign([await layerPng(512, 512)], { layers: [] as ProviderLayerMetadata[] }) as InferenceOutput;
+    const second = vi.fn<Infer>(async model => { if (model === 'seedream') return misaligned; throw new Error('Qwen must not be called'); });
+    await expect(discoverLayers(await analysisPng(), second, { plan })).rejects.toMatchObject({ code: 'PROVIDER_RESULT_UNPARSED' });
+    expect(infer).toHaveBeenCalledTimes(1); expect(second).toHaveBeenCalledTimes(1);
   });
 
   it('without a configured fallback, a safe Seedream failure proceeds to review with no proposals', async () => {

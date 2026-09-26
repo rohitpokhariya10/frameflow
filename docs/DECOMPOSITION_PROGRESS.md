@@ -292,3 +292,22 @@ semanticSource manual correction — reproduced on a copy with these changes rem
 intermittent `repository.test.ts` lease-timing flake (1 ms lease). No paid calls made.
 
 Next (not started): Step 4–5 proposal review uses provider labels/roles and base layer as background target.
+
+## 2026-09-26 — Live Seedream verification and scaled-crop registration fix
+
+One live call: request `01a0dcd5-8773-7da0-94c2-604dd84d0903` (poster source a97f38d9, fingerprint
+`3cbf40bb…`). Live behaviour differed from the docs: image `width`/`height` are `null`; the base layer
+(z=0) is full-canvas 896×1120 RGB for an 819×1024 input; non-base layers are bbox crops, each uniformly
+upscaled by its own factor (1.07–3.7×, aspect within 1.65%). The strict parser rejected the paid result.
+
+Fixes: null image metadata is treated as missing; new `bbox-scaled` placement (uniform crop scale within
+max(2%, 1.5 px / shorter bbox side), scale 0.25–8×) resizes the crop once straight onto the analysis canvas and
+records provider size, provider bbox, crop scales, aspect error and `seedream-registration-v2`; anything else
+stays unregistered. A completed result that only fails local parsing is recorded `LOCAL_NORMALIZATION_FAILED`
+and re-read for free by request id (`recoverCompleted`), never resubmitted; Seedream retries resume the saved
+request step. Local parse/geometry failures after a paid result no longer trigger the Qwen fallback.
+
+Recovered the paid result with 0 submits/0 uploads (1 status + 1 result read, 10 media downloads): 9/9 layers
+registered bbox-scaled + full-canvas base; reconstruction vs analysis mean |ΔRGB| 5.38/255, placement ≤2 px.
+Cache populated under the fingerprint; job 297f4268 is now reusable by identical same-owner requests.
+Job a1872abd (earlier upload failure, no call) remains an empty review job.

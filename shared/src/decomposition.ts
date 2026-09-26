@@ -144,7 +144,17 @@ export interface ProposalSummary {
 }
 export type DiscoveryProviderName = 'seedream' | 'qwen';
 /** How a provider layer was placed on the analysis canvas. Unregistered layers are never stretched into place. */
-export interface DiscoverySourceRegistration { method: 'full-canvas' | 'bbox-placed' | 'unregistered'; providerWidth: number; providerHeight: number; scaleX: number; scaleY: number }
+export interface DiscoverySourceRegistration {
+  method: 'full-canvas' | 'bbox-placed' | 'bbox-scaled' | 'unregistered';
+  /** Provider image size and provider-canvas → analysis scale. */
+  providerWidth: number; providerHeight: number; scaleX: number; scaleY: number;
+  /** Placement rules version; absent on registrations persisted before seedream-registration-v2. */
+  revision?: string;
+  /** Provider-canvas bbox [left, top, right, bottom] the layer was placed from. */
+  providerBbox?: [number, number, number, number];
+  /** bbox-scaled only: crop pixels per bbox pixel on each axis, their geometric mean, and the relative aspect error. */
+  cropScaleX?: number; cropScaleY?: number; cropScale?: number; aspectError?: number;
+}
 export interface DiscoverySummary {
   contractVersion: string; provider: DiscoveryProviderName; providerModel: string; fallbackFrom?: DiscoveryProviderName;
   requestFingerprint?: string; providerRequestId?: string; deterministic: boolean; sourceHash: string;
