@@ -40,7 +40,8 @@ export async function semanticDiscovery(context: PipelineContext, master: Buffer
   const source = context.repository.getSource(context.job.sourceId)!;
   const analysisTransform = context.job.data.analysisTransform as ReturnType<typeof createTransform>;
   const targets = (context.job.data.proposalReviewApproved ? [] : context.job.options.targetLabels ?? []).map((label, i) => ({ target: semanticTarget(label, `target-${i + 1}`), proposal: undefined as Mask | undefined }));
-  const reviewed = context.job.data.proposalReviewApproved ? (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected) : [];
+  // The discovered base layer is preserved as the background element; it is never sent to source segmentation.
+  const reviewed = context.job.data.proposalReviewApproved ? (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected && !t.baseLayer) : [];
   for (const item of reviewed) {
     const target = semanticTarget(item.label, item.id); if (/^(Layer|Object) \d+$/.test(item.label)) target.providerPrompt = 'the indicated object'; target.proposalIds = item.proposalIds; target.role = item.role;
     if (item.groupMode === 'group') { target.compositionMode = 'group'; target.userConfirmedGroup = true; }

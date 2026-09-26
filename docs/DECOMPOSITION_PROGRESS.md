@@ -311,3 +311,21 @@ Recovered the paid result with 0 submits/0 uploads (1 status + 1 result read, 10
 registered bbox-scaled + full-canvas base; reconstruction vs analysis mean |ΔRGB| 5.38/255, placement ≤2 px.
 Cache populated under the fingerprint; job 297f4268 is now reusable by identical same-owner requests.
 Job a1872abd (earlier upload failure, no call) remains an empty review job.
+
+## 2026-09-26 — Proposal Review #1 (Steps 4–5)
+
+Built on the existing review gate (approve/reject/rename/group/split/custom target/points/brush/box/save):
+- Initial targets use provider names and descriptions (Seedream), falling back to "Layer N" for generic proposals.
+- The discovered base layer becomes a server-owned "Background" target (`baseLayer`, role background). It cannot take
+  proposals, cannot be grouped in the UI, is excluded from the object limit and "approve at least one object" rule,
+  and is never sent to source segmentation (routing by role is Step 6).
+- New `shape` role; roles shown as element types.
+- Server-owned provenance per target: discovered / discovered-base / target-label / user-created / user-group
+  (member ids + labels + proposals) / user-split (verified parent); original label kept so renames are traceable.
+  Client-supplied provenance and base flags are ignored.
+- Default UI shows names, descriptions and a background card; ids, provider, registration and fingerprints are under
+  Advanced inspection. Job summaries expose the discovery summary.
+Tests: `proposalReviewFlow.test.ts` (provider labels, background, approve/reject/rename/text/shape, group + split
+provenance across reload, forged-field rejection, background never segmented), `ProposalReview.test.ts` (UX).
+Live data (0 provider traffic): new poster job 7afa2ec2 reused the recovered Seedream result via the same-owner cache
+(`cacheHit: owner`, callsUsed 0) and opened review with 9 named elements + Background.

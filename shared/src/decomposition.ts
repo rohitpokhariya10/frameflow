@@ -53,7 +53,7 @@ export interface DecompositionJobSummary {
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
   candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
-  proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[];
+  proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary;
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
@@ -100,7 +100,10 @@ export function validDecompositionReview(value: unknown, width: number, height: 
   if (value.targets !== undefined) {
     if (!Array.isArray(value.targets) || value.targets.length > 12 || new Set(value.targets.map(t => object(t) ? t.id : null)).size !== value.targets.length) return false;
     for (const target of value.targets) {
-      if (!object(target) || typeof target.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(target.id) || typeof target.label !== 'string' || !target.label.trim() || target.label.length > 100 || !strings(target.proposalIds) || target.proposalIds.length > 6 || new Set(target.proposalIds).size !== target.proposalIds.length || typeof target.approved !== 'boolean' || typeof target.rejected !== 'boolean' || (target.approved && target.rejected) || !['single','group'].includes(String(target.groupMode)) || !['foreground','background','text','object','unknown'].includes(String(target.role))) return false;
+      if (!object(target) || typeof target.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(target.id) || typeof target.label !== 'string' || !target.label.trim() || target.label.length > 100 || !strings(target.proposalIds) || target.proposalIds.length > 6 || new Set(target.proposalIds).size !== target.proposalIds.length || typeof target.approved !== 'boolean' || typeof target.rejected !== 'boolean' || (target.approved && target.rejected) || !['single','group'].includes(String(target.groupMode)) || !['foreground','background','text','shape','object','unknown'].includes(String(target.role))) return false;
+      if (target.description !== undefined && (typeof target.description !== 'string' || target.description.length > 500)) return false;
+      if (target.baseLayer !== undefined && typeof target.baseLayer !== 'boolean') return false;
+      if (target.splitFromTargetId !== undefined && (typeof target.splitFromTargetId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(target.splitFromTargetId))) return false;
       if (target.memberTargetIds !== undefined && (!strings(target.memberTargetIds) || target.memberTargetIds.length > 6 || new Set(target.memberTargetIds).size !== target.memberTargetIds.length)) return false;
       if (!validDecompositionReview({ expectedRevision: value.expectedRevision, action: 'manual-masks', objects: [{ id: target.id, label: target.label, points: target.points, box: target.userBox, strokes: target.strokes }] }, width, height)) return false;
     }
@@ -129,9 +132,25 @@ export interface SemanticTarget {
 
 export interface ProposalReviewTarget {
   id: string; label: string; proposalIds: string[]; approved: boolean; rejected: boolean;
-  memberTargetIds?: string[]; groupMode: 'single' | 'group'; role: 'foreground' | 'background' | 'text' | 'object' | 'unknown';
+  memberTargetIds?: string[]; groupMode: 'single' | 'group'; role: 'foreground' | 'background' | 'text' | 'shape' | 'object' | 'unknown';
+  /** Provider description of the discovered element (display only). */
+  description?: string;
+  /** Set by the server for the discovered base/background layer; never routed to source segmentation. */
+  baseLayer?: boolean;
+  /** Client hint when a target was split out of another; the server verifies it and records provenance. */
+  splitFromTargetId?: string;
+  /** Server-computed history. Client-supplied values are ignored. */
+  provenance?: ProposalTargetProvenance;
   points?: DecompositionPoint[]; strokes?: DecompositionStroke[]; userBox?: DecompositionBox;
   provisionalMaskRevision?: string; maskArtifactId?: string; overlayArtifactId?: string;
+}
+export interface ProposalTargetProvenance {
+  operation: 'discovered' | 'discovered-base' | 'target-label' | 'user-created' | 'user-group' | 'user-split';
+  /** Review revision that created this target (0 for discovery). */
+  sourceRevision: number; createdAt: string;
+  /** Provider or option label the target started with, so renames stay traceable. */
+  originalLabel?: string;
+  proposalIds?: string[]; memberTargetIds?: string[]; memberLabels?: string[]; parentTargetId?: string; parentLabel?: string;
 }
 export interface ProposalSummary {
   id: string; label: string; artifactId: string; alphaArtifactId?: string; width: number; height: number;
