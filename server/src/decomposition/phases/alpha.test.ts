@@ -11,6 +11,7 @@ import { readDecompositionConfig, normalizeDecompositionOptions } from '../confi
 import { PipelineContext } from '../context.js';
 import { createTransform } from '../image/coordinates.js';
 import type { Infer } from '../providers/inference.js';
+import type { DecompositionReview } from '@frameflow/shared';
 import { saveTrio, semanticReview } from './semanticPipeline.js';
 import { semanticTarget } from './semanticOwnership.js';
 
@@ -70,5 +71,48 @@ it('confirming a non-person object runs exactly one constrained BiRefNet call; m
     expect(alpha.data[5 * W + 5]).toBe(0);
     expect(alpha.data[50 * W + 30]).toBe(128);
     expect(mask.data[50 * W + 30]).toBe(255);
+  } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it('final review: alpha brush, restore interior and a rejected edit keep one consistent revision and never fail the job', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'frameflow-alpha-review-')), repo = new DecompositionRepository(dir), store = new ArtifactStore(dir, repo);
+  try {
+    const config = readDecompositionConfig({ DECOMP_DATA_DIR: dir, DECOMP_PROVIDER_MODE: 'live' });
+    const master = await sharp({ create: { width: W, height: H, channels: 3, background: '#335577' } }).png().toBuffer();
+    const source = await store.write({ ownerId: 'operator', kind: 'source', mimeType: 'image/png', width: W, height: H }, master);
+    repo.addSource({ id: 'source', ownerId: 'operator', originalArtifactId: source.artifactId, masterArtifactId: source.artifactId, originalSha256: source.sha256, workingMasterSha256: source.sha256, width: W, height: H, mimeType: 'image/png', hasAlpha: false, orientationNormalized: false, metadata: {}, createdAt: Date.now() });
+    repo.createJob('operator', 'source', normalizeDecompositionOptions({}, config), 'alpha-review');
+    const job = repo.claimJob('worker')!; job.phase = 5; job.data = { verificationMode: 'live', reviewWorkflow: 2, analysisTransform: createTransform(W, H, 1024) };
+    let context = new PipelineContext(job, repo, store, config, undefined, 'worker');
+    const infer = vi.fn<Infer>();
+    const { reviewAlpha } = await import('./maskReviewActions.js');
+    const object = rect(30, 20, 60, 60);
+    const trio = await saveTrio(context, master, object, object, 'test/object');
+    context.job.data.candidates = [{ id: 'o', label: 'object', ...trio }];
+    context.job.data.refined = [{ id: 'o', label: 'object', ...trio, semanticMaskArtifactId: trio.maskArtifactId }];
+    context.save();
+    // Each review is submitted and processed like the worker does: submit, re-claim, run.
+    const run = async (review: Omit<DecompositionReview, 'expectedRevision'>, first = false) => {
+      if (!first) { const latest = repo.getJob(job.id)!; repo.reviewJob(job.id, 'operator', { ...review, expectedRevision: latest.revision }); context = new PipelineContext(repo.claimJob('worker')!, repo, store, config, undefined, 'worker'); }
+      context.infer = infer;
+      await reviewAlpha(context, master, { ...review, expectedRevision: context.job.revision });
+    };
+    const current = () => (repo.getJob(job.id)!.data.refined as { revisionId: string; maskRevisionId: string; alphaRevisionId: string; overlayRevisionId: string; alphaArtifactId: string }[])[0];
+    // Remove an edge strip, then restore the semantic interior.
+    await run({ action: 'manual-alpha', alphaValue: 255, objects: [{ id: 'o', selected: true, strokes: [{ mode: 'subtract', radius: 3, points: [{ x: 60, y: 22 }, { x: 60, y: 50 }] }] }] }, true);
+    const edited = current();
+    expect(edited.revisionId).not.toBe(trio.revisionId);
+    expect(new Set([edited.revisionId, edited.maskRevisionId, edited.alphaRevisionId, edited.overlayRevisionId]).size).toBe(1);
+    expect((await decodeMask(await context.artifact(edited.alphaArtifactId), { encoding: 'luminance' })).data[40 * W + 60]).toBe(0);
+    await run({ action: 'restore-interior', objects: [{ id: 'o', selected: true }] });
+    expect((await decodeMask(await context.artifact(current().alphaArtifactId), { encoding: 'luminance' })).data[40 * W + 60]).toBe(255);
+    // An edit that would erase the whole layer is rejected at the gate; the job keeps its last good revision.
+    const kept = current().revisionId;
+    await run({ action: 'manual-alpha', objects: [{ id: 'o', selected: true, strokes: [{ mode: 'subtract', radius: 256, points: [{ x: 60, y: 50 }] }] }] });
+    const after = repo.getJob(job.id)!;
+    expect(after.state).toBe('needs_review'); expect(after.review).toMatchObject({ code: 'ALPHA_REVIEW_REQUIRED', gate: 'alpha-review' });
+    expect(after.review?.message).toContain('remove the whole layer');
+    expect(current().revisionId).toBe(kept);
+    expect(infer).not.toHaveBeenCalled();
   } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }
 });

@@ -48,6 +48,7 @@ export async function regroupMasks(context: PipelineContext, master: Buffer, rev
 }
 
 type Refined = SemanticCandidate & { semanticMaskArtifactId?: string; refinementAccepted: boolean; qualityStatus: string };
+const ALPHA_ERRORS: Record<string, string> = { EMPTY_MASK: 'It would remove the whole layer.', FULL_CANVAS_MASK: 'It would cover the whole image.', PROTECTED_REGION_LEAK: 'It would overlap another layer.', POSITIVE_POINT_OUTSIDE_MASK: 'A positive point would be outside the layer.', NEGATIVE_GUIDANCE_LEAK: 'A negative point would be inside the layer.' };
 export async function reviewAlpha(context: PipelineContext, master: Buffer, review: DecompositionReview) {
   if (review.action === 'back-to-semantic') {
     delete context.job.data.refined; context.job.data.resultReviewed = false;
@@ -76,7 +77,11 @@ export async function reviewAlpha(context: PipelineContext, master: Buffer, revi
     let neighbors = emptyMask(mask.width, mask.height);
     for (const other of entries) if (other.id !== entry.id) neighbors = unionMasks(neighbors, await decodeMask(await context.artifact(other.maskArtifactId), { encoding: 'luminance', binary: true }));
     const errors = validateGuidance(alpha, { positivePoints: object.points?.filter(p => p.label === 1), negativePoints: object.points?.filter(p => p.label === 0), excludedMask: neighbors });
-    if (errors.length) throw new ProviderError('ALPHA_REVIEW_REQUIRED', `Alpha correction rejected: ${errors.join(', ')}. Previous saved revision remains available.`);
+    // A rejected edit returns to the alpha gate with the previous revision intact; it must never fail the whole job.
+    if (errors.length) {
+      context.review('ALPHA_REVIEW_REQUIRED', `Alpha correction was not saved (${errors.map(code => ALPHA_ERRORS[code] ?? code).join(' ')}). The previous saved revision is unchanged.`, ['approve-result', 'manual-alpha', 'restore-interior', 'back-to-semantic'], entries.map(e => e.overlayArtifactId));
+      context.job.review!.gate = 'alpha-review'; context.finish(5, 'Alpha edit rejected; previous revision kept'); return;
+    }
     const trio = await saveTrio(context, master, mask, alpha, `05-refined/${entry.id}`, { operation: review.action, parentRevision: entry.revisionId, strokes: object.strokes });
     Object.assign(entry, trio);
     const candidate = (context.job.data.candidates as SemanticCandidate[]).find(c => c.id === entry.id); if (candidate) Object.assign(candidate, trio);

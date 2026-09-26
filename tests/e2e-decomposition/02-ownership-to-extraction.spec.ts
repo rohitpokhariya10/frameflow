@@ -128,6 +128,30 @@ test('image objects go to SAM; ownership review, manual and AI corrections, qual
   await expect.poll(async () => trio.evaluateAll(imgs => imgs.every(i => (i as HTMLImageElement).naturalWidth > 0))).toBe(true);
   await alphaReview(page).locator('.decomp-layer-grid').screenshot({ path: `${shots}/04-alpha-review-trio.png` });
 
+  // Final review edits: remove an edge strip (no AI), restore the semantic interior (no AI), then go back to semantic
+  // correction and re-confirm (one new constrained matte). Every step keeps mask/alpha/overlay on one revision.
+  const callsBeforeFinal = fakeCalls().length;
+  await alphaReview(page).getByLabel('Correction').selectOption('subtract');
+  const alphaBox = await canvasBox(alphaReview(page));
+  await page.mouse.move(alphaBox.x + alphaBox.width * 0.3, alphaBox.y + alphaBox.height * 0.3);
+  await page.mouse.down(); await page.mouse.move(alphaBox.x + alphaBox.width * 0.35, alphaBox.y + alphaBox.height * 0.32, { steps: 4 }); await page.mouse.up();
+  await expect(alphaReview(page).getByRole('button', { name: 'Approve alpha and extract' })).toBeDisabled();
+  await submitAndWait(page, alphaReview(page).getByRole('button', { name: 'Save alpha edits (no AI)' }));
+  let finalRevision = (await job(page)).refined![0];
+  expect(finalRevision.revisionId).not.toBe(refined.revisionId);
+  expect(new Set([finalRevision.revisionId, finalRevision.maskRevisionId, finalRevision.alphaRevisionId, finalRevision.overlayRevisionId]).size).toBe(1);
+  await alphaReview(page).locator('.decomp-layer-grid').screenshot({ path: `${shots}/04b-alpha-after-edge-edit.png` });
+  await submitAndWait(page, alphaReview(page).getByRole('button', { name: 'Restore semantic interior' }));
+  expect((await job(page)).refined![0].revisionId).not.toBe(finalRevision.revisionId);
+  expect(fakeCalls().length).toBe(callsBeforeFinal);
+  await submitAndWait(page, alphaReview(page).getByRole('button', { name: 'Back to semantic correction' }));
+  await expect(maskReview(page)).toBeVisible();
+  await submitAndWait(page, maskReview(page).getByRole('button', { name: 'Confirm ownership and refine edges' }));
+  await expect(alphaReview(page)).toBeVisible();
+  expect(fakeCalls().slice(callsBeforeFinal).map(c => c.model)).toEqual(['birefnet']);
+  finalRevision = (await job(page)).refined![0];
+  await expect(alphaReview(page).getByText(`Revision ${finalRevision.revisionId}`)).toBeVisible();
+
   // Approve → native-resolution extraction; outputs match the source dimensions.
   await submitAndWait(page, alphaReview(page).getByRole('button', { name: 'Approve alpha and extract' }), 'completed');
   const done = await job(page);
