@@ -55,7 +55,7 @@ export interface DecompositionJobSummary {
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
   candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; qualityTier?: QualityTier; qualityChecks?: QualityCheckSummary[]; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
-  proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary;
+  proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary; sceneGraph?: SceneGraph;
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
@@ -199,4 +199,47 @@ export interface ReviewedMask {
 export interface SemanticTargetGroup {
   id: string; label: string; memberTargets: string[]; relationshipEvidence: string[];
   groupMaskRevision: string; provenance: { operation: 'user-group'; sourceRevision: number; timestamp: string };
+}
+
+/** Editable scene graph built after native extraction. Coordinates are source (working-master) pixels. */
+export interface SceneLayerBase {
+  id: string; name: string; bbox: DecompositionBox; zIndex: number; opacity: number; rotation: number; visible: boolean; locked: boolean;
+  /** Revision (mask/alpha trio or provisional region) the layer pixels were produced from. */
+  sourceRevision: string; targetId?: string; metadata: Record<string, unknown>;
+}
+export interface SceneImageLayer extends SceneLayerBase {
+  type: 'image';
+  /** Original source RGB × final alpha, cropped to bbox at native resolution. */
+  transparentRgbaArtifactId: string; maskArtifactId: string; alphaArtifactId: string; sourcePixelRegion: DecompositionBox;
+  semanticTarget: { id: string; label: string; memberHints?: string[] };
+  provenance: { maskRevisionId: string; alphaRevisionId: string; ownership: 'source-semantic' | 'user'; rgb: 'original-source' };
+}
+export interface SceneTextLayer extends SceneLayerBase {
+  type: 'text';
+  /** Suggested content. No OCR runs yet: text comes only from provider wording and is never high confidence. */
+  text: string; textConfidence: 'none' | 'low'; suggestionSource?: 'provider-description' | 'provider-label';
+  fontFamily?: string; fontSize?: number; fontWeight?: 400 | 600 | 700; color?: string; alignment?: 'left' | 'center' | 'right'; letterSpacing?: number; lineHeight?: number;
+  confidence: number;
+  /** Source-pixel raster of the text, always kept as the faithful fallback. */
+  rasterArtifactId: string; rasterFallback: true;
+}
+export interface SceneShapeLayer extends SceneLayerBase {
+  type: 'shape';
+  /** 'raster' when no vector fit is confident enough; the raster artifact is then the faithful layer. */
+  shapeType: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'raster';
+  fill?: string; gradient?: { from: string; to: string; angle: number }; stroke?: { color: string; width: number }; radius?: number;
+  confidence: number; fitIoU: number; rasterArtifactId: string;
+}
+export interface SceneBackgroundLayer extends SceneLayerBase {
+  type: 'background'; imageArtifactId: string; reconstruction: 'original-source';
+  /** Provider-generated clean background. Discovery evidence only: using it requires review. */
+  reconstructionCandidateArtifactId?: string;
+}
+export type SceneLayer = SceneImageLayer | SceneTextLayer | SceneShapeLayer | SceneBackgroundLayer;
+export interface SceneGraph {
+  schemaVersion: 1; jobId: string; revision: number;
+  sourceImage: { artifactId: string; originalSha256: string; workingMasterSha256: string };
+  width: number; height: number;
+  /** Back-to-front. */
+  layers: SceneLayer[]; createdAt: string; warnings: string[];
 }

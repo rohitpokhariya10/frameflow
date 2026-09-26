@@ -12,6 +12,9 @@ import { runPhase } from './pipeline.js';
 import { createTransform } from './image/coordinates.js';
 import { ProviderError } from './providers/adapters.js';
 import type { Infer } from './providers/inference.js';
+import { fakeBiRefNet, fakeSam } from './e2eFakeProvider.js';
+import { decodeRgba } from './image/extract.js';
+import type { SceneGraph } from '@frameflow/shared';
 
 async function rgba(width: number, height: number, box?: { x: number; y: number; width: number; height: number }) {
   const data = Buffer.alloc(width * height * 4, 0);
@@ -23,7 +26,7 @@ async function rgba(width: number, height: number, box?: { x: number; y: number;
 }
 
 /** Poster-like discovery: a base plus person, held item, headline text and a panel, as uniformly scaled crops. */
-async function setup() {
+async function setup(options: { fakeProvider?: boolean } = {}) {
   const dir = await mkdtemp(resolve(tmpdir(), 'frameflow-proposal-review-'));
   const repo = new DecompositionRepository(dir), store = new ArtifactStore(dir, repo);
   const config = readDecompositionConfig({ DECOMP_DATA_DIR: dir, DECOMP_PROVIDER_MODE: 'live' });
@@ -41,6 +44,8 @@ async function setup() {
   const samPrompts: string[] = [];
   const infer = vi.fn<Infer>(async (model, request) => {
     if (model === 'seedream') return outputs;
+    if (options.fakeProvider && model === 'sam3') { samPrompts.push(String(request.prompt)); return fakeSam(request); }
+    if (options.fakeProvider && model === 'birefnet') return fakeBiRefNet(request);
     samPrompts.push(String(request.prompt));
     throw new ProviderError('TEST_STOP', 'Stop before paid segmentation in this test.');
   });
@@ -51,7 +56,7 @@ async function setup() {
   const run = async () => { const claimed = repo.claimJob('worker')!; const context = new PipelineContext(claimed, repo, store, config, undefined, 'worker'); context.infer = infer; try { await runPhase(context); } finally { repo.releaseJob(claimed.id, 'worker', repo.getJob(claimed.id)!.fence); } };
   const first = new PipelineContext(job, repo, store, config, undefined, 'worker'); first.infer = infer; await runPhase(first);
   const submit = (review: DecompositionReview) => { expect(validDecompositionReview(review, 256, 256)).toBe(true); repo.reviewJob(job.id, 'operator', review); };
-  return { repo, id: job.id, run, submit, infer, samPrompts, cleanup: async () => { repo.close(); await rm(dir, { recursive: true, force: true }); } };
+  return { repo, store, master, id: job.id, run, submit, infer, samPrompts, cleanup: async () => { repo.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
 it('starts proposal review from provider names and keeps the discovered base as a background element', async () => {
@@ -186,5 +191,55 @@ it('classification: with no image objects approved, segmentation is skipped enti
     expect(done.state).toBe('completed'); expect(done.phase).toBe(6);
     expect(env.samPrompts).toEqual([]);
     expect(env.infer.mock.calls.map(c => c[0])).toEqual(['seedream']);
+  } finally { await env.cleanup(); }
+});
+
+it('scene graph: native image layer from source RGB, reconstructed text/shape layers, original background, provider z-order', async () => {
+  const env = await setup({ fakeProvider: true });
+  try {
+    let job = env.repo.getJob(env.id)!;
+    const [woman, phone, headline, panel, background] = env.repo.summarize(job).proposalTargets!;
+    const group: ProposalReviewTarget = { id: 'target-group-1', label: 'woman holding phone', proposalIds: ['proposal-1', 'proposal-2'], memberTargetIds: [woman.id, phone.id], groupMode: 'group', role: 'object', approved: true, rejected: false };
+    env.submit({ expectedRevision: job.revision, action: 'approve-proposals', targets: [group, { ...headline, approved: true }, { ...panel, approved: true }, { ...background, approved: true }] });
+    await env.run();
+    job = env.repo.getJob(env.id)!;
+    expect(job.review?.gate).toBe('semantic-mask-review');
+    const candidate = env.repo.summarize(job).candidates![0];
+    expect(candidate.qualityTier).not.toBe('FAIL');
+    env.submit({ expectedRevision: job.revision, action: 'accept-masks', objects: [{ id: candidate.id, candidateId: candidate.id, selected: true }] });
+    await env.run();
+    job = env.repo.getJob(env.id)!;
+    expect(job.review?.gate).toBe('alpha-review');
+    env.submit({ expectedRevision: job.revision, action: 'approve-result' });
+    await env.run(); await env.run();
+    job = env.repo.getJob(env.id)!;
+    expect(job.state).toBe('completed');
+    const graph = env.repo.summarize(job).sceneGraph as SceneGraph;
+    expect(graph).toMatchObject({ schemaVersion: 1, width: 256, height: 256, jobId: env.id });
+    // Back-to-front: background, then provider z-order (woman+phone z2 < PRO z3 < panel z4).
+    expect(graph.layers.map(l => [l.type, l.name, l.zIndex])).toEqual([['background', 'Background', 0], ['image', 'woman holding phone', 1], ['text', 'PRO headline', 2], ['shape', 'Orange panel', 3]]);
+    const [bg, image, text, shape] = graph.layers;
+    expect(bg).toMatchObject({ type: 'background', locked: true, reconstruction: 'original-source', bbox: { x: 0, y: 0, width: 256, height: 256 } });
+    expect(bg.type === 'background' && bg.reconstructionCandidateArtifactId).toBeTruthy();
+    // Image layer: native crop whose RGB is exactly the source RGB wherever it is visible.
+    if (image.type !== 'image') throw new Error('image layer expected');
+    expect(image.provenance).toMatchObject({ rgb: 'original-source' });
+    const crop = await decodeRgba(await env.store.read(env.repo.getArtifact(image.transparentRgbaArtifactId)!));
+    expect([crop.width, crop.height]).toEqual([image.bbox.width, image.bbox.height]);
+    const source = await decodeRgba(env.master);
+    let visible = 0;
+    for (let y = 0; y < crop.height; y++) for (let x = 0; x < crop.width; x++) {
+      const c = (y * crop.width + x) * 4, s = ((image.bbox.y + y) * source.width + image.bbox.x + x) * 4;
+      if (!crop.data[c + 3]) continue; visible++;
+      expect([crop.data[c], crop.data[c + 1], crop.data[c + 2]]).toEqual([source.data[s], source.data[s + 1], source.data[s + 2]]);
+    }
+    expect(visible).toBeGreaterThan(1000);
+    // Text: raster fallback from source pixels, low-confidence suggestion only, style estimated from the source.
+    expect(text).toMatchObject({ type: 'text', text: 'PRO', textConfidence: 'low', suggestionSource: 'provider-label', rasterFallback: true, color: '#dddddd' });
+    expect(env.repo.getArtifact((text as { rasterArtifactId: string }).rasterArtifactId)).toBeDefined();
+    // Shape: vector fit whose fill comes from the source pixels (not the provider's generated RGB).
+    expect(shape).toMatchObject({ type: 'shape', shapeType: 'rectangle', fill: '#dddddd' });
+    expect((shape as { confidence: number }).confidence).toBeGreaterThanOrEqual(0.7);
+    expect(env.repo.listArtifacts(env.id).some(a => a.relativePath === '06-scene/scene-graph.json')).toBe(true);
   } finally { await env.cleanup(); }
 });

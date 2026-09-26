@@ -10,6 +10,7 @@ import type { CachedInference, PipelineContext } from './context.js';
 import { createAnalysis } from './phases/analysis.js';
 import { type LayerProposal } from './phases/proposals.js';
 import { discoverLayers, resolveDiscoveryPlan, DISCOVERY_CONTRACT_VERSION } from './phases/discovery.js';
+import { buildSceneGraph } from './phases/sceneGraph.js';
 import { segmentObjects } from './phases/segmentation.js';
 import { refineObjects, type RefinementObject } from './phases/refinement.js';
 import { applyBrush, decodeMask, encodeMask, mapMaskToNative, measureMask, overlapMasks, unionMasks, emptyMask, resizeMask, validateGuidance } from './image/masks.js';
@@ -50,6 +51,7 @@ export async function runPhase(context: PipelineContext) {
     if (!refined?.length && !job.data.noImageObjects) throw new DecompositionError('MASKS_REQUIRED','Accept refined masks before extraction.',409);
     if (!refined?.length) {
       await context.put('extraction-metadata',json({phase:6,providerMode:job.data.verificationMode,nativeWidth:source.width,nativeHeight:source.height,objects:[],rgbProvenance:'Original working-master RGB',noImageObjects:true}),'06-extracted/metadata.json','application/json');
+      if (job.data.reviewWorkflow === 2) context.job.data.sceneGraph = await buildSceneGraph(context, master, source, []);
       context.job.state='completed';context.job.review=undefined;context.job.data.extracted=[];
       context.finish(6,'Phase 6 of 6 — Editable elements ready');return;
     }
@@ -71,6 +73,8 @@ export async function runPhase(context: PipelineContext) {
       metadata.push({objectId:layer.id,label:layer.label,bbox:layer.bbox,rgbaArtifactId:rgba.artifactId,alphaMode:'straight',workingMasterSha256:source.workingMasterSha256});
     }
     await context.put('extraction-metadata',json({phase:6,providerMode:job.data.verificationMode,liveVerified:false,nativeWidth:source.width,nativeHeight:source.height,objects:metadata,rgbProvenance:'Original working-master RGB',coverage:result.coverage}),'06-extracted/metadata.json','application/json');
+    // The editable scene graph (image, text, shape and background layers) belongs to the reviewed workflow.
+    if (job.data.reviewWorkflow === 2) context.job.data.sceneGraph = await buildSceneGraph(context, master, source, metadata.filter(m => m.objectId !== 'residual'));
     context.job.state='completed';context.job.review=undefined;context.job.data.extracted=metadata;
     context.finish(6,'Phase 6 of 6 — Extracted native layers ready');return;
   }
