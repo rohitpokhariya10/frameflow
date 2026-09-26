@@ -10,7 +10,7 @@ export default function App({ session }: { session: ProjectSession }) {
   const projectId = useAppSelector((state) => state.editor.document.id);
   const [confirming, setConfirming] = useState(false);
   const [decomposing, setDecomposing] = useState(false);
-  return <><button className="decomp-launch" onClick={() => setDecomposing(true)}>Decompose image</button>{decomposing && <DecompositionPanel onClose={() => setDecomposing(false)} />}<EditorShell key={projectId} onNewDesign={() => setConfirming(true)} />
+  return <><button className="decomp-launch" onClick={() => setDecomposing(true)}>Image to layers</button>{decomposing && <DecompositionPanel onClose={() => setDecomposing(false)} />}<EditorShell key={projectId} onNewDesign={() => setConfirming(true)} />
     {confirming && <NewDesignDialog session={session} onClose={() => {
       setConfirming(false);
       document.getElementById('new-design-action')?.focus();

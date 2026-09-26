@@ -4,7 +4,8 @@ const base = '/api/decomposition';
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(base + path, { credentials: 'same-origin', ...init });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error?.message || `Request failed (${response.status}).`);
+  // Keep the server's code and status so the UI can react to specific outcomes (e.g. the retry limit).
+  if (!response.ok) throw Object.assign(new Error(value.error?.message || `Request failed (${response.status}).`), { code: value.error?.code as string | undefined, status: response.status });
   return value as T;
 }
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json', 'X-FrameFlow-CSRF': '1' }, body: JSON.stringify(body) });

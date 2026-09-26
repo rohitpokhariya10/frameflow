@@ -6,7 +6,8 @@ import { defineConfig } from '@playwright/test';
 /**
  * Isolated decomposition browser tests. A fresh data directory is seeded per run (replaying cached discovery
  * outputs through the real pipeline), and the API/worker run WITHOUT a fal key, so no paid call is possible. The
- * worker uses the deterministic E2E fake for SAM/BiRefNet (server/src/decomposition/e2eWorker.ts).
+ * worker uses the deterministic E2E fake for Seedream (fixture replay), SAM and BiRefNet (e2eWorker.ts). Only the API
+ * process gets a placeholder key so uploads are accepted; no process ever holds a real key.
  * Set DECOMP_E2E_REPLAY_DIR + DECOMP_E2E_REPLAY_JOB to replay a real cached Seedream discovery instead of the
  * synthetic poster.
  */
@@ -29,7 +30,8 @@ export default defineConfig({
   projects: [{ name: 'decomposition', use: { browserName: 'chromium' } }],
   webServer: [
     {
-      command: `${tsx} server/src/decomposition/e2eSeed.ts && npx concurrently -k -n api,worker "${tsx} server/src/index.ts" "${tsx} server/src/decomposition/e2eWorker.ts"`,
+      // The API only needs a key to accept uploads (it never calls the provider); the worker stays keyless and fake.
+      command: `${tsx} server/src/decomposition/e2eSeed.ts && npx concurrently -k -n api,worker "FAL_KEY=e2e-placeholder-not-a-real-key ${tsx} server/src/index.ts" "FAL_KEY= ${tsx} server/src/decomposition/e2eWorker.ts"`,
       url: `http://127.0.0.1:${apiPort}/api/health`, reuseExistingServer: false, timeout: 120_000, env: serverEnv,
     },
     { command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: false, timeout: 60_000, env: { FRAMEFLOW_CLIENT_PORT: String(clientPort), FRAMEFLOW_API_URL: `http://127.0.0.1:${apiPort}` } },

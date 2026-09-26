@@ -56,6 +56,8 @@ export interface DecompositionJobSummary {
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
   candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; qualityTier?: QualityTier; qualityChecks?: QualityCheckSummary[]; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
   proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary; sceneGraph?: SceneGraph;
+  /** Whether an explicit retry of this job is allowed, mirroring the server's retry rules (it never changes them). */
+  retry?: { available: boolean; reason?: 'RETRY_LIMIT' | 'CALL_BUDGET' | 'NOT_RETRYABLE_STATE'; attempt: number; limit: number };
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }

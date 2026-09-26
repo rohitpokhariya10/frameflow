@@ -63,7 +63,7 @@ export function LayerInspector({ variant, layer }: { variant: DesignVariant; lay
     </>}
     {layer.type === 'image' && layer.textSuggestion && <div className="layer-text-suggestion">
       <p><strong>Text image.</strong> {layer.textSuggestion.text ? <>Suggested text (unverified): “{layer.textSuggestion.text}”.</> : 'No reliable text suggestion; you can type it after converting.'}</p>
-      <button className="button" onClick={convert}><Type size={14} />Convert to editable text</button>
+      <button className="button" onClick={convert}><Type size={14} />Make text editable</button>
     </div>}
     <div className="layer-actions">
       <button className="button" aria-pressed={!layer.visible} onClick={() => change({ visible: !layer.visible })}>{layer.visible ? <EyeOff size={14} /> : <Eye size={14} />}{layer.visible ? 'Hide' : 'Show'}</button>
