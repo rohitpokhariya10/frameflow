@@ -9,11 +9,11 @@ import { safeRegion } from '../../lib/layout/constants';
 import { ensureTextFont, measureText } from '../../lib/layout/measureText';
 
 function feedback(result: LayoutResult, original: TextElement) {
-  if (result.status === 'unchanged') return original.text === '' ? 'Add text to use Auto Layout.' : 'This text already fits.';
-  if (result.status === 'unresolved') return result.reason;
-  const changes = result.changes.filter((change) => change !== 'font-reduced').map((change) => ({ wrapped: 'Rewrapped', widened: 'Widened', moved: 'Moved' })[change]);
+  if (result.status === 'unchanged') return original.text === '' ? 'Add text to use Auto Layout.' : 'Text already fits.';
+  if (result.status === 'unresolved') return 'Couldn’t fit this text safely. Try a wider text box, a smaller font or a larger canvas.';
+  const changes = result.changes.filter((change) => change !== 'font-reduced').map((change) => ({ wrapped: 'Wrapped', widened: 'Widened', moved: 'Moved' })[change]);
   if (result.changes.includes('font-reduced')) changes.push(`Font reduced from ${Number(original.fontSize.toFixed(2))} to ${Number(result.element.fontSize.toFixed(2))}`);
-  return `Text fitted within the frame. ${changes.length ? changes.join(' · ') + '.' : ''}`;
+  return `Text fitted inside the frame. ${changes.length ? changes.join(' · ') + '.' : ''}`;
 }
 
 export function AutoLayoutControl({ element }: { element: TextElement }) {

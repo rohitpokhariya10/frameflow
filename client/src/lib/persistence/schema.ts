@@ -32,7 +32,7 @@ const shapeLayer = object({ ...layerBase, type: choice('shape'), shapeType: choi
   gradient: object({ from: color, to: color, angle: range(-360, 360) }), stroke: object({ color, width: range(0, 1000) }) });
 const layer: Check = (v) => imageLayer(v) || shapeLayer(v);
 const uniqueIds: Check = (v) => Array.isArray(v) && new Set(v.map((item: { id: string }) => item.id)).size === v.length;
-const canvas: Check = (v) => object({ width: finite, height: finite, backgroundColor: color })(v)
+const canvas: Check = (v) => object({ width: finite, height: finite, backgroundColor: color }, { transparent: choice(true, false) })(v)
   && validateCanvasSize((v as { width: number }).width, (v as { height: number }).height).valid;
 const variant = object({
   id, name: string, revision: (v) => Number.isSafeInteger(v) && (v as number) >= 0, canvas,
@@ -40,6 +40,7 @@ const variant = object({
 }, {
   background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint: object({ x: range(0, 1), y: range(0, 1) }) }),
   sourceVariantId: id,
+  decomposition: object({ jobId: id, mode: choice('blank', 'original') }),
   layers: (v) => array(layer, LAYER_LIMITS.maxLayers)(v) && uniqueIds(v),
   generation: object({ mode: choice('live', 'example'), promptUsed: string, requestedAspectRatio: string,
     returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { provider: choice('gemini', 'cloudflare'), model: string, sourceAssetId: id }),

@@ -6,5 +6,6 @@ export function formatLabel(canvas: CanvasSize) {
 
 /** Presentation only: persisted names and source relationships stay untouched. */
 export function variantLabel(variant: DesignVariant, index: number) {
-  return `${index + 1}. ${formatLabel(variant.canvas)} · ${variant.sourceVariantId ? 'Adapted' : 'Original'} · ${variant.canvas.width} × ${variant.canvas.height}`;
+  const kind = variant.decomposition ? `Layers on ${variant.decomposition.mode === 'blank' ? 'blank canvas' : 'original'}` : variant.sourceVariantId ? 'Adapted' : 'Original';
+  return `${index + 1}. ${formatLabel(variant.canvas)} · ${kind} · ${variant.canvas.width} × ${variant.canvas.height}`;
 }

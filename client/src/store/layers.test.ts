@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DesignVariant, SceneGraph, TextElement } from '@frameflow/shared';
 import { createEditorStore, selectActiveVariant } from './index';
-import { decomposedDesignImported, layerConvertedToText, layerDeleted, layerDuplicated, layerReordered, layerUpdated } from './editorSlice';
+import { canvasBackgroundChanged, decomposedDesignImported, layerAdded, layerConvertedToText, layerDeleted, layerDuplicated, layerImageReplaced, layerReordered, layerUpdated } from './editorSlice';
 import { undo } from './history';
-import { variantSelected } from './uiSlice';
+import { elementSelected, variantSelected } from './uiSlice';
 import { isProjectDocument } from '../lib/persistence/schema';
-import { sceneToVariant } from '../features/decomposition/importScene';
+import { backgroundLayer, sceneToVariant } from '../features/decomposition/importScene';
 
 const t = '2026-09-26T12:00:00.000Z';
 const decomposed = (): DesignVariant => ({
@@ -71,6 +71,39 @@ describe('editable layers from a decomposed design', () => {
     expect(selectActiveVariant(store.getState()).layers!.map(l => l.id)).toEqual(['layer-pro', 'layer-panel', 'layer-woman']);
   });
 
+  it('moves a dragged layer across the stack in one undo step, retaining the order of other layers', () => {
+    const store = imported(), v = 'decomposed-1';
+    const original = selectActiveVariant(store.getState());
+    store.dispatch(layerReordered({ variantId: v, id: 'layer-panel', toIndex: 2, timestamp: t }));
+    expect(selectActiveVariant(store.getState()).layers!.map(l => l.id)).toEqual(['layer-pro', 'layer-woman', 'layer-panel']);
+    expect(selectActiveVariant(store.getState()).revision).toBe(original.revision + 1);
+    store.dispatch(undo());
+    expect(selectActiveVariant(store.getState())).toEqual(original);
+    for (const toIndex of [-1, 3, 0.5, NaN, 0]) store.dispatch(layerReordered({ variantId: v, id: 'layer-panel', toIndex, timestamp: t }));
+    expect(selectActiveVariant(store.getState())).toEqual(original);
+  });
+
+  it('edits valid gradients with undo, validates stops and angles, and can return to a solid fill', () => {
+    const store = imported(), target = { variantId: 'decomposed-1', id: 'layer-panel', timestamp: t };
+    const original = selectActiveVariant(store.getState()).layers![0];
+    store.dispatch(elementSelected('layer-panel'));
+    const gradient = { from: '#123456', to: '#abcdef', angle: -90 };
+    store.dispatch(layerUpdated({ ...target, changes: { gradient } }));
+    expect(selectActiveVariant(store.getState()).layers![0]).toMatchObject({ gradient });
+    expect(isProjectDocument(store.getState().editor.document)).toBe(true);
+    const updated = selectActiveVariant(store.getState());
+    for (const invalid of [{ ...gradient, from: 'red' }, { ...gradient, angle: 361 }, { ...gradient, angle: NaN }]) {
+      store.dispatch(layerUpdated({ ...target, changes: { gradient: invalid } }));
+      expect(selectActiveVariant(store.getState())).toBe(updated);
+    }
+    store.dispatch(undo());
+    expect(selectActiveVariant(store.getState()).layers![0]).toEqual(original);
+    expect(store.getState().ui.selectedElementId).toBe('layer-panel');
+    store.dispatch(layerUpdated({ ...target, changes: { fill: '#123456', gradient: null } }));
+    expect(selectActiveVariant(store.getState()).layers![0]).toMatchObject({ fill: '#123456' });
+    expect(selectActiveVariant(store.getState()).layers![0]).not.toHaveProperty('gradient');
+  });
+
   it('converts a text raster into an editable text element in one undoable step, keeping the raster hidden', () => {
     const store = imported();
     const element: TextElement = { id: 'text-pro', type: 'text', role: 'custom', text: 'PRO', x: 118, y: 54, width: 626, fontFamily: 'Inter', fontSize: 172, fontWeight: 700, fill: '#ff7a1a', align: 'left', lineHeight: 1.2, letterSpacing: 0 };
@@ -125,10 +158,85 @@ describe('scene graph import', () => {
     expect(del).not.toHaveBeenCalled();
   });
 
+  it('blank canvas: only the separated layers, at their original positions and order, on a transparent canvas — never the original image', async () => {
+    let n = 0;
+    const fetched: string[] = [];
+    const variant = await sceneToVariant({ id: 'job', sceneGraph: graph }, async id => { fetched.push(id); return new Blob([id]); }, { putAsset: vi.fn(async () => undefined), deleteAsset: vi.fn(async () => undefined) }, () => `id${++n}`, { mode: 'blank' });
+    expect(fetched).not.toContain('src');
+    expect(variant.background).toBeUndefined();
+    expect(variant.canvas).toEqual({ width: 1200, height: 1500, backgroundColor: '#FFFFFF', transparent: true });
+    expect(variant.decomposition).toEqual({ jobId: 'job', mode: 'blank' });
+    expect(variant.layers!.map(l => [l.name, l.x, l.y, l.width, l.height])).toEqual(graph.layers.slice(1).map(l => [l.name, l.bbox.x, l.bbox.y, l.bbox.width, l.bbox.height]));
+    expect(variant.layers!.every(l => !l.locked)).toBe(true);
+    expect(isProjectDocument({ ...createEditorStore().getState().editor.document, variants: [variant] })).toBe(true);
+  });
+
+  it('blank canvas adds the AI-rebuilt background only when asked, as a locked bottom layer; the original mode keeps the original image', async () => {
+    const withRebuilt: SceneGraph = { ...graph, layers: [{ ...graph.layers[0], reconstructionCandidateArtifactId: 'rebuilt' } as SceneGraph['layers'][number], ...graph.layers.slice(1)] };
+    const fetch = (seen: string[]) => async (id: string) => { seen.push(id); return new Blob([id]); };
+    const assets = { putAsset: vi.fn(async () => undefined), deleteAsset: vi.fn(async () => undefined) };
+    const without: string[] = [];
+    expect((await sceneToVariant({ id: 'job', sceneGraph: withRebuilt }, fetch(without), assets, undefined, { mode: 'blank', includeBackground: false })).layers).toHaveLength(4);
+    expect(without).not.toContain('rebuilt');
+    const seen: string[] = [];
+    const blank = await sceneToVariant({ id: 'job', sceneGraph: withRebuilt }, fetch(seen), assets, undefined, { mode: 'blank', includeBackground: true });
+    expect(seen).toContain('rebuilt'); expect(seen).not.toContain('src');
+    expect(blank.layers![0]).toMatchObject({ name: 'Background', type: 'image', x: 0, y: 0, width: 1200, height: 1500, locked: true });
+    expect(blank.background).toBeUndefined();
+    const original = await sceneToVariant({ id: 'job', sceneGraph: withRebuilt }, async id => new Blob([id]), assets, undefined, { mode: 'original' });
+    expect(original.background).toMatchObject({ fit: 'cover' });
+    expect(original.canvas.transparent).toBeUndefined();
+    expect(original.decomposition).toEqual({ jobId: 'job', mode: 'original' });
+    expect(original.layers).toHaveLength(4);
+  });
+
   it('removes already stored assets when a download fails, and refuses oversize canvases', async () => {
     const put = vi.fn(async () => undefined), del = vi.fn(async () => undefined);
     await expect(sceneToVariant({ id: 'job', sceneGraph: graph }, async id => { if (id === 'woman-rgba') throw new Error('offline'); return new Blob([id]); }, { putAsset: put, deleteAsset: del })).rejects.toThrow('offline');
     expect(del).toHaveBeenCalledTimes(put.mock.calls.length);
     await expect(sceneToVariant({ id: 'job', sceneGraph: { ...graph, width: 5000 } }, async () => new Blob(), { putAsset: put, deleteAsset: del })).rejects.toThrow(/larger than the editor canvas limit/);
+  });
+});
+
+describe('adding layers and changing the background', () => {
+  function blankEditor() {
+    const store = createEditorStore();
+    const { background: _original, ...rest } = decomposed(); void _original;
+    const variant = { ...rest, canvas: { width: 1200, height: 1500, backgroundColor: '#FFFFFF', transparent: true }, decomposition: { jobId: 'job', mode: 'blank' as const } };
+    store.dispatch(decomposedDesignImported({ variant, timestamp: t }));
+    store.dispatch(variantSelected(variant.id));
+    return store;
+  }
+  it('adds a detected layer on top or a background at the bottom, as one undoable step', () => {
+    const store = blankEditor();
+    const phone = { id: 'layer-phone', type: 'image' as const, name: 'Phone', assetId: 'decomp-phone', x: 420, y: 520, width: 360, height: 200, rotation: 0, opacity: 1, visible: true, locked: false, source: { jobId: 'job', layerId: 'detected-target-4', kind: 'image' as const } };
+    store.dispatch(layerAdded({ variantId: 'decomposed-1', layer: phone, position: 'top', timestamp: t }));
+    store.dispatch(layerAdded({ variantId: 'decomposed-1', layer: backgroundLayer('layer-bg', 'decomp-bg2', 1200, 1500), position: 'bottom', timestamp: t }));
+    expect(selectActiveVariant(store.getState()).layers!.map(l => l.id)).toEqual(['layer-bg', 'layer-panel', 'layer-pro', 'layer-woman', 'layer-phone']);
+    // Duplicates and malformed layers are refused.
+    store.dispatch(layerAdded({ variantId: 'decomposed-1', layer: phone, position: 'top', timestamp: t }));
+    store.dispatch(layerAdded({ variantId: 'decomposed-1', layer: { ...phone, id: 'bad', assetId: 'blob:x' }, position: 'top', timestamp: t }));
+    expect(selectActiveVariant(store.getState()).layers).toHaveLength(5);
+    store.dispatch(undo());
+    expect(selectActiveVariant(store.getState()).layers!.map(l => l.id)).not.toContain('layer-bg');
+  });
+  it('switches between transparent and a solid colour, keeping the colour', () => {
+    const store = blankEditor();
+    store.dispatch(canvasBackgroundChanged({ variantId: 'decomposed-1', transparent: false, color: '#123456', timestamp: t }));
+    expect(selectActiveVariant(store.getState()).canvas).toEqual({ width: 1200, height: 1500, backgroundColor: '#123456' });
+    store.dispatch(canvasBackgroundChanged({ variantId: 'decomposed-1', transparent: true, timestamp: t }));
+    expect(selectActiveVariant(store.getState()).canvas).toEqual({ width: 1200, height: 1500, backgroundColor: '#123456', transparent: true });
+    store.dispatch(canvasBackgroundChanged({ variantId: 'decomposed-1', transparent: false, color: 'red', timestamp: t }));
+    expect(selectActiveVariant(store.getState()).canvas.transparent).toBe(true);
+    expect(isProjectDocument(store.getState().editor.document)).toBe(true);
+  });
+  it('replaces an image layer\'s picture in place and drops a text suggestion that no longer applies', () => {
+    const store = blankEditor();
+    store.dispatch(layerImageReplaced({ variantId: 'decomposed-1', id: 'layer-pro', assetId: 'decomp-new', timestamp: t }));
+    const layer = selectActiveVariant(store.getState()).layers!.find(l => l.id === 'layer-pro')!;
+    expect(layer).toMatchObject({ assetId: 'decomp-new', x: 118, y: 54, width: 626, height: 215, name: 'PRO headline' });
+    expect('textSuggestion' in layer).toBe(false);
+    store.dispatch(layerImageReplaced({ variantId: 'decomposed-1', id: 'layer-panel', assetId: 'decomp-x', timestamp: t }));
+    expect(selectActiveVariant(store.getState()).layers!.find(l => l.id === 'layer-panel')).not.toHaveProperty('assetId');
   });
 });

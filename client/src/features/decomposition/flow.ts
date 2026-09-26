@@ -18,6 +18,7 @@ const active = (job: Job) => ['queued', 'running', 'cancel_requested'].includes(
 
 export function flowStep(job: Job | null | undefined): FlowStep {
   if (!job) return 'upload';
+  if (job.state === 'failed' && job.error?.code === 'TARGET_LIMIT' && job.phase === 3 && ['save-proposals', 'approve-proposals'].includes(job.reviewSubmission?.action ?? '')) return 'review';
   if (job.state === 'failed' || job.state === 'cancelled' || (job.state === 'needs_review' && job.review?.code === 'SUBMISSION_UNKNOWN')) return 'error';
   if (job.state === 'completed' || job.state === 'partial') return 'ready';
   if (active(job)) return 'processing';
@@ -87,6 +88,7 @@ export function friendlyType(target: ProposalReviewTarget): { type: FriendlyType
   return { type: KIND_TYPE[target.classification.kind] ?? 'Choose type', suggested: true };
 }
 
+export const PROVISIONAL_COPY = 'AI found a possible selection. Check it and fix any missing or extra areas.';
 /** Plain-language selection feedback for quality checks. Codes never reach the default UI. */
 const CHECK_COPY: Record<string, string> = {
   EMPTY_MASK: 'Nothing is selected yet.',
@@ -106,11 +108,14 @@ const CHECK_COPY: Record<string, string> = {
   INTERIOR_HOLES: 'There are gaps inside the selection.',
   LOW_PROVIDER_CONFIDENCE: 'AI was not fully sure about this selection.',
   MANUAL_OWNERSHIP: 'You edited this selection — take a quick look before continuing.',
+  PROVISIONAL_SELECTION: PROVISIONAL_COPY,
 };
 export type SelectionStatus = { tone: 'good' | 'check' | 'fix'; title: string; details: string[] };
-export function selectionStatus(candidate: { qualityTier?: string; qualityStatus?: string; qualityChecks?: QualityCheckSummary[] } | undefined): SelectionStatus {
+export function selectionStatus(candidate: { qualityTier?: string; qualityStatus?: string; qualityChecks?: QualityCheckSummary[]; provisional?: boolean } | undefined): SelectionStatus {
   const tier = candidate?.qualityTier ?? (candidate?.qualityStatus === 'needs-correction' ? 'FAIL' : 'REVIEW');
   const details = [...new Set((candidate?.qualityChecks ?? []).map(check => CHECK_COPY[check.code] ?? 'Take a quick look at this selection.'))];
+  // An unconfirmed AI candidate is never "Looks right", whatever tier it carries.
+  if (candidate?.provisional) return { tone: 'check', title: 'Check this selection', details: [PROVISIONAL_COPY, ...details.filter(d => d !== PROVISIONAL_COPY)] };
   if (tier === 'FAIL') return { tone: 'fix', title: 'Needs a fix', details: details.length ? details : ['AI could not find the whole object. Paint over it or use AI refine.'] };
   if (tier === 'PASS') return { tone: 'good', title: 'Looks right', details };
   return { tone: 'check', title: 'Take a quick look', details };
@@ -143,6 +148,10 @@ export function reviewNotice(job: Pick<DecompositionJobSummary, 'review' | 'revi
   if (code === 'TARGET_NOT_RECOVERED') return action === 'guided-refine' ? 'AI couldn’t improve this selection. Paint over the missing parts or remove extra areas, then save.' : 'This selection still needs a fix before we can continue.';
   if (code === 'GUIDANCE_MASK_CONFLICT') return 'Some of your hints don’t match the selection. Paint the area directly or use AI refine.';
   if (code === 'ALPHA_REVIEW_REQUIRED') return 'That edge change couldn’t be saved because it would remove too much. Your previous version is kept.';
+  if (code === 'UNSAVED_EDITS') return 'Save your changes first. Your painted edits were not applied.';
+  if (code === 'PROVISIONAL_SELECTION_UNCONFIRMED') return 'Check AI’s possible selection first — keep it or fix it, then continue.';
+  if (code === 'GUIDANCE_REQUIRED') return 'Nothing is selected yet. Paint over the object so AI knows where to look, then try AI refine.';
+  if (code === 'PROVIDER_EMPTY_OUTPUT') return 'AI couldn’t find this object from these hints. Paint over the missing parts, then try AI refine again — or save your painted selection.';
   if (code && /^PROVIDER_/.test(code)) return 'The AI service is busy right now. Your selection is saved — try AI refine again in a moment, or paint the fix yourself.';
   return undefined;
 }

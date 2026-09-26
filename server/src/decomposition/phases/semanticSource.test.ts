@@ -95,3 +95,111 @@ it('identical provider input reuses durable outputs across step keys, preserving
     expect(measureMask(f.full).area).toBeGreaterThan(measureMask(f.torso).area);
   }finally{await f.cleanup();}
 });
+it.each([['no hints',[]],['only a remove hint',[{x:20,y:20,label:0 as const}]]])('guided refine on an empty selection with %s asks for guidance and makes no provider call',async(_,points)=>{
+  const f=await contextFixture();try{
+    // Mirrors a Phase 4 rejection: the candidate carries an empty mask, so the client has no bbox to fall back on.
+    const empty=await saveTrio(f.context,f.master,emptyMask(256,320),emptyMask(256,320),'test/empty');
+    f.context.job.phase=4;f.context.job.data.candidates=[{id:'target',label:'Jhula',...empty,target:semanticTarget('Jhula','target'),qualityStatus:'needs-correction',qualityTier:'FAIL'}];
+    const infer=vi.fn<Infer>(async()=>[await encodeMask(f.full)]);f.context.infer=infer;
+    await semanticReview(f.context,f.master,{action:'guided-refine',expectedRevision:f.context.job.revision,objects:[{id:'target',candidateId:'target',label:'Jhula',selected:true,points}]});
+    expect(infer).not.toHaveBeenCalled();
+    expect(f.context.job.review).toMatchObject({code:'GUIDANCE_REQUIRED',gate:'semantic-mask-review'});expect(f.context.job.review?.actions).toContain('guided-refine');
+    expect((f.context.job.data.candidates as {maskArtifactId:string}[])[0].maskArtifactId).toBe(empty.maskArtifactId);
+  }finally{await f.cleanup();}
+});
+type Provisional={id:string;revisionId:string;maskArtifactId:string;provisional?:boolean;manualOwnership?:boolean;qualityTier:string;qualityStatus:string;qualityChecks:{code:string}[];rejectedCandidate?:{revisionId:string;maskArtifactId:string;rejectionReasons:string[];qualityChecks:unknown[];providerRequestIds:string[]}};
+/** Replays the Jhula case: SAM returns a confident whole-object mask, but an automatic seed point falls outside it. */
+async function provisionalDiscovery(f:Awaited<ReturnType<typeof contextFixture>>,mask:Parameters<typeof encodeMask>[0],providerScore:number,points=[{x:20,y:20,label:1 as const}]){
+  f.context.job.data.proposalReviewApproved=true;
+  f.context.job.data.proposalTargets=[{id:'jhula',label:'Jhula',proposalIds:[],approved:true,rejected:false,groupMode:'single',role:'object',points}];
+  const infer=vi.fn<Infer>(async model=>{expect(model).toBe('sam3');return Object.assign([await encodeMask(mask)],{scores:[providerScore],requestId:'replayed-sam-request'});});f.context.infer=infer;
+  expect(await semanticDiscovery(f.context,f.master,[])).toBe(true);
+  return {infer,candidate:(f.context.job.data.candidates as Provisional[])[0]};
+}
+/** Submits a review through the repository and claims it like the worker does, so revision and gate checks are real. */
+async function reviewAs(f:Awaited<ReturnType<typeof contextFixture>>,body:Omit<Parameters<typeof semanticReview>[2],'expectedRevision'>,infer:Infer){
+  const current=f.repo.getJob(f.context.job.id)!;f.repo.reviewJob(current.id,'operator',{...body,expectedRevision:current.revision} as Parameters<typeof semanticReview>[2]);
+  const job=f.repo.claimJob('worker')!;const context=new PipelineContext(job,f.repo,f.store,f.context.config,undefined,'worker');context.infer=infer;
+  await semanticReview(context,f.master,job.data.reviewSubmission as Parameters<typeof semanticReview>[2]);
+  return f.repo.getJob(job.id)!;
+}
+it('keeps a confident SAM mask that fails seed coverage as a provisional REVIEW candidate instead of an empty selection',async()=>{
+  const f=await contextFixture();try{
+    const {infer,candidate}=await provisionalDiscovery(f,f.full,0.98);
+    expect(infer).toHaveBeenCalledTimes(1);
+    const mask=await decodeMask(await f.context.artifact(candidate.maskArtifactId),{encoding:'luminance',binary:true});
+    expect(mask.data).toEqual(f.full.data);
+    expect(candidate.provisional).toBe(true);expect(candidate.qualityTier).toBe('REVIEW');expect(candidate.qualityStatus).toBe('needs-correction');
+    expect(candidate.qualityChecks[0].code).toBe('PROVISIONAL_SELECTION');
+    // Rejection reasons, the gate verdict, the original revision and the provider request are preserved.
+    expect(candidate.rejectedCandidate).toMatchObject({revisionId:candidate.revisionId,maskArtifactId:candidate.maskArtifactId,providerRequestIds:['replayed-sam-request']});
+    expect(candidate.rejectedCandidate!.rejectionReasons).toContain('POSITIVE_GUIDANCE_UNSATISFIED');expect(candidate.rejectedCandidate!.qualityChecks.length).toBeGreaterThan(0);
+    expect(f.context.job.review?.gate).toBe('semantic-mask-review');expect(f.context.job.phase).toBe(4);expect(f.context.job.data.refined).toBeUndefined();
+  }finally{await f.cleanup();}
+});
+it.each([['a low-confidence mask',()=>0.3,false],['a full-canvas mask',()=>0.99,true]])('does not keep %s as a provisional candidate',async(_,score,fullCanvas)=>{
+  const f=await contextFixture();try{
+    const {candidate}=await provisionalDiscovery(f,fullCanvas?rect(0,0,256,320):f.full,score());
+    expect(candidate.provisional).toBeUndefined();expect(candidate.rejectedCandidate).toBeUndefined();expect(candidate.qualityTier).toBe('FAIL');
+  }finally{await f.cleanup();}
+});
+it('blocks BiRefNet for a provisional candidate until the user keeps it as a new revision',async()=>{
+  const f=await contextFixture();try{
+    const {candidate}=await provisionalDiscovery(f,f.full,0.98);
+    const infer=vi.fn<Infer>(async(model,request)=>{expect(model).toBe('birefnet');const t=request.transform!;return [await sharp({create:{width:t.modelWidth,height:t.modelHeight,channels:3,background:'#ffffff'}}).png().toBuffer()];});
+    const object={id:'jhula',candidateId:'jhula',label:'Jhula',selected:true};
+    // No silent approval: "Looks good" on the unconfirmed candidate neither calls BiRefNet nor changes the mask.
+    let job=await reviewAs(f,{action:'accept-masks',objects:[{...object,strokes:[]}]},infer);
+    expect(infer).not.toHaveBeenCalled();expect(job.review?.code).toBe('PROVISIONAL_SELECTION_UNCONFIRMED');expect(job.data.refined).toBeUndefined();
+    let current=(job.data.candidates as Provisional[])[0];expect(current.provisional).toBe(true);expect(current.maskArtifactId).toBe(candidate.maskArtifactId);
+    // Keeping it (a manual save without strokes) creates a new user-owned revision and keeps the rejected candidate's provenance.
+    job=await reviewAs(f,{action:'manual-masks',objects:[{...object,strokes:[]}]},infer);
+    expect(infer).not.toHaveBeenCalled();expect(job.review?.gate).toBe('semantic-mask-review');expect(job.data.refined).toBeUndefined();
+    current=(job.data.candidates as Provisional[])[0];
+    expect(current.provisional).toBeUndefined();expect(current.manualOwnership).toBe(true);expect(current.revisionId).not.toBe(candidate.revisionId);
+    expect(current.qualityTier).not.toBe('PASS');expect(current.rejectedCandidate).toEqual(candidate.rejectedCandidate);
+    // Only now does the explicit confirmation reach edge refinement: exactly one BiRefNet call.
+    job=await reviewAs(f,{action:'accept-masks',objects:[{...object,strokes:[]}]},infer);
+    expect(infer).toHaveBeenCalledTimes(1);expect(job.review?.gate).toBe('alpha-review');expect(job.data.refined).toHaveLength(1);
+  }finally{await f.cleanup();}
+});
+it('a manual correction on a provisional candidate saves a new revision with the painted change',async()=>{
+  const f=await contextFixture();try{
+    const {candidate}=await provisionalDiscovery(f,f.full,0.98);const infer=vi.fn<Infer>();
+    const job=await reviewAs(f,{action:'manual-masks',objects:[{id:'jhula',candidateId:'jhula',label:'Jhula',selected:true,strokes:[{mode:'subtract',radius:6,points:[{x:170,y:150}]}]}]},infer);
+    expect(infer).not.toHaveBeenCalled();
+    const current=(job.data.candidates as Provisional[])[0];expect(current.revisionId).not.toBe(candidate.revisionId);expect(current.provisional).toBeUndefined();
+    const store=new PipelineContext(job,f.repo,f.store,f.context.config,undefined,'reader');
+    expect((await decodeMask(await store.artifact(current.maskArtifactId),{encoding:'luminance',binary:true})).data[150*256+170]).toBe(0);
+    expect((await decodeMask(await store.artifact(candidate.maskArtifactId),{encoding:'luminance',binary:true})).data[150*256+170]).toBe(255);
+  }finally{await f.cleanup();}
+});
+it('refuses to confirm unsaved strokes: no BiRefNet call, mask unchanged, and only a saved revision that passes ownership checks proceeds',async()=>{
+  const f=await contextFixture();try{
+    // No seed point outside the mask: an ordinary accepted (non-provisional) candidate.
+    const {candidate}=await provisionalDiscovery(f,f.full,0.98,[]);expect(candidate.provisional).toBeUndefined();expect(candidate.qualityTier).not.toBe('FAIL');
+    const infer=vi.fn<Infer>(async(model,request)=>{expect(model).toBe('birefnet');const t=request.transform!;return [await sharp({create:{width:t.modelWidth,height:t.modelHeight,channels:3,background:'#ffffff'}}).png().toBuffer()];});
+    const object={id:'jhula',candidateId:'jhula',label:'Jhula',selected:true};
+    const strokes=[{mode:'subtract' as const,radius:6,points:[{x:170,y:150}]}];
+    let job=await reviewAs(f,{action:'accept-masks',objects:[{...object,strokes}]},infer);
+    expect(infer).not.toHaveBeenCalled();expect(job.review).toMatchObject({code:'UNSAVED_EDITS',gate:'semantic-mask-review'});expect(job.data.refined).toBeUndefined();
+    expect((job.data.candidates as Provisional[])[0].revisionId).toBe(candidate.revisionId);
+    // Saving the same strokes creates a revision; a passing revision can then be confirmed.
+    job=await reviewAs(f,{action:'manual-masks',objects:[{...object,strokes}]},infer);
+    const saved=(job.data.candidates as Provisional[])[0];expect(saved.revisionId).not.toBe(candidate.revisionId);expect(saved.qualityTier).not.toBe('FAIL');expect(infer).not.toHaveBeenCalled();
+    job=await reviewAs(f,{action:'accept-masks',objects:[object]},infer);
+    expect(infer).toHaveBeenCalledTimes(1);expect(job.review?.gate).toBe('alpha-review');
+  }finally{await f.cleanup();}
+});
+it('a correction that fails ownership checks is not saved, does not relabel the saved selection, and never reaches BiRefNet',async()=>{
+  const f=await contextFixture();try{
+    const {candidate}=await provisionalDiscovery(f,f.full,0.98,[]);const infer=vi.fn<Infer>();
+    const object={id:'jhula',candidateId:'jhula',label:'Jhula',selected:true};
+    // Erasing the whole object would leave an empty mask: the gate refuses the save and keeps the previous revision.
+    const job=await reviewAs(f,{action:'manual-masks',objects:[{...object,strokes:[{mode:'subtract',radius:256,points:[{x:128,y:160}]}]}]},infer);
+    expect(infer).not.toHaveBeenCalled();expect(job.review?.code).toBe('TARGET_NOT_RECOVERED');expect(job.data.refined).toBeUndefined();
+    const kept=(job.data.candidates as Provisional[])[0];
+    expect(kept.revisionId).toBe(candidate.revisionId);expect(kept.maskArtifactId).toBe(candidate.maskArtifactId);
+    expect(kept.qualityTier).toBe(candidate.qualityTier);expect(kept.qualityChecks).toEqual(candidate.qualityChecks);
+  }finally{await f.cleanup();}
+});

@@ -24,7 +24,7 @@ function reducer(state: ReturnType<typeof combined> | undefined, action: Unknown
   }
   if ((undo.match(action) || redo.match(action)) && next.ui.selectedElementId) {
     const variant = next.editor.document.variants.find((item) => item.id === next.ui.activeVariantId) ?? next.editor.document.variants[0];
-    if (!variant.elements.some((item) => item.id === next.ui.selectedElementId)) {
+    if (!variant.elements.some((item) => item.id === next.ui.selectedElementId) && !variant.layers?.some((item) => item.id === next.ui.selectedElementId)) {
       return { ...next, ui: { ...next.ui, selectedElementId: null } };
     }
   }

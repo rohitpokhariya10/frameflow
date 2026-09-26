@@ -1,7 +1,7 @@
 import { Frame, MousePointer2, Undo2, Redo2, X } from 'lucide-react';
 import { useAppSelector, useAppDispatch, selectActiveVariant, selectSelectedText } from '../../store';
 import { DesignName } from './DesignName';
-import { DesignPanel } from './DesignPanel';
+import { ResizableDesignPanel } from './ResizableDesignPanel';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { TextInspector } from '../text/TextInspector';
 import { useTextActions } from '../text/useTextActions';
@@ -10,6 +10,7 @@ import { undo, redo } from '../../store/history';
 import { recoveryWarningChanged } from '../../store/saveSlice';
 import { ExportButton } from '../export/ExportButton';
 import { LayerInspector, LayersList } from '../layers/LayerInspector';
+import { DetectedLayersTray } from '../decomposition/DetectedLayersTray';
 
 export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
   const variant = useAppSelector(selectActiveVariant);
@@ -29,6 +30,7 @@ export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
       const history = historyKey(event);
       if (history) { event.preventDefault(); dispatch(history === 'undo' ? undo() : redo()); return; }
       const command = selectionKey(event);
+      if (command === 'deselect' && selectedLayer) { event.preventDefault(); actions.select(null); return; }
       if (!command || !selected) return;
       event.preventDefault();
       if (command === 'delete') actions.remove(selected.id);
@@ -53,17 +55,17 @@ export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
       </header>
       {save.warning && <div className="recovery-warning" role="alert"><span>{save.warning} New edits will replace the saved design.</span><button className="icon-button" aria-label="Dismiss recovery warning" onClick={() => dispatch(recoveryWarningChanged(''))}><X size={14} /></button></div>}
       <div className="editor-body">
-        <DesignPanel onNewDesign={onNewDesign} />
+        <ResizableDesignPanel onNewDesign={onNewDesign} />
         <CanvasWorkspace />
         <aside className={`properties-panel ${selected || selectedLayer ? 'has-selection' : ''}`} aria-label="Properties">
-          {selectedLayer ? <><LayerInspector key={`${variantId}-${selectedLayer.id}`} variant={variant} layer={selectedLayer} /><LayersList variant={variant} selectedId={selectedId} /></> : selected ? <TextInspector key={`${variantId}-${selected.id}`} element={selected} /> : <>
+          {selectedLayer ? <><LayerInspector key={`${variantId}-${selectedLayer.id}`} variant={variant} layer={selectedLayer} /><LayersList variant={variant} selectedId={selectedId} /><DetectedLayersTray variant={variant} /></> : selected ? <><TextInspector key={`${variantId}-${selected.id}`} element={selected} /><LayersList variant={variant} selectedId={selectedId} /><DetectedLayersTray variant={variant} /></> : <>
           <div className="panel-heading"><h2>Properties</h2><span className="subtle-label">No selection</span></div>
           <div className="properties-empty">
             <div className="selection-hint" aria-hidden="true"><span /><MousePointer2 size={22} strokeWidth={1.4} /></div>
             <h3>{preview ? 'Review your design' : 'Select an element'}</h3>
-            <p>{preview ? `Use this ${adapting ? 'version' : 'design'} from the AI panel, then select any text to edit its wording and layout.` : 'Choose a text element on the canvas to edit typography, position and layout.'}</p>
+            <p>{preview ? `Use this ${adapting ? 'version' : 'design'} from the AI panel, then select any text to edit its wording and layout.` : 'Select text on the canvas or in the Text tab to edit its content, typography and layout.'}</p>
           </div>
-          {!preview && <LayersList variant={variant} selectedId={selectedId} />}
+          {!preview && <><LayersList variant={variant} selectedId={selectedId} /><DetectedLayersTray variant={variant} /></>}
           <div className="panel-footnote"><span className="tiny-frame" aria-hidden="true" /><p>A little space.<br />A lot of possibility.</p></div>
           </>}
         </aside>

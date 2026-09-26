@@ -13,6 +13,11 @@ export interface DecompositionOptions {
 export interface DecompositionClientContext { projectId: string; variantId: string; sourceAssetId?: string; variantRevision: number; operationToken: string }
 export interface DecompositionBox { x: number; y: number; width: number; height: number }
 export interface DecompositionPoint { x: number; y: number; label: 0 | 1 }
+/** A detected layer cut from the original source pixels with its discovery region (no AI), for adding to the editor later. */
+export interface DetectedLayerCutout {
+  targetId: string; label: string; kind: 'image' | 'text' | 'shape'; artifactId: string; bbox: DecompositionBox;
+  textSuggestion?: { text: string; textConfidence: 'none' | 'low' };
+}
 export interface DecompositionStroke { mode: 'add' | 'subtract'; radius: number; points: { x: number; y: number }[] }
 export interface DecompositionReview {
   expectedRevision: number;
@@ -54,7 +59,9 @@ export interface DecompositionJobSummary {
   warnings: string[]; review?: DecompositionReviewRequest; error?: { code: string; message: string; retryable: boolean };
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
-  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; qualityTier?: QualityTier; qualityChecks?: QualityCheckSummary[]; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; qualityTier?: QualityTier; qualityChecks?: QualityCheckSummary[]; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[];
+    /** The mask is a rejected AI candidate shown only as a starting point; it must be kept or corrected before edge refinement. */
+    provisional?: boolean; rejectedCandidate?: { revisionId: string; maskArtifactId: string; rejectionReasons: string[]; qualityTier: QualityTier; qualityChecks: QualityCheckSummary[]; providerScore?: number } }[];
   proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary; sceneGraph?: SceneGraph;
   /** Whether an explicit retry of this job is allowed, mirroring the server's retry rules (it never changes them). */
   retry?: { available: boolean; reason?: 'RETRY_LIMIT' | 'CALL_BUDGET' | 'NOT_RETRYABLE_STATE'; attempt: number; limit: number };

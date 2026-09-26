@@ -93,7 +93,7 @@ export function AdaptPanel() {
   return <div className="ai-panel">
     <div className="ai-panel-scroll">
       <div className="section-intro"><span className="eyebrow">ADAPT FORMAT</span><h2>A new shape. The same story.</h2><p>Recompose your artwork. Keep every word.</p></div>
-      <div className="adapt-source"><span className="control-label">Source design</span><strong>{formatLabel(source.canvas)}</strong><span>{source.canvas.width} × {source.canvas.height} px</span><p>Your original stays available.</p></div>
+      <div className="adapt-source"><span className="control-label">Source design</span><strong>{formatLabel(source.canvas)}</strong><span>{source.canvas.width} × {source.canvas.height} px</span><p>Creates a new version. Your source stays available.</p></div>
       {!source.background && <p className="ai-notice">Generate artwork for this version before adapting it.</p>}
       {configured === null && !healthError && <p className="inspector-hint" role="status">Checking AI availability…</p>}
       {configured === false && <p className="ai-notice">AI artwork is unavailable right now. You can still edit and export.</p>}
@@ -112,7 +112,7 @@ export function AdaptPanel() {
       </div>
     </div>
     <div className="ai-panel-actions">
-      {preview ? <><button className="button primary-button" disabled={stale} onClick={apply}>Use this version</button><div className="ai-secondary-actions"><button className="button" disabled={configured !== true} onClick={() => void adapt()}>Regenerate</button><button className="button" onClick={() => void discard()}>Discard</button></div></>
+      {preview ? <><button className="button primary-button" disabled={stale} onClick={apply}>Use this version</button><div className="ai-secondary-actions"><button className="button" disabled={configured !== true} onClick={() => void adapt()}>Regenerate</button><button className="button tertiary-button" onClick={() => void discard()}>Discard</button></div></>
         : busy ? <button className="button" onClick={() => { pending.current?.abort(); pending.current = null; dispatch(generationCleared()); }}>Cancel adaptation</button>
           : <button className="button primary-button" disabled={configured !== true || !source.background} onClick={() => void adapt()}>Adapt artwork</button>}
       <p className="inspector-hint">New composition. Same words. Original kept.</p>

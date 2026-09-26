@@ -47,7 +47,19 @@ export function scoreSemanticMask(mask: Mask, evidence: SemanticEvidence, provid
   if (evidence.members?.length === 2 && overlapMasks(evidence.members[0], evidence.members[1]).iou > 0.95) reasons.push('GROUP_MEMBERS_UNVERIFIED');
   return { index, providerScore, metrics, reasons: [...new Set(reasons)], score: (providerScore ?? 0.5) * 0.4 + metrics.memberCoverage * 0.4 + metrics.priorOverlap * 0.05 + metrics.proposalOverlap * 0.1 + (1 - borderFraction) * 0.05 };
 }
-export type SemanticResult = { target: SemanticTarget; mask?: Mask; members: Mask[]; transform: ImageTransform; scores: MaskScore[]; memberScores: { hint: string; scores: MaskScore[] }[]; warnings: string[]; unionSources?: string[]; providerRequestIds: string[] };
+/** Rejections that only say the mask may miss or overreach its guidance. Any other reason (empty, tiny, full-canvas,
+ * fragmented, border-hugging, low confidence, overlapping another target) means the mask is not a usable starting point. */
+const COVERAGE_REASONS = new Set(['POSITIVE_GUIDANCE_UNSATISFIED', 'NEGATIVE_GUIDANCE_LEAK', 'GROUP_MEMBERS_UNVERIFIED', 'TARGET_NOT_RECOVERED']);
+export const PROVISIONAL_MIN_PROVIDER_SCORE = 0.8;
+/** A rejected, confidently scored model mask kept only as an unconfirmed starting point for the user. It never becomes ownership on its own. */
+export type ProvisionalCandidate = { mask: Mask; score: MaskScore };
+export function provisionalCandidate(options: { mask: Mask; index: number }[], scores: MaskScore[]): ProvisionalCandidate | undefined {
+  const usable = scores.filter(s => s.index >= 0 && (s.providerScore ?? 0) >= PROVISIONAL_MIN_PROVIDER_SCORE && s.reasons.length && s.reasons.every(r => COVERAGE_REASONS.has(r)))
+    .sort((a, b) => b.score - a.score)[0];
+  const mask = usable && options.find(o => o.index === usable.index)?.mask;
+  return mask && maskBounds(mask) ? { mask, score: usable } : undefined;
+}
+export type SemanticResult = { target: SemanticTarget; mask?: Mask; members: Mask[]; transform: ImageTransform; scores: MaskScore[]; memberScores: { hint: string; scores: MaskScore[] }[]; warnings: string[]; unionSources?: string[]; providerRequestIds: string[]; provisional?: ProvisionalCandidate };
 export async function recoverSemanticOwnership(master: Buffer, infer: Infer, evidence: SemanticEvidence): Promise<SemanticResult> {
   const meta = await sharp(master).metadata();
   const width = meta.width!, height = meta.height!;
@@ -101,8 +113,9 @@ export async function recoverSemanticOwnership(master: Buffer, infer: Infer, evi
     }
   }
   const warnings = mask ? ['SEMANTIC_VISUAL_REVIEW_REQUIRED', ...(unionSources ? ['GROUP_RELATION_REQUIRES_REVIEW'] : [])] : [...new Set(['TARGET_NOT_RECOVERED', ...scores.flatMap(item => item.reasons)])];
-  console.info(JSON.stringify({ event: 'semantic_quality', targetId: evidence.target.id, provider: endpointRegistry.sam3.endpoint, requestIds: providerRequestIds, accepted: !!mask, scores, warnings }));
-  return { target: evidence.target, mask, members, transform, scores, memberScores, warnings, unionSources, providerRequestIds };
+  const provisional = mask ? undefined : provisionalCandidate(direct, scores);
+  console.info(JSON.stringify({ event: 'semantic_quality', targetId: evidence.target.id, provider: endpointRegistry.sam3.endpoint, requestIds: providerRequestIds, accepted: !!mask, provisional: provisional ? provisional.score.index : undefined, scores, warnings }));
+  return { target: evidence.target, mask, members, transform, scores, memberScores, warnings, unionSources, providerRequestIds, provisional };
 }
 /** Registered proposal geometry creates promptable intent without inventing a semantic label. */
 export function proposalSeeds(mask: Mask): DecompositionPoint[] {

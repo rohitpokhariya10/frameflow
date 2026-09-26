@@ -6,10 +6,39 @@ import { DecompositionRepository, type SourceAsset } from './repository.js';
 import { ArtifactStore } from './artifactStore.js';
 import { readDecompositionConfig, normalizeDecompositionOptions } from './config.js';
 import { backupDecomposition, restoreDecomposition } from './setup.js';
+import type { DecompositionReview, ProposalReviewTarget } from '@frameflow/shared';
 const dirs:string[]=[];const repos:DecompositionRepository[]=[];
 async function fixture(){const dir=await mkdtemp(resolve(tmpdir(),'frameflow-decomp-'));dirs.push(dir);const repo=new DecompositionRepository(dir);repos.push(repo);const store=new ArtifactStore(dir,repo);const source:SourceAsset={id:'source-1',ownerId:'operator',originalArtifactId:'original',masterArtifactId:'master',originalSha256:'a'.repeat(64),workingMasterSha256:'b'.repeat(64),width:256,height:256,mimeType:'image/png',orientationNormalized:false,hasAlpha:false,metadata:{},createdAt:Date.now()};repo.addSource(source);const options=normalizeDecompositionOptions({},readDecompositionConfig({DECOMP_DATA_DIR:dir}));return{dir,repo,store,source,options};}
 afterEach(async()=>{for(const repo of repos.splice(0))if(repo.db.open)repo.close();for(const dir of dirs.splice(0))await rm(dir,{recursive:true,force:true});});
 describe('durable decomposition ownership, fences and recovery',()=>{
+  it('corrects only a current failed proposal limit submission without consuming a retry or calls', async () => {
+    const f = await fixture();
+    const target = (id: string, baseLayer = false): ProposalReviewTarget => ({ id, label: id, proposalIds: [], approved: true, rejected: false, groupMode: 'single', role: baseLayer ? 'background' : 'object', ...(baseLayer ? { baseLayer } : {}) });
+    let failed = f.repo.createJob('operator', f.source.id, { ...f.options, maxObjects: 1 }, 'failed-limit');
+    const targets = [target('one'), target('two'), target('base', true)];
+    failed = f.repo.updateJob({ ...failed, state: 'failed', phase: 3, error: { code: 'TARGET_LIMIT', message: 'Keep the approved targets within the object limit.', retryable: true }, data: { reviewWorkflow: 2, attempt: 1, proposalTargets: targets, reviewSubmission: { expectedRevision: 0, action: 'save-proposals', targets } } });
+    const body: DecompositionReview = { expectedRevision: failed.revision, action: 'save-proposals', targets };
+    expect(() => f.repo.reviewJob(failed.id, 'operator', body)).toThrow('object limit');
+    expect(f.repo.getJob(failed.id)?.revision).toBe(failed.revision);
+    expect(() => f.repo.reviewJob(failed.id, 'operator', { ...body, expectedRevision: failed.revision - 1 })).toThrow('Reload');
+    expect(() => f.repo.reviewJob(failed.id, 'operator', { ...body, action: 'guided-refine' })).toThrow('Reload');
+    // A claimed baseLayer on an ordinary target cannot bypass the limit.
+    expect(() => f.repo.reviewJob(failed.id, 'operator', { ...body, targets: targets.map(t => ({ ...t, baseLayer: true })) })).toThrow('object limit');
+    const saved = f.repo.reviewJob(failed.id, 'operator', { ...body, targets: targets.map(t => t.id === 'two' ? { ...t, approved: false, rejected: true } : t) });
+    expect(saved).toMatchObject({ state: 'queued', phase: 3, callsUsed: 0, error: undefined, data: { attempt: 1 } });
+    expect(f.repo.events(failed.id).filter(event => event.event === 'retry')).toEqual([]);
+    expect(f.repo.providerRequests(failed.id)).toEqual([]);
+    expect(() => f.repo.reviewJob(failed.id, 'operator', { ...body, expectedRevision: saved.revision })).toThrow('Reload');
+  });
+  it('rejects excess proposal keeps before queuing a healthy review', async () => {
+    const f = await fixture();
+    let job = f.repo.createJob('operator', f.source.id, { ...f.options, maxObjects: 1 }, 'healthy-limit');
+    job = f.repo.updateJob({ ...job, state: 'needs_review', phase: 3, data: { reviewWorkflow: 2 }, review: { gate: 'qwen-proposal-review', code: 'QWEN_PROPOSAL_REVIEW', message: '', actions: ['save-proposals', 'approve-proposals'], artifactIds: [] } });
+    for (const action of ['save-proposals', 'approve-proposals'] as const) {
+      expect(() => f.repo.reviewJob(job.id, 'operator', { expectedRevision: job.revision, action, targets: ['one', 'two'].map(id => ({ id, label: id, proposalIds: [], approved: true, rejected: false, groupMode: 'single', role: 'object' })) })).toThrow('object limit');
+      expect(f.repo.getJob(job.id)).toMatchObject({ state: 'needs_review', revision: job.revision, callsUsed: 0 });
+    }
+  });
   it('deduplicates an owner key and rejects conflicting input or forged ownership',async()=>{const f=await fixture();const a=f.repo.createJob('operator',f.source.id,f.options,'request-one');expect(f.repo.createJob('operator',f.source.id,f.options,'request-one').id).toBe(a.id);expect(()=>f.repo.createJob('operator',f.source.id,{...f.options,maxObjects:1},'request-one')).toThrow('different input');f.repo.createOwner('other');expect(()=>f.repo.createJob('other',f.source.id,f.options,'request-two')).toThrow('Source image not found');expect(f.repo.getJob(a.id,'other')).toBeUndefined();expect(f.repo.getSource(f.source.id,'other')).toBeUndefined();});
   it('survives replacement, resumes request IDs and prevents stale publication/reservation',async()=>{const f=await fixture();const initial=f.repo.createJob('operator',f.source.id,f.options,'request-one');const first=f.repo.claimJob('worker-a',1)!;const step=f.repo.createStep(first,3,'input');const request=f.repo.reserveProviderRequest({jobId:first.id,stepId:step.id,endpoint:'fal-ai/qwen-image-layered',inputHash:'input',adapterVersion:'1'},100,2);f.repo.updateProviderRequest(request.id,{providerRequestId:'saved-fal-id',status:'QUEUED'});f.repo.close();await new Promise((resolveWait)=>setTimeout(resolveWait,3));const second=new DecompositionRepository(f.dir);repos.push(second);const recovered=second.claimJob('worker-b')!;expect(recovered.id).toBe(initial.id);expect(recovered.fence).toBeGreaterThan(first.fence);expect(second.getProviderRequest(step.id,'input')?.providerRequestId).toBe('saved-fal-id');expect(()=>second.updateStep({...step,status:'completed'},{workerId:'worker-a',fence:first.fence,revision:first.revision})).toThrow('stale');expect(()=>second.reserveProviderRequest({jobId:first.id,stepId:step.id,endpoint:'endpoint',inputHash:'new-input',adapterVersion:'1'},100,2)).toThrow('current worker lease');expect(second.createStep(recovered,3,'input').fence).toBe(recovered.fence);expect(second.claimJob('worker-c')).toBeUndefined();});
   it('workers only claim jobs of their own provider mode',async()=>{const f=await fixture();const j=f.repo.createJob('operator',f.source.id,f.options,'request-one');(f.repo as unknown as {db:{prepare:(sql:string)=>{run:(...a:unknown[])=>void}}}).db.prepare("UPDATE decomposition_jobs SET json=json_set(json,'$.data.verificationMode','live') WHERE id=?").run(j.id);expect(f.repo.claimJob('mock-worker',60000,'mock')).toBeUndefined();expect(f.repo.claimJob('live-worker',60000,'live')?.id).toBe(j.id);});

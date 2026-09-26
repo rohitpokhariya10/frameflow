@@ -5,13 +5,13 @@ import { useAppDispatch, useAppSelector, selectActiveVariant } from '../../store
 import { decompositionActions, decompositionContextMatches } from '../../store/decompositionSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
 import { decompositionApi as api, rememberJob, recoveredJob, artifactUrl } from './api';
-import { sceneToVariant } from './importScene';
+import { sceneToVariant, type OpenOptions } from './importScene';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { decomposedDesignImported } from '../../store/editorSlice';
 import { variantSelected } from '../../store/uiSlice';
 import { flowStep, stepperIndex } from './flow';
 import { DeveloperDetails, Stepper } from './workspace/parts';
-import { ErrorStep, ProcessingStep, ReadyStep, UploadStep } from './workspace/Steps';
+import { ErrorStep, ProcessingStep, ReadyStep, UploadStep, rememberOpenMode } from './workspace/Steps';
 import { ReviewStep } from './workspace/ReviewStep';
 import { EdgesStep, RefineStep } from './workspace/RefineStep';
 import './decomposition.css';
@@ -111,14 +111,15 @@ function Workspace({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capabilities, context, projectId, dispatch]);
   const review = async (body: DecompositionReview) => { if (!job) throw new Error('Reload and try again.'); await update(() => api.review(job.id, body)); };
-  const openInEditor = () => job && run(async () => {
+  const openInEditor = (options: OpenOptions) => job && run(async () => {
     const fetchArtifact = async (id: string) => { const response = await fetch(artifactUrl(id), { credentials: 'same-origin' }); if (!response.ok) throw new Error('Part of your design could not be downloaded. Try again.'); return response.blob(); };
-    const next = await sceneToVariant(job, fetchArtifact, assets);
+    const next = await sceneToVariant(job, fetchArtifact, assets, undefined, options);
     if (!isDesignVariant(next) || variantCount >= 30) {
       await Promise.all([next.background?.assetId, ...(next.layers ?? []).map(l => l.type === 'image' ? l.assetId : undefined)].filter((id): id is string => !!id).map(id => assets.deleteAsset(id).catch(() => undefined)));
       throw new Error(variantCount >= 30 ? 'This design already has the maximum of 30 versions. Delete one and try again.' : 'This design could not be opened. Try again.');
     }
     dispatch(decomposedDesignImported({ variant: next, timestamp: new Date().toISOString() }));
+    rememberOpenMode(job.id, options.mode);
     dispatch(variantSelected(next.id));
     onClose();
   });

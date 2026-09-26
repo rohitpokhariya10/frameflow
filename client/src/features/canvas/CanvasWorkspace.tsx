@@ -31,32 +31,36 @@ export function CanvasWorkspace() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const displayWidth = canvas.width * zoom;
   const displayHeight = canvas.height * zoom;
-  const showEmptyState = !background && !preview && elements.length === 0 && displayWidth >= 220 && displayHeight >= 230;
+  const showEmptyState = !background && !layers?.length && !preview && elements.length === 0 && displayWidth >= 220 && displayHeight >= 230;
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const fit = () => dispatch(zoomChanged(calculateFitZoom(canvas, { width: viewport.clientWidth, height: viewport.clientHeight })));
     fit();
-    const observer = new ResizeObserver(fit);
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(fit);
+    });
     observer.observe(viewport);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [canvas, dispatch, fitRequest, comparing]);
 
   return (
     <main className="canvas-workspace" aria-label="Canvas workspace" id="canvas-interaction" tabIndex={0} data-selection-owner>
-      <div className="workspace-heading"><span>{preview ? preview.adaptation ? 'Adapted preview' : 'Generated preview' : formatLabel(canvas)}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Review, then apply' : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
+      <div className="workspace-heading"><span>{preview ? preview.adaptation ? 'Adapted preview' : 'Generated preview' : formatLabel(canvas)}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Review, then apply' : layers?.length ? `${layers.length} layers` : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
       {variants.length > 1 && <div className="variant-switcher"><label>Version<select aria-label="Active version" value={current.id} onChange={(event) => { dispatch(variantSelected(event.target.value)); setCompare(false); }}>{variants.map((variant, index) => <option key={variant.id} value={variant.id}>{variantLabel(variant, index)}</option>)}</select></label>{relative && !preview && <button className="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Back to editing' : 'Compare versions'}</button>}</div>}
       {background && artworkError && <div className="artwork-error" role="alert">{artworkError}</div>}
       {pair ? <VariantComparison source={pair.source} target={pair.target} /> : <div className="canvas-viewport" ref={viewportRef} data-testid="canvas-viewport" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
         <div className="canvas-scroll-content" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
-          <div className="canvas-frame" data-testid="canvas-frame" data-logical-width={canvas.width} data-logical-height={canvas.height}
+          <div className={`canvas-frame ${canvas.transparent ? 'is-transparent-canvas' : ''}`} data-testid="canvas-frame" data-transparent={canvas.transparent ? 'true' : undefined} data-logical-width={canvas.width} data-logical-height={canvas.height}
             style={{ width: displayWidth, height: displayHeight }}>
             <div role="img" aria-label={`${canvas.width} by ${canvas.height} pixel canvas, ${elements.length} text elements. Use the Text panel to select and edit.`}>
               <Stage width={displayWidth} height={displayHeight} scaleX={zoom} scaleY={zoom}
                 onMouseDown={(event) => { if (event.target === event.target.getStage()) { actions.select(null); focusCanvas(); } }}
                 onTouchStart={(event) => { if (event.target === event.target.getStage()) { actions.select(null); focusCanvas(); } }}>
-                <Layer listening={false} clipWidth={canvas.width} clipHeight={canvas.height}><Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} />
+                <Layer listening={false} clipWidth={canvas.width} clipHeight={canvas.height}>{!canvas.transparent && <Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} />}
                   {background && <BackgroundArtwork background={background} canvas={canvas} onError={setArtworkError} />}
                 </Layer>
                 {!preview && layers?.length ? <Layer clipWidth={canvas.width} clipHeight={canvas.height}>{layers.map((layer) => <DesignLayerNode key={layer.id} layer={layer} selected={selectedElementId === layer.id} variantId={id} />)}</Layer> : null}
@@ -69,7 +73,7 @@ export function CanvasWorkspace() {
               <span className="empty-art" aria-hidden="true"><span /><span /><Plus size={18} strokeWidth={1} /></span>
               <span className="eyebrow">A FRESH START</span>
               <h1>Something good<br />starts here.</h1>
-              <p>A blank canvas for your next idea.</p>
+              <p>Add text or generate artwork to get started.</p>
               <div className="empty-actions">
                 <button className="button empty-primary" onClick={() => actions.add('heading')}><Type size={15} />Add heading</button>
                 <span className="action-hint">Edit text, then try Auto Layout</span>

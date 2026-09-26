@@ -9,11 +9,13 @@ import { defineConfig } from '@playwright/test';
  * worker uses the deterministic E2E fake for Seedream (fixture replay), SAM and BiRefNet (e2eWorker.ts). Only the API
  * process gets a placeholder key so uploads are accepted; no process ever holds a real key.
  * Set DECOMP_E2E_REPLAY_DIR + DECOMP_E2E_REPLAY_JOB to replay a real cached Seedream discovery instead of the
- * synthetic poster.
+ * synthetic poster. PLAYWRIGHT_PRODUCTION=1 serves the built client/dist from the isolated API instead of Vite;
+ * build first. DECOMP_E2E_SHOTS chooses a separate screenshot directory for real-poster evidence.
  */
 process.env.DECOMP_E2E_DATA ??= mkdtempSync(join(tmpdir(), 'frameflow-decomp-e2e-'));
 const apiPort = 3211, clientPort = 5211;
-const baseURL = `http://127.0.0.1:${clientPort}`;
+const production = process.env.PLAYWRIGHT_PRODUCTION === '1';
+const baseURL = `http://127.0.0.1:${production ? apiPort : clientPort}`;
 const serverEnv = {
   DECOMP_E2E_DATA: process.env.DECOMP_E2E_DATA, DECOMP_E2E_REPLAY_DIR: process.env.DECOMP_E2E_REPLAY_DIR ?? '', DECOMP_E2E_REPLAY_JOB: process.env.DECOMP_E2E_REPLAY_JOB ?? '',
   DECOMP_DATA_DIR: process.env.DECOMP_E2E_DATA, DECOMPOSITION_ENABLED: 'true', DECOMP_PROVIDER_MODE: 'live', DECOMP_AUTH_MODE: 'development',
@@ -34,6 +36,6 @@ export default defineConfig({
       command: `${tsx} server/src/decomposition/e2eSeed.ts && npx concurrently -k -n api,worker "FAL_KEY=e2e-placeholder-not-a-real-key ${tsx} server/src/index.ts" "FAL_KEY= ${tsx} server/src/decomposition/e2eWorker.ts"`,
       url: `http://127.0.0.1:${apiPort}/api/health`, reuseExistingServer: false, timeout: 120_000, env: serverEnv,
     },
-    { command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: false, timeout: 60_000, env: { FRAMEFLOW_CLIENT_PORT: String(clientPort), FRAMEFLOW_API_URL: `http://127.0.0.1:${apiPort}` } },
+    ...(!production ? [{ command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: false, timeout: 60_000, env: { FRAMEFLOW_CLIENT_PORT: String(clientPort), FRAMEFLOW_API_URL: `http://127.0.0.1:${apiPort}` } }] : []),
   ],
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Combine, Split, Eye, EyeOff, PenLine } from 'lucide-react';
+import { Combine, Split, Plus, PenLine, SquarePlus, Clock, Trash2 } from 'lucide-react';
 import type { DecompositionJobSummary, DecompositionReview, ProposalReviewTarget } from '@frameflow/shared';
 import { artifactUrl } from '../api';
 import { submitReviewOnce } from '../reviewSubmission';
@@ -11,14 +11,45 @@ type Draft = { targets: ProposalReviewTarget[]; memberMasks: Record<string, stri
 const TYPES: Exclude<FriendlyType, 'Choose type'>[] = ['Image', 'Text', 'Shape', 'Background'];
 const firstSentence = (text?: string) => text?.split(/(?<=\.)\s/)[0];
 
-/** Kept by default: a customer removes what they don't want rather than approving everything one by one. */
-function initialDraft(job: DecompositionJobSummary, key: string): Draft {
+/**
+ * Each detected layer is either added to the editor, left for later (kept in the design, not opened now) or removed.
+ * On first review, layers up to the editor limit are added and the rest are left for later, so Continue is never
+ * blocked by a count the customer did not choose. The background is excluded unless the customer includes it.
+ */
+export type LayerChoice = 'add' | 'later' | 'remove';
+export const layerChoice = (t: Pick<ProposalReviewTarget, 'approved' | 'rejected'>): LayerChoice => t.rejected ? 'remove' : t.approved ? 'add' : 'later';
+const CHOICE: Record<LayerChoice, Pick<ProposalReviewTarget, 'approved' | 'rejected'>> = { add: { approved: true, rejected: false }, later: { approved: false, rejected: false }, remove: { approved: false, rejected: true } };
+export function firstReviewDefaults(targets: ProposalReviewTarget[], limit: number): ProposalReviewTarget[] {
+  let added = 0;
+  return targets.map(t => t.baseLayer ? { ...t, ...CHOICE.remove } : { ...t, ...(added++ < limit ? CHOICE.add : CHOICE.later) });
+}
+export function initialDraft(job: DecompositionJobSummary, key: string): Draft {
+  let stored: Draft | null = null;
   try {
     const saved = JSON.parse(localStorage.getItem(key) || 'null') as Draft | null;
-    if (saved?.targets?.length) return saved;
+    if (saved?.targets?.length) stored = saved;
   } catch { /* browser storage is optional */ }
-  const targets = (job.proposalTargets ?? []).map(t => (!t.approved && !t.rejected ? { ...t, approved: true } : t));
-  return { targets: [...targets.filter(t => !t.baseLayer), ...targets.filter(t => t.baseLayer)], memberMasks: {} };
+  // A rejected submission has not reached proposalTargets yet. Preserve its names, groups, types and keep choices.
+  const recoveringLimit = job.state === 'failed' && job.error?.code === 'TARGET_LIMIT';
+  const choices = stored?.targets ?? (recoveringLimit ? job.reviewSubmission?.targets : undefined);
+  const targets = choices ? choices.map(choice => {
+    const saved = job.proposalTargets?.find(target => target.id === choice.id);
+    const sameMembers = saved && JSON.stringify(saved.proposalIds) === JSON.stringify(choice.proposalIds);
+    return { ...(sameMembers ? saved : {}), ...choice, baseLayer: saved?.baseLayer === true, ...(sameMembers ? { classification: saved.classification } : {}) };
+  })
+    // Saved choices (including "left for later") are kept as they are; only a never-reviewed design gets defaults.
+    : job.reviewSubmission?.targets ? job.proposalTargets ?? []
+      : firstReviewDefaults([...(job.proposalTargets ?? []).filter(t => !t.baseLayer), ...(job.proposalTargets ?? []).filter(t => t.baseLayer)], job.options?.maxObjects ?? 6);
+  const memberMasks = Object.fromEntries(targets.filter(t => t.memberTargetIds?.length).map(t => [t.id, t.memberTargetIds!.flatMap(id => { const original = job.proposalTargets?.find(target => target.id === id); return original?.maskArtifactId ? [original.maskArtifactId] : []; })]));
+  return { targets: [...targets.filter(t => !t.baseLayer), ...targets.filter(t => t.baseLayer)], memberMasks: { ...memberMasks, ...stored?.memberMasks } };
+}
+
+/** Combining is allowed at the limit only when the result fits, or reduces an already oversized review. */
+export function canCombineLayers(targets: ProposalReviewTarget[], selected: string[], limit: number): boolean {
+  const members = targets.filter(target => selected.includes(target.id) && !target.baseLayer);
+  const kept = targets.filter(target => !target.baseLayer && target.approved && !target.rejected).length;
+  const next = kept - members.filter(target => target.approved && !target.rejected).length + 1;
+  return members.length >= 2 && members.length <= 6 && new Set(members.flatMap(target => target.proposalIds)).size <= 6 && (next <= limit || next < kept);
 }
 
 export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSummary; onSubmit: (body: DecompositionReview) => Promise<void>; busy: boolean }) {
@@ -45,14 +76,26 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
   const needsType = kept.filter(t => friendlyType(t).type === 'Choose type');
   const keptObjects = kept.filter(t => !t.baseLayer);
   const disabled = busy || status.pending;
-  const blocker = !keptObjects.length ? 'Keep at least one layer to continue.' : needsType.length ? `Choose a type for ${needsType.map(t => `“${t.label}”`).join(', ')}.` : kept.some(t => !t.label.trim()) ? 'Every kept layer needs a name.' : '';
-  const canCombine = checked.length >= 2 && checked.length <= 6;
+  const maxObjects = job.options?.maxObjects ?? 6;
+  const overLimit = keptObjects.length > maxObjects;
+  const atLimit = keptObjects.length >= maxObjects;
+  const later = targets.filter(t => !t.baseLayer && layerChoice(t) === 'later');
+  const limitCopy = `You can open up to ${maxObjects} editable layer${maxObjects === 1 ? '' : 's'} at once.`;
+  const blocker = overLimit ? `${limitCopy} Choose “Leave for later” for ${keptObjects.length - maxObjects} more — they stay in your design.` : !keptObjects.length ? 'Add at least one layer to the editor to continue.' : needsType.length ? `Choose a type for ${needsType.map(t => `“${t.label}”`).join(', ')}.` : kept.some(t => !t.label.trim()) ? 'Every layer you add needs a name.' : '';
+  const canCombine = canCombineLayers(targets, checked, maxObjects);
+  const addLayer = () => {
+    if (disabled || targets.length >= 12) return;
+    const id = `target-${crypto.randomUUID()}`;
+    // At the limit a new layer is left for later rather than refused.
+    setDraft(d => ({ ...d, targets: [...d.targets.filter(t => !t.baseLayer), { id, label: 'New layer', proposalIds: [], ...(atLimit ? CHOICE.later : CHOICE.add), groupMode: 'single', role: 'object' }, ...d.targets.filter(t => t.baseLayer)] }));
+    setActiveId(id); setEditingArea(true);
+  };
   const combine = () => {
     const members = targets.filter(t => checked.includes(t.id) && !t.baseLayer);
-    if (members.length < 2) return;
+    if (disabled || !canCombineLayers(targets, checked, maxObjects)) return;
     const id = `target-${crypto.randomUUID()}`;
     const label = (combinedName.trim() || members.map(m => m.label).join(' + ')).slice(0, 100);
-    const group: ProposalReviewTarget = { id, label, proposalIds: [...new Set(members.flatMap(m => m.proposalIds))].slice(0, 6), approved: true, rejected: false,
+    const group: ProposalReviewTarget = { id, label, proposalIds: [...new Set(members.flatMap(m => m.proposalIds))], approved: true, rejected: false,
       memberTargetIds: members.filter(m => m.maskArtifactId).map(m => m.id), groupMode: 'group', role: 'object',
       points: members.flatMap(m => m.points ?? []).slice(-64), strokes: members.flatMap(m => m.strokes ?? []).slice(-100) };
     const masks = members.flatMap(m => masksOf(m));
@@ -64,6 +107,7 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
     setToast(`Combined ${members.length} layers into “${label}”`);
   };
   const split = (group: ProposalReviewTarget) => {
+    if (keptObjects.length + (group.approved && !group.rejected ? group.proposalIds.length - 1 : 0) > maxObjects || targets.length + group.proposalIds.length - 1 > 12) return;
     const parts = group.proposalIds.map(pid => ({ ...group, id: `target-${crypto.randomUUID()}`, label: (job.proposals?.find(p => p.id === pid)?.label ?? group.label).slice(0, 100), proposalIds: [pid],
       groupMode: 'single' as const, memberTargetIds: undefined, maskArtifactId: undefined, provisionalMaskRevision: undefined, provenance: undefined, classification: undefined, role: 'unknown' as const, points: [], strokes: [], splitFromTargetId: group.id }));
     const at = targets.findIndex(t => t.id === group.id);
@@ -72,21 +116,37 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
     setDraft({ targets: next, memberMasks: { ...memberMasks, ...masks } });
     setActiveId(parts[0].id); setToast(`Split into ${parts.length} layers`);
   };
-  const send = (action: 'save-proposals' | 'approve-proposals') => void submitReviewOnce(lock, { expectedRevision: job.revision, action, targets: targets.map(({ classification: _c, ...t }) => { void _c; return t; }) }, async body => {
-    await onSubmit(body); try { localStorage.removeItem(key); } catch { /* optional */ }
-  }, setStatus);
+  const send = (action: 'save-proposals' | 'approve-proposals') => {
+    if (overLimit || disabled || (action === 'approve-proposals' && blocker)) return;
+    void submitReviewOnce(lock, { expectedRevision: job.revision, action, targets: targets.map(({ classification: _c, ...t }) => { void _c; return t; }) }, async body => {
+      try { await onSubmit(body); }
+      catch (error) {
+        if ((error as { code?: string }).code === 'TARGET_LIMIT') throw new Error(`${limitCopy} Your choices are kept — leave some layers for later, then save again.`, { cause: error });
+        throw error;
+      }
+      try { localStorage.removeItem(key); } catch { /* optional */ }
+    }, setStatus);
+  };
   const moveActive = (delta: number) => {
     const index = targets.findIndex(t => t.id === active?.id), next = targets[Math.max(0, Math.min(targets.length - 1, index + delta))];
     if (next) { setActiveId(next.id); listRef.current?.querySelector<HTMLButtonElement>(`[data-layer="${next.id}"]`)?.focus(); }
   };
   const summary = useMemo(() => {
-    const byType = (type: FriendlyType) => kept.filter(t => friendlyType(t).type === type).length;
-    return `${kept.length} kept · ${byType('Image')} image${byType('Image') === 1 ? '' : 's'}, ${byType('Text')} text, ${byType('Shape')} shape${byType('Shape') === 1 ? '' : 's'}`;
-  }, [kept]);
+    const byType = (type: FriendlyType) => keptObjects.filter(t => friendlyType(t).type === type).length;
+    return `${keptObjects.length} for the editor · ${byType('Image')} image${byType('Image') === 1 ? '' : 's'}, ${byType('Text')} text, ${byType('Shape')} shape${byType('Shape') === 1 ? '' : 's'}${later.length ? ` · ${later.length} left for later` : ''}`;
+  }, [keptObjects, later.length]);
+  const choose = (t: ProposalReviewTarget, choice: LayerChoice) => {
+    update(t.id, CHOICE[choice]);
+    setToast(choice === 'add' ? `“${t.label}” will open in the editor` : choice === 'later' ? `“${t.label}” is saved for later` : `Removed “${t.label}”`);
+  };
 
   return <div className="ws-grid">
     <aside className="ws-pane ws-list-pane" aria-label="Detected layers">
-      <div className="ws-pane-head"><h3>Detected layers <span className="ws-count">{targets.length}</span></h3><p>Select two or more to combine them.</p></div>
+      <div className="ws-pane-head"><h3>Detected layers <span className="ws-count">{targets.filter(t => !t.baseLayer).length}</span></h3>
+        <p className="ws-limit" data-testid="editor-selection-count"><strong>{keptObjects.length} of {maxObjects}</strong> selected for the editor{later.length ? ` · ${later.length} left for later` : ''}</p>
+        {atLimit && <p className="ws-hint" role="status">{limitCopy} Others stay here — add them later.</p>}
+        <p>Select two or more to combine them.</p><button className="ws-btn" disabled={disabled || targets.length >= 12} title={targets.length >= 12 ? 'This design has the most layers it can hold' : undefined} onClick={addLayer}><Plus size={14} />Add a layer</button></div>
+      {job.state === 'failed' && job.error?.code === 'TARGET_LIMIT' && <p className="ws-notice ws-list-notice" role="status">Your layer choices are kept. Combine or remove layers to fit the limit, then save for later or continue.</p>}
       {!job.proposals?.length && <p className="ws-notice ws-list-notice" role="status">AI couldn’t find separate layers in this image. You can mark an area yourself with “Adjust area”, or try a different image.</p>}
       {checked.length > 0 && <div className="ws-selection-bar" role="region" aria-label="Selected layers">
         <strong>{checked.length} layer{checked.length === 1 ? '' : 's'} selected</strong>
@@ -99,12 +159,12 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
       </div>}
       <ul className="ws-layer-list" ref={listRef} onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); } if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); } }}>
         {targets.map(t => {
-          const { type, suggested } = friendlyType(t), proposal = proposalOf(t), removed = t.rejected || !t.approved;
-          return <li key={t.id} className={`ws-layer ${t.id === active?.id ? 'is-active' : ''} ${removed ? 'is-removed' : ''}`} onMouseEnter={() => setHoverId(t.id)} onMouseLeave={() => setHoverId(null)}>
+          const { type, suggested } = friendlyType(t), proposal = proposalOf(t), choice = layerChoice(t);
+          return <li key={t.id} data-choice={t.baseLayer ? (choice === 'add' ? 'include' : 'exclude') : choice} className={`ws-layer ${t.id === active?.id ? 'is-active' : ''} ${choice === 'remove' ? 'is-removed' : choice === 'later' ? 'is-later' : ''}`} onMouseEnter={() => setHoverId(t.id)} onMouseLeave={() => setHoverId(null)}>
             <input type="checkbox" aria-label={`Select ${t.label}`} disabled={t.baseLayer || disabled} checked={checked.includes(t.id)} onChange={e => setChecked(ids => e.target.checked ? [...ids, t.id] : ids.filter(id => id !== t.id))} />
             <button className="ws-layer-main" data-layer={t.id} aria-current={t.id === active?.id} onClick={() => { setActiveId(t.id); setEditingArea(false); }}>
               {t.baseLayer ? <Thumb artifactId={job.discovery?.baseLayer?.artifactId} /> : <Thumb artifactId={proposal?.artifactId} region={proposal?.bounds} width={proposal?.width} height={proposal?.height} />}
-              <span className="ws-layer-text"><span className="ws-layer-name">{t.label || 'Untitled layer'}</span><span className="ws-layer-meta"><TypeChip type={type} suggested={suggested} />{t.groupMode === 'group' && <span className="ws-muted">Combined</span>}{removed && <span className="ws-muted">Removed</span>}</span></span>
+              <span className="ws-layer-text"><span className="ws-layer-name">{t.label || 'Untitled layer'}</span><span className="ws-layer-meta"><TypeChip type={type} suggested={suggested} />{t.groupMode === 'group' && <span className="ws-muted">Combined</span>}{t.baseLayer ? <span className="ws-muted">{choice === 'add' ? 'Included' : 'Not included'}</span> : choice === 'remove' ? <span className="ws-muted">Removed</span> : choice === 'later' ? <span className="ws-muted">Left for later</span> : <span className="ws-chip-add">In editor</span>}</span></span>
             </button>
           </li>;
         })}
@@ -126,7 +186,10 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
       {active ? <div className="ws-inspector">
         <h3 className="ws-inspector-title">{active.baseLayer ? 'Background' : 'Layer'}</h3>
         {active.baseLayer
-          ? <p className="ws-muted">The background stays as the bottom layer of your editable design.</p>
+          ? <fieldset className="ws-field"><legend>Background</legend><div className="ws-segmented" role="radiogroup" aria-label="Background">
+              <button role="radio" aria-checked={active.approved && !active.rejected} className={active.approved && !active.rejected ? 'is-on' : ''} disabled={disabled} onClick={() => { update(active.id, CHOICE.add); setToast('The background will be included'); }}>Include background</button>
+              <button role="radio" aria-checked={!active.approved || active.rejected} className={!active.approved || active.rejected ? 'is-on' : ''} disabled={disabled} onClick={() => { update(active.id, CHOICE.remove); setToast('The background will not be included'); }}>Exclude background</button>
+            </div><p className="ws-muted">Your layers can open on a blank canvas without it. You can add a background later in the editor.</p></fieldset>
           : <>
             <label className="ws-field">Name<input aria-label="Layer name" value={active.label} maxLength={100} disabled={disabled} onChange={e => update(active.id, { label: e.target.value })} /></label>
             <fieldset className="ws-field"><legend>Type</legend><div className="ws-segmented" role="radiogroup" aria-label="Layer type">
@@ -134,12 +197,16 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
             </div>
             {friendlyType(active).type === 'Choose type' && <p className="ws-warn">AI wasn't sure what this is. Choose a type to continue.</p>}
             {friendlyType(active).suggested && friendlyType(active).type !== 'Choose type' && <p className="ws-muted">Suggested by AI.</p>}</fieldset>
-            <fieldset className="ws-field"><legend>In your design</legend><div className="ws-segmented" role="radiogroup" aria-label="Keep or remove">
-              <button role="radio" aria-checked={active.approved && !active.rejected} className={active.approved && !active.rejected ? 'is-on' : ''} disabled={disabled} onClick={() => { update(active.id, { approved: true, rejected: false }); setToast(`Keeping “${active.label}”`); }}><Eye size={14} />Keep</button>
-              <button role="radio" aria-checked={!active.approved || active.rejected} className={!active.approved || active.rejected ? 'is-on' : ''} disabled={disabled} onClick={() => { update(active.id, { approved: false, rejected: true }); setToast(`Removed “${active.label}”`); }}><EyeOff size={14} />Remove</button>
-            </div></fieldset>
+            <fieldset className="ws-field"><legend>In your design</legend><div className="ws-segmented ws-choice" role="radiogroup" aria-label="Layer choice">
+              {([['add', 'Add to editor', SquarePlus], ['later', 'Leave for later', Clock], ['remove', 'Remove', Trash2]] as const).map(([choice, label, Icon]) => {
+                const on = layerChoice(active) === choice, blockedByLimit = choice === 'add' && !on && atLimit;
+                return <button key={choice} role="radio" aria-checked={on} className={on ? 'is-on' : ''} disabled={disabled || blockedByLimit} title={blockedByLimit ? `${limitCopy} Leave another layer for later first.` : undefined} onClick={() => choose(active, choice)}><Icon size={14} />{label}</button>;
+              })}
+            </div>
+            {layerChoice(active) === 'later' && <p className="ws-muted">Saved in your design. Add it to the editor any time from “Detected layers”.</p>}
+            {atLimit && layerChoice(active) !== 'add' && <p className="ws-hint">{limitCopy}</p>}</fieldset>
             {active.groupMode === 'group' && <div className="ws-field"><p className="ws-muted">Combined from {active.proposalIds.map(id => job.proposals?.find(p => p.id === id)?.label).filter(Boolean).join(', ') || 'several layers'}.</p>
-              <button className="ws-btn" disabled={disabled || active.proposalIds.length < 2} title={active.proposalIds.length < 2 ? 'This layer cannot be split further' : 'Separate into the original layers'} onClick={() => split(active)}><Split size={14} />Split layer</button></div>}
+              <button className="ws-btn" disabled={disabled || active.proposalIds.length < 2 || keptObjects.length + (active.approved && !active.rejected ? active.proposalIds.length - 1 : 0) > maxObjects || targets.length + active.proposalIds.length - 1 > 12} title={active.proposalIds.length < 2 ? 'This layer cannot be split further' : 'Separate into the original layers within your layer limit'} onClick={() => split(active)}><Split size={14} />Split layer</button></div>}
             {firstSentence(active.description) && <p className="ws-note">{firstSentence(active.description)}</p>}
             {friendlyType(active).type === 'Image' && <button className="ws-btn" aria-pressed={editingArea} disabled={disabled} onClick={() => setEditingArea(!editingArea)}><PenLine size={14} />{editingArea ? 'Done adjusting' : 'Adjust area'}</button>}
           </>}
@@ -148,7 +215,7 @@ export function ReviewStep({ job, onSubmit, busy }: { job: DecompositionJobSumma
 
     <footer className="ws-footer">
       <span className="ws-footer-status" aria-live="polite">{status.error ? <span className="ws-error-text" role="alert">{status.error}</span> : blocker || summary}</span>
-      <button className="ws-btn" disabled={disabled} onClick={() => send('save-proposals')}>Save for later</button>
+      <button className="ws-btn" disabled={disabled || overLimit} onClick={() => send('save-proposals')}>Save for later</button>
       <button className="ws-btn ws-btn-primary" disabled={disabled || !!blocker} onClick={() => send('approve-proposals')}>{status.pending ? 'Saving…' : 'Continue'}</button>
     </footer>
     <Toast message={toast} />

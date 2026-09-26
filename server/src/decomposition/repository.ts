@@ -132,11 +132,20 @@ export class DecompositionRepository {
   releaseJob(jobId: string, workerId: string, fence: number) { const job = this.getJob(jobId); if (job && job.leaseOwner === workerId && job.fence === fence) {job.leaseUntil=0;job.leaseOwner=undefined;this.persist(job);} }
   cancelJob(id: string, ownerId: string) { return this.db.transaction(() => { const job = this.requireOwnedJob(id,ownerId); if (terminal.has(job.state)) return job; job.cancelRequested=true;job.state='cancel_requested';job.revision++;job.updatedAt=Date.now();this.persist(job);this.event(job,'cancel_requested','Cancellation requested; existing inference may still be charged.');return job; })(); }
   reviewJob(id: string, ownerId: string, correction: DecompositionReview) {
-    return this.db.transaction(() => { const job = this.requireOwnedJob(id,ownerId); if (job.state !== 'needs_review' || job.revision !== correction.expectedRevision) throw new DecompositionError('STALE_REVISION','Review changed. Reload the latest masks before applying corrections.',409);
-      if (job.data.reviewWorkflow === 2 && !job.review?.actions.includes(correction.action)) throw new DecompositionError('REVIEW_ACTION_NOT_ALLOWED','This action is not allowed at the current review gate.',409);
+    return this.db.transaction(() => { const job = this.requireOwnedJob(id,ownerId);
+      const proposalAction = ['save-proposals','approve-proposals'].includes(correction.action);
+      const previous = job.data.reviewSubmission as DecompositionReview | undefined;
+      // A local validation failure is corrected through review, never through another explicit inference retry.
+      const correctingLimit = job.state === 'failed' && job.error?.code === 'TARGET_LIMIT' && job.phase === 3 && job.data.reviewWorkflow === 2 && ['save-proposals','approve-proposals'].includes(previous?.action ?? '') && proposalAction;
+      if ((job.state !== 'needs_review' && !correctingLimit) || job.revision !== correction.expectedRevision) throw new DecompositionError('STALE_REVISION','Review changed. Reload the latest masks before applying corrections.',409);
+      if (!correctingLimit && job.data.reviewWorkflow === 2 && !job.review?.actions.includes(correction.action)) throw new DecompositionError('REVIEW_ACTION_NOT_ALLOWED','This action is not allowed at the current review gate.',409);
+      if (proposalAction) {
+        const baseIds = new Set(((job.data.proposalTargets ?? []) as NonNullable<DecompositionReview['targets']>).filter(target => target.baseLayer).map(target => target.id));
+        if (!correction.targets?.length || correction.targets.filter(target => target.approved && !target.rejected && !baseIds.has(target.id)).length > job.options.maxObjects) throw new DecompositionError('TARGET_LIMIT','Keep the approved targets within the object limit.',409);
+      }
       job.data.reviewSubmission=correction; job.data.reviewRevision=job.revision+1; job.phase = ['save-proposals','approve-proposals'].includes(correction.action) ? 3 : correction.action === 'approve-result' ? 4 : correction.action === 'approve-generation' ? 7 : correction.action === 'accept-visible-only' ? Math.min(job.phase,5) : Math.min(job.phase,4);
       if (correction.action === 'accept-visible-only') { job.options.completeHiddenObjects=false; job.options.reconstructBackground=false;job.warnings.push('User accepted visible-only output.'); }
-      job.deadlineAt += Date.now() - (job.reviewStartedAt ?? Date.now());job.reviewStartedAt=undefined;job.review=undefined;job.manifest=undefined;job.error=undefined;job.state='queued';job.progress='Review saved; queued to resume';job.revision++;job.fence++;job.leaseOwner=undefined;job.leaseUntil=0;job.updatedAt=Date.now();this.persist(job);this.event(job,'review_saved',job.progress);return job;
+      job.deadlineAt += Date.now() - (job.reviewStartedAt ?? (correctingLimit ? job.updatedAt : Date.now()));job.reviewStartedAt=undefined;job.review=undefined;job.manifest=undefined;job.error=undefined;job.state='queued';job.progress='Review saved; queued to resume';job.revision++;job.fence++;job.leaseOwner=undefined;job.leaseUntil=0;job.updatedAt=Date.now();this.persist(job);this.event(job,'review_saved',job.progress);return job;
     })();
   }
   retryJob(id: string, ownerId: string, expectedRevision: number, reconcile?: {requestId: string;providerRequestId?:string;allowNewAttempt?:boolean}) {

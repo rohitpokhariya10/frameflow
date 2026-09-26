@@ -46,7 +46,8 @@ export interface DesignVariant {
   id: string;
   name: string;
   revision: number;
-  canvas: CanvasSize & { backgroundColor: string };
+  /** `transparent` shows no fill (checkerboard in the editor, alpha in PNG export); `backgroundColor` is kept for when it is turned off. */
+  canvas: CanvasSize & { backgroundColor: string; transparent?: boolean };
   elements: TextElement[];
   /** Optional, back-to-front, rendered above the background and below text. Absent on older documents. */
   layers?: DesignLayer[];
@@ -56,6 +57,8 @@ export interface DesignVariant {
     focalPoint: { x: number; y: number };
   };
   sourceVariantId?: string;
+  /** Opened from an "Image to layers" job: which job, and whether it started on a blank canvas or the original image. */
+  decomposition?: { jobId: string; mode: 'blank' | 'original' };
   generation?: {
     mode: 'live' | 'example';
     provider?: ImageProvider;

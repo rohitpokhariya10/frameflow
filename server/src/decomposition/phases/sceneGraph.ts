@@ -14,7 +14,7 @@ type SceneElement = { targetId: string; label: string; kind: ElementKind; propos
 const json = (value: unknown) => Buffer.from(JSON.stringify(value, null, 2));
 
 /** Source RGB × alpha, cropped to the alpha bounds (plus padding), as a straight-alpha PNG. */
-async function sourceRaster(pixels: SourcePixels, alpha: Mask, padding = 2) {
+export async function sourceRaster(pixels: SourcePixels, alpha: Mask, padding = 2) {
   const bounds = maskBounds(alpha);
   if (!bounds) return undefined;
   const x = Math.max(0, bounds.x - padding), y = Math.max(0, bounds.y - padding);
@@ -26,6 +26,17 @@ async function sourceRaster(pixels: SourcePixels, alpha: Mask, padding = 2) {
     out[d + 3] = Math.round(pixels.data[s * 4 + 3] * alpha.data[s] / 255);
   }
   return { png: await sharp(out, { raw: { width, height, channels: 4 } }).png().toBuffer(), bbox: { x, y, width, height } };
+}
+
+/** Soft discovery alpha (max over member proposals) in native pixels; falls back to the reviewed provisional region. */
+export async function discoveryRegionAlpha(artifact: (id: string) => Promise<Buffer>, proposals: ProposalSummary[], transform: ImageTransform, proposalIds: string[], fallbackMaskArtifactId?: string): Promise<Mask | undefined> {
+  let alpha: Mask | undefined;
+  for (const proposal of proposals.filter(p => proposalIds.includes(p.id) && p.registered && !p.warnings.length && p.alphaArtifactId)) {
+    const native = mapMaskToNative(await decodeMask(await artifact(proposal.alphaArtifactId!), { encoding: 'luminance' }), transform, 'alpha');
+    alpha = alpha ? { ...alpha, data: alpha.data.map((v, i) => Math.max(v, native.data[i])) } : native;
+  }
+  if (!alpha && fallbackMaskArtifactId) alpha = await decodeMask(await artifact(fallbackMaskArtifactId), { encoding: 'luminance' });
+  return alpha && maskBounds(alpha) ? alpha : undefined;
 }
 
 /**
@@ -46,16 +57,7 @@ export async function buildSceneGraph(context: PipelineContext, master: Buffer, 
     const z = proposals.filter(p => proposalIds.includes(p.id)).map(p => p.zIndex ?? (p.providerOrder !== undefined ? p.providerOrder + 1 : undefined)).filter((v): v is number => v !== undefined);
     return z.length ? Math.max(...z) : undefined;
   };
-  // Soft discovery alpha (max over member proposals) in native pixels; falls back to the reviewed provisional region.
-  const regionAlpha = async (element: SceneElement): Promise<Mask | undefined> => {
-    let alpha: Mask | undefined;
-    for (const proposal of proposals.filter(p => element.proposalIds.includes(p.id) && p.registered && !p.warnings.length && p.alphaArtifactId)) {
-      const native = mapMaskToNative(await decodeMask(await context.artifact(proposal.alphaArtifactId!), { encoding: 'luminance' }), transform, 'alpha');
-      alpha = alpha ? { ...alpha, data: alpha.data.map((v, i) => Math.max(v, native.data[i])) } : native;
-    }
-    if (!alpha && element.provisionalMaskArtifactId) alpha = await decodeMask(await context.artifact(element.provisionalMaskArtifactId), { encoding: 'luminance' });
-    return alpha && maskBounds(alpha) ? alpha : undefined;
-  };
+  const regionAlpha = (element: SceneElement) => discoveryRegionAlpha(id => context.artifact(id), proposals, transform, element.proposalIds, element.provisionalMaskArtifactId);
   const ordered: { z: number | undefined; layer: SceneLayer }[] = [];
   const base = { opacity: 1, rotation: 0, visible: true, locked: false } as const;
 

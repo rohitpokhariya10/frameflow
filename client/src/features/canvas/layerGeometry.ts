@@ -1,10 +1,11 @@
 import type { ShapeLayerElement } from '@frameflow/shared';
 
-/** Konva fill props for a shape layer: a solid fill, or a two-stop linear gradient along `angle` (degrees). */
-export function shapeFillProps(layer: Pick<ShapeLayerElement, 'fill' | 'gradient' | 'width' | 'height'>) {
+/** Ellipse nodes draw around their center; rectangles and SVG thumbnails use a top-left origin. */
+export function shapeFillProps(layer: Pick<ShapeLayerElement, 'fill' | 'gradient' | 'width' | 'height'>, origin: 'top-left' | 'center' = 'top-left') {
   if (!layer.gradient) return { fill: layer.fill };
   const radians = (layer.gradient.angle * Math.PI) / 180, dx = Math.cos(radians), dy = Math.sin(radians);
-  const half = (Math.abs(dx) * layer.width + Math.abs(dy) * layer.height) / 2, cx = layer.width / 2, cy = layer.height / 2;
+  const half = (Math.abs(dx) * layer.width + Math.abs(dy) * layer.height) / 2;
+  const cx = origin === 'center' ? 0 : layer.width / 2, cy = origin === 'center' ? 0 : layer.height / 2;
   return {
     fillLinearGradientStartPoint: { x: cx - dx * half, y: cy - dy * half },
     fillLinearGradientEndPoint: { x: cx + dx * half, y: cy + dy * half },

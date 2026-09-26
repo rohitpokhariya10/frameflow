@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { UploadCloud, ImagePlus, Loader2, Check, Circle, Layers, Type, Square, Image as ImageIcon, Mountain, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { UploadCloud, ImagePlus, Loader2, Check, Circle, Layers, Type, Square, Image as ImageIcon, Mountain, AlertTriangle, RefreshCw, Trash2, LayoutGrid } from 'lucide-react';
 import type { DecompositionCapabilities, DecompositionJobSummary } from '@frameflow/shared';
 import { artifactUrl } from '../api';
 import { friendlyError, processingMessage, processingStages, readySummary } from '../flow';
+import { rebuiltBackgroundArtifact, type OpenMode, type OpenOptions } from '../importScene';
 
 const ACCEPTED = ['image/png', 'image/jpeg', 'image/webp'];
 const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`;
@@ -76,7 +77,7 @@ export function UploadStep({ capabilities, jobs, hasArtwork, artworkUrl, busy, o
       <details className="ws-options"><summary>Tell AI what to look for (optional)</summary><label className="ws-field">Things to separate, separated by commas<input placeholder="e.g. woman, phone, logo" value={labels} maxLength={600} onChange={e => setLabels(e.target.value)} /></label></details>
       <button className="ws-btn ws-btn-primary ws-btn-large" disabled={busy || !ready} onClick={() => onStart(file, labels.split(',').map(s => s.trim()).filter(Boolean))}>{busy ? <><Loader2 size={16} className="ws-spin" />Uploading…</> : 'Separate layers'}</button>
     </div>
-    {jobs.length > 0 && <section className="ws-recent" aria-label="Recent designs"><h3>Recent designs</h3><ul>{jobs.slice(0, 8).map(job => <li key={job.id}>
+    {jobs.length > 0 && <section className="ws-recent" aria-label="Recent designs"><h3>Recent designs</h3><ul>{jobs.slice(0, 8).map(job => <li key={job.id} data-job-id={job.id}>
       {job.sourcePreviewArtifactId ? <img src={artifactUrl(job.sourcePreviewArtifactId)} alt="" loading="lazy" /> : <span className="ws-thumb ws-thumb-empty" />}
       <span className="ws-recent-text"><strong>{JOB_STATUS[job.state] ?? job.state}</strong><span>{new Date(job.createdAt).toLocaleString()}</span></span>
       <button className="ws-btn" onClick={() => onOpenJob(job)}>{job.state === 'completed' ? 'Open' : 'Continue'}</button>
@@ -100,10 +101,19 @@ export function ProcessingStep({ job, onCancel, busy }: { job: DecompositionJobS
   </div>;
 }
 
-export function ReadyStep({ job, busy, onOpen }: { job: DecompositionJobSummary; busy: boolean; onOpen: () => void }) {
+const openModeKey = (jobId: string) => `frameflow:open-mode:${jobId}`;
+export function rememberedOpenMode(jobId: string): OpenMode | undefined { try { const v = localStorage.getItem(openModeKey(jobId)); return v === 'blank' || v === 'original' ? v : undefined; } catch { return undefined; } }
+export function rememberOpenMode(jobId: string, mode: OpenMode) { try { localStorage.setItem(openModeKey(jobId), mode); } catch { /* optional */ } }
+
+/** Two explicit ways to open: separate layers on a blank canvas (primary), or on top of the original image. */
+export function ReadyStep({ job, busy, onOpen }: { job: DecompositionJobSummary; busy: boolean; onOpen: (options: OpenOptions) => void }) {
   const [reviewing, setReviewing] = useState(false);
   const s = readySummary(job.sceneGraph);
   const layers = job.sceneGraph?.layers ?? [];
+  const rebuilt = rebuiltBackgroundArtifact(job.sceneGraph);
+  const [includeBackground, setIncludeBackground] = useState(() => Boolean(job.proposalTargets?.some(t => t.baseLayer && t.approved && !t.rejected)));
+  const later = (job.proposalTargets ?? []).filter(t => !t.baseLayer && !t.approved && !t.rejected);
+  const last = rememberedOpenMode(job.id);
   const icon = (type: string) => type === 'text' ? <Type size={14} /> : type === 'shape' ? <Square size={14} /> : type === 'background' ? <Mountain size={14} /> : <ImageIcon size={14} />;
   const artifact = (l: (typeof layers)[number]) => l.type === 'image' ? l.transparentRgbaArtifactId : l.type === 'background' ? l.imageArtifactId : l.rasterArtifactId;
   return <div className="ws-ready">
@@ -114,12 +124,27 @@ export function ReadyStep({ job, busy, onOpen }: { job: DecompositionJobSummary;
       <ul className="ws-ready-stats">
         <li><strong>{s.editable}</strong>editable layer{s.editable === 1 ? '' : 's'}</li>
         <li><strong>{s.text}</strong>text</li><li><strong>{s.shapes}</strong>shape{s.shapes === 1 ? '' : 's'}</li><li><strong>{s.images}</strong>image{s.images === 1 ? '' : 's'}</li>
-        {s.background && <li><strong><Check size={14} strokeWidth={3} /></strong>background</li>}
       </ul>
+      {later.length > 0 && <p className="ws-hint" data-testid="left-for-later">{later.length} more detected layer{later.length === 1 ? ' is' : 's are'} saved for later. Add {later.length === 1 ? 'it' : 'them'} any time from “Detected layers” in the editor.</p>}
+      <div className="ws-open-choices" role="group" aria-label="How to open your layers">
+        <section className={`ws-open-choice is-primary ${last === 'blank' ? 'is-last' : ''}`} aria-label="Open on blank canvas">
+          <h3><LayoutGrid size={16} />Open on blank canvas</h3>
+          <p>Only your separated layers, on a transparent canvas. Move anything — nothing from the original image is underneath.</p>
+          {rebuilt && <div className="ws-open-option"><label className="ws-check"><input type="checkbox" checked={includeBackground} onChange={e => setIncludeBackground(e.target.checked)} />Add the AI-rebuilt background</label>
+            <span className="ws-muted">AI filled in what was behind your layers — check it before you use it.</span></div>}
+          <button className="ws-btn ws-btn-primary ws-btn-large" disabled={busy || !job.sceneGraph} onClick={() => onOpen({ mode: 'blank', includeBackground: Boolean(rebuilt) && includeBackground })}>{busy ? <><Loader2 size={16} className="ws-spin" />Opening…</> : 'Open on blank canvas'}</button>
+          {last === 'blank' && <span className="ws-muted">Last opened this way</span>}
+        </section>
+        <section className={`ws-open-choice ${last === 'original' ? 'is-last' : ''}`} aria-label="Keep original background">
+          <h3><Mountain size={16} />Keep original background</h3>
+          <p>Your layers sit on top of the original image, so it looks unchanged. Moving a layer can reveal the original picture underneath.</p>
+          <button className="ws-btn" disabled={busy || !job.sceneGraph} onClick={() => onOpen({ mode: 'original' })}>Keep original background</button>
+          {last === 'original' && <span className="ws-muted">Last opened this way</span>}
+        </section>
+      </div>
       {s.text > 0 && <p className="ws-hint">Text keeps its original look. Select a text layer in the editor and choose “Make text editable” to change the words.</p>}
-      <div className="ws-row"><button className="ws-btn ws-btn-primary ws-btn-large" disabled={busy || !job.sceneGraph} onClick={onOpen}>{busy ? <><Loader2 size={16} className="ws-spin" />Opening…</> : 'Open in editor'}</button>
-        <button className="ws-btn" aria-expanded={reviewing} onClick={() => setReviewing(!reviewing)}>Review layers</button></div>
-      {reviewing && <ul className="ws-ready-layers" aria-label="Layers in your design">{[...layers].reverse().map(l => <li key={l.id}>{artifact(l) ? <img src={artifactUrl(artifact(l)!)} alt="" loading="lazy" /> : null}<span>{l.name}</span><span className="ws-muted">{icon(l.type)}{l.type === 'shape' && l.shapeType === 'raster' ? 'image' : l.type}</span></li>)}</ul>}
+      <button className="ws-link" aria-expanded={reviewing} onClick={() => setReviewing(!reviewing)}>Review layers</button>
+      {reviewing && <ul className="ws-ready-layers" aria-label="Layers in your design">{[...layers].reverse().filter(l => l.type !== 'background').map(l => <li key={l.id}>{artifact(l) ? <img src={artifactUrl(artifact(l)!)} alt="" loading="lazy" /> : null}<span>{l.name}</span><span className="ws-muted">{icon(l.type)}{l.type === 'shape' && l.shapeType === 'raster' ? 'image' : l.type}</span></li>)}</ul>}
     </div>
   </div>;
 }

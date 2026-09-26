@@ -60,7 +60,7 @@ export function DesignLayerNode({ layer, selected, variantId }: Props) {
       {layer.type === 'image'
         ? image?.id === layer.assetId && <KonvaImage name="layer-image" image={image.bitmap} width={layer.width} height={layer.height} />
         : layer.shapeType === 'ellipse'
-          ? <Ellipse name="layer-shape" x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...shapeFillProps(layer)} {...strokeProps(layer)} />
+          ? <Ellipse name="layer-shape" x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...shapeFillProps(layer, 'center')} {...strokeProps(layer)} />
           : <Rect name="layer-shape" width={layer.width} height={layer.height} cornerRadius={cornerRadius(layer)} {...shapeFillProps(layer)} {...strokeProps(layer)} />}
     </Group>
     {selected && !layer.locked && <Transformer ref={transformerRef} name="layer-transformer" rotateEnabled keepRatio={layer.type === 'image'} flipEnabled={false}

@@ -78,6 +78,13 @@
 .ws-layer-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; }
 .ws-layer.is-removed .ws-layer-name { text-decoration: line-through; color: var(--color-muted); }
 .ws-layer.is-removed .ws-thumb { opacity: .45; }
+.ws-layer.is-later .ws-thumb { opacity: .7; }
+.ws-layer.is-later .ws-layer-name { color: var(--color-muted); }
+.ws-chip-add { font-size: 11px; font-weight: 600; color: var(--color-primary); }
+.ws-limit { font-size: 12.5px; }
+.ws-limit strong { color: var(--color-ink); }
+.ws-choice { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: 1fr; }
+.ws-choice button { justify-content: flex-start; padding: 0 10px; }
 .ws-thumb { flex-shrink: 0; display: inline-block; border-radius: 7px; border: 1px solid var(--color-line); background-color: #fff; background-repeat: no-repeat;
   background-image: linear-gradient(45deg, #eef0ec 25%, transparent 25%, transparent 75%, #eef0ec 75%), linear-gradient(45deg, #eef0ec 25%, transparent 25%, transparent 75%, #eef0ec 75%); object-fit: contain; }
 span.ws-thumb[role], span.ws-thumb:not(.ws-thumb-empty)[style*="url"] { background-color: #f6f7f4; }
@@ -231,3 +238,12 @@ span.ws-thumb[role], span.ws-thumb:not(.ws-thumb-empty)[style*="url"] { backgrou
 .ws-list-notice { margin: 0 12px 10px; }
 .ws-resume { width: 100%; max-width: 760px; display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 14px; background: #fff; border: 1px solid #b9cfc1; box-shadow: 0 0 0 4px var(--color-selected); }
 .ws-resume img { width: 52px; height: 52px; border-radius: 9px; object-fit: cover; }
+
+.ws-open-choices { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 4px 0; text-align: left; }
+.ws-open-option { display: flex; flex-direction: column; gap: 3px; }
+.ws-open-option .ws-muted { font-size: 11.5px; padding-left: 21px; }
+.ws-open-choice { border: 1px solid var(--color-line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: #fff; }
+.ws-open-choice.is-primary { border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent); }
+.ws-open-choice h3 { margin: 0; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.ws-open-choice p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--color-muted); }
+.ws-open-choice .ws-btn { margin-top: auto; }

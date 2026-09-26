@@ -19,7 +19,14 @@ export type SemanticCandidate = {
   /** Reviewed provisional region (proposal review) used as completeness evidence by the quality gate. */
   provisionalMaskArtifactId?: string;
   statistics: ReturnType<typeof measureMask>;
+  /** True while the current mask is a rejected model candidate the user has not yet confirmed or corrected. */
+  provisional?: boolean;
+  /** Permanent provenance for a rejected model candidate shown as a starting point. */
+  rejectedCandidate?: RejectedCandidate;
 };
+export type RejectedCandidate = { revisionId: string; maskArtifactId: string; providerRequestIds: string[]; providerScore?: number; score: number; index: number;
+  rejectionReasons: string[]; qualityTier: QualityTier; qualityChecks: QualityCheck[]; inputRevision: number };
+const PROVISIONAL_CHECK: QualityCheck = { code: 'PROVISIONAL_SELECTION', tier: 'REVIEW', message: 'AI found a possible selection that did not pass automatic checks. Confirm or correct it before edge refinement.' };
 const json = (value: unknown) => Buffer.from(JSON.stringify(value, null, 2));
 async function saveTrio(context: PipelineContext, master: Buffer, mask: Mask, alpha: Mask, base: string, edit?: { operation: string; parentRevision?: string; strokes?: import('@frameflow/shared').DecompositionStroke[]; proposalIds?: string[] }) {
   const revisionId = randomUUID();
@@ -75,17 +82,24 @@ export async function semanticDiscovery(context: PipelineContext, master: Buffer
       providerFailure = error;
       result = { target, mask: undefined, members: [], scores: [], memberScores: [], providerRequestIds: [], warnings: [error.code], transform: createTransform(source.width, source.height, 2048) };
     }
-    context.repository.event(context.job, 'semantic_quality', JSON.stringify({ targetId: target.id, label: target.label, accepted: !!result.mask, requestIds: result.providerRequestIds, latencyMs: Date.now() - startedAt, inputRevision: context.job.revision }));
-    const mask = result.mask ?? emptyMask(source.width, source.height);
-    const chosen = result.scores.filter(score => !score.reasons.length).sort((a, b) => b.score - a.score)[0];
+    const rejected = result.mask ? undefined : result.provisional;
+    context.repository.event(context.job, 'semantic_quality', JSON.stringify({ targetId: target.id, label: target.label, accepted: !!result.mask, provisional: !!rejected, requestIds: result.providerRequestIds, latencyMs: Date.now() - startedAt, inputRevision: context.job.revision }));
+    // A confidently scored mask that failed only coverage checks is kept as an unconfirmed starting point instead of an empty selection.
+    const mask = result.mask ?? rejected?.mask ?? emptyMask(source.width, source.height);
+    const chosen = rejected?.score ?? result.scores.filter(score => !score.reasons.length).sort((a, b) => b.score - a.score)[0];
     const quality = ownershipQuality(mask, { target, points, box: intent?.userBox, provisional: proposal, members: result.members, providerScore: chosen?.providerScore });
-    const trio = await saveTrio(context, master, mask, mask, `04-semantic/${target.id}`);
+    const trio = await saveTrio(context, master, mask, mask, `04-semantic/${target.id}`, rejected ? { operation: 'provisional-model-ownership' } : undefined);
     const memberArtifactIds: string[] = [];
     for (const [i, member] of result.members.entries()) memberArtifactIds.push((await context.put('member-evidence', await encodeMask(member), `04-semantic/${target.id}-member-${i + 1}.png`)).artifactId);
-    const tier = result.mask ? quality.tier : 'FAIL';
-    saved.push({ id: target.id, label: target.label, target, source: 'sam3', selected: false, ...trio, memberArtifactIds, qualityStatus: tier === 'FAIL' ? 'needs-correction' : 'needs-confirmation', qualityTier: tier, qualityChecks: quality.checks,
-      provisionalMaskArtifactId: intent?.maskArtifactId, statistics: measureMask(mask), warnings: [...new Set([...result.warnings, ...quality.checks.map(c => c.code)])] });
-    await context.put('semantic-quality', json({ ...result, mask: undefined, members: undefined, memberArtifactIds, ...trio, qualityGate: quality, provider: endpointRegistry.sam3, unknownImmutableModelRevision: true }), `04-semantic/${target.id}-quality.json`, 'application/json');
+    // A provisional mask is shown as REVIEW (never PASS) and stays needs-correction: it cannot reach alpha until the user saves or corrects it.
+    const tier = result.mask ? quality.tier : rejected ? 'REVIEW' : 'FAIL';
+    const rejectedCandidate: RejectedCandidate | undefined = rejected && { revisionId: trio.revisionId, maskArtifactId: trio.maskArtifactId, providerRequestIds: result.providerRequestIds, providerScore: rejected.score.providerScore, score: rejected.score.score, index: rejected.score.index,
+      rejectionReasons: rejected.score.reasons, qualityTier: quality.tier, qualityChecks: quality.checks, inputRevision: context.job.revision };
+    const checks = rejected ? [PROVISIONAL_CHECK, ...quality.checks] : quality.checks;
+    saved.push({ id: target.id, label: target.label, target, source: 'sam3', selected: false, ...trio, memberArtifactIds, qualityStatus: tier === 'FAIL' || rejected ? 'needs-correction' : 'needs-confirmation', qualityTier: tier, qualityChecks: checks,
+      provisionalMaskArtifactId: intent?.maskArtifactId, statistics: measureMask(mask), ...(rejectedCandidate ? { provisional: true, rejectedCandidate } : {}),
+      warnings: [...new Set([...result.warnings, ...(rejected ? ['PROVISIONAL_SELECTION'] : []), ...quality.checks.map(c => c.code)])] });
+    await context.put('semantic-quality', json({ ...result, mask: undefined, members: undefined, provisional: undefined, rejectedCandidate, memberArtifactIds, ...trio, qualityGate: quality, provider: endpointRegistry.sam3, unknownImmutableModelRevision: true }), `04-semantic/${target.id}-quality.json`, 'application/json');
     console.info(JSON.stringify({ event: 'ownership_quality', jobId: context.job.id, phase: 4, targetId: target.id, targetLabel: target.label, provider: 'sam3', requestIds: result.providerRequestIds, outputRevision: trio.revisionId, qualityStatus: tier, reasons: quality.checks.map(c => c.code), latencyMs: Date.now() - startedAt, callCount: context.job.callsUsed }));
     context.job.data.candidates = saved; context.save();
   }
@@ -102,6 +116,10 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
   for (const object of selected) {
     const candidate = candidates.find(c => c.id === (object.candidateId ?? object.id));
     if (!candidate || candidate.id !== object.id) throw new ProviderError('INVALID_CANDIDATE', 'Reload the selected target.');
+    // Confirmation applies only to saved revisions: painted strokes must go through manual-masks (and its ownership checks) first.
+    if (correction.action === 'accept-masks' && object.strokes?.length) {
+      context.review('UNSAVED_EDITS', `"${candidate.label}" has unsaved brush changes. Save them first, then confirm the saved selection.`, ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]); context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
+    }
     const mask = applyBrush(await decodeMask(await context.artifact(candidate.maskArtifactId), { encoding: 'luminance', binary: true }), object.strokes ?? []);
     if (correction.action === 'accept-masks' && validateGuidance(mask, { positivePoints: object.points?.filter(p => p.label === 1), negativePoints: object.points?.filter(p => p.label === 0) }).length) {
       context.review('GUIDANCE_MASK_CONFLICT', 'Confirmed mask does not match guidance (POSITIVE_GUIDANCE_UNSATISFIED or NEGATIVE_GUIDANCE_LEAK). Use Refine with AI or manual correction.', ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]); context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
@@ -123,6 +141,13 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
     const startedAt = Date.now();
     try {
       if (correction.action === 'guided-refine' || (!manual && (!candidate.target || target.label !== candidate.target.label))) {
+        // An empty selection with no positive point or box leaves SAM only the label to go on; that paid call cannot localise
+        // the object and an identical retry replays the same failed request. Ask for a hint before spending a call.
+        if (!maskBounds(current) && !object.box && !object.points?.some(p => p.label === 1)) {
+          context.job.phase = 4;
+          context.review('GUIDANCE_REQUIRED', 'Nothing is selected for this target yet. Paint over the object (or draw a box) so AI knows where to look, or save a manual mask.', ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]);
+          context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
+        }
         result = await recoverSemanticOwnership(master, context.infer, { target, points: object.points, box: object.box, prior: current, protectedMask, members });
         quality = { candidates: result.scores, members: result.memberScores, requestIds: result.providerRequestIds, transform: result.transform, unionSources: result.unionSources };
         if (!result.mask) {
@@ -138,8 +163,14 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
         const failures = scoreSemanticMask(mask, { target: userOwned ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, members: userOwned ? undefined : members, protectedMask }).reasons;
         const provisional = candidate.provisionalMaskArtifactId ? await decodeMask(await context.artifact(candidate.provisionalMaskArtifactId), { encoding: 'luminance', binary: true }) : undefined;
         const gate = ownershipQuality(mask, { target: userOwned ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, members: userOwned ? undefined : members, protectedMask, provisional: userOwned ? undefined : provisional, manual: userOwned });
-        candidate.qualityTier = gate.tier; candidate.qualityChecks = gate.checks;
+        // Status always describes the stored revision. A manual edit that fails is not saved, so it must not relabel the saved mask.
+        if (!manual) { candidate.qualityTier = gate.tier; candidate.qualityChecks = gate.checks; }
         // FAIL never proceeds to alpha. REVIEW proceeds only because this submission is the user's explicit confirmation.
+        // A provisional mask is a rejected model candidate: confirming it takes an explicit save (manual-masks), never accept-masks alone.
+        if (candidate.provisional && !manual) {
+          context.job.phase = 4; context.job.data.candidates = candidates;
+          context.review('PROVISIONAL_SELECTION_UNCONFIRMED', `AI's possible selection for "${candidate.label}" has not been confirmed. Keep it, correct it, or refine it with AI before edge refinement.`, ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]); context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
+        }
         if ((!userOwned && candidate.qualityStatus === 'needs-correction') || failures.length || gate.tier === 'FAIL') {
           const reasons = [...new Set([...gate.checks.filter(c => c.tier === 'FAIL').map(c => c.message), ...failures])];
           context.job.phase = 4; context.job.data.candidates = candidates;
@@ -173,6 +204,8 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
       if (manual) candidate.manualOwnership = true; else if (result) candidate.manualOwnership = false;
       const provisionalMask = candidate.provisionalMaskArtifactId && !manual ? await decodeMask(await context.artifact(candidate.provisionalMaskArtifactId), { encoding: 'luminance', binary: true }) : undefined;
       const revised = ownershipQuality(mask, { target: manual || candidate.manualOwnership ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, protectedMask, members: result?.members ?? (manual ? undefined : members), provisional: provisionalMask, manual: manual || candidate.manualOwnership });
+      // The new revision replaces the provisional mask; rejectedCandidate keeps its provenance.
+      delete candidate.provisional;
       Object.assign(candidate, trio, { label: target.label, target, manualOwnership: candidate.manualOwnership, qualityTier: revised.tier, qualityChecks: revised.checks, qualityStatus: revised.tier === 'FAIL' ? 'needs-correction' : 'needs-confirmation', statistics: measureMask(mask), warnings: [...new Set([...warnings, ...revised.checks.map(c => c.code)])] });
       context.repository.event(context.job, 'semantic_refinement', JSON.stringify({ targetId: target.id, label: target.label, provider: entry.provider, inputRevision: correction.expectedRevision, maskRevision: trio.revisionId, requestIds: result?.providerRequestIds ?? [], quality, callsUsed: context.job.callsUsed, latencyMs: Date.now() - startedAt }));
       context.job.data.candidates = candidates; context.save();

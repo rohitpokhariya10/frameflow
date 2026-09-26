@@ -12,3 +12,9 @@ it('keeps version choices distinct without repeated dimensions or internal IDs',
   expect(variantLabel(adapted, 2)).toBe('3. Custom · Adapted · 1000 × 900');
   expect(adapted.name).toBe('Landscape · 1600×900');
 });
+
+it('names versions opened from Image to layers by how they were opened', () => {
+  const source = createDocument('project', '2026-09-22T00:00:00.000Z').variants[0];
+  expect(variantLabel({ ...source, decomposition: { jobId: 'job', mode: 'blank' } }, 1)).toBe('2. Poster · Layers on blank canvas · 1080 × 1350');
+  expect(variantLabel({ ...source, decomposition: { jobId: 'job', mode: 'original' } }, 2)).toBe('3. Poster · Layers on original · 1080 × 1350');
+});

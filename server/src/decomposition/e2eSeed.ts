@@ -19,6 +19,7 @@ import { ArtifactStore } from './artifactStore.js';
 import { PipelineContext } from './context.js';
 import { runPhase } from './pipeline.js';
 import type { InferenceOutput } from './providers/inference.js';
+import type { DecompositionReview, ProposalReviewTarget } from '@frameflow/shared';
 
 const target = process.env.DECOMP_E2E_DATA;
 if (!target) throw new Error('Set DECOMP_E2E_DATA to an empty directory.');
@@ -46,4 +47,30 @@ for (let phase = 1; phase <= 3; phase++) {
 repo.releaseJob(job.id, 'e2e-seed', repo.getJob(job.id)!.fence);
 const seeded = repo.getJob(job.id)!;
 console.info(JSON.stringify({ event: 'e2e_seeded', jobId: seeded.id, state: seeded.state, gate: seeded.review?.gate, targets: (seeded.data.proposalTargets as { label: string }[]).map(t => t.label), replay: replay.requestId }));
+// State fixtures live only in this isolated directory. Browser submissions still use the real review/retry routes,
+// with their normal revision checks, limits and worker; creating fixtures avoids exhausting the upload rate limiter.
+const stateJobs: Record<string, string> = {};
+// editor-modes is seeded first (oldest), so it never pushes other fixtures out of the eight most recent designs.
+for (const name of ['editor-modes', 'retry', 'stale', 'empty', 'narrow', 'limit', 'failed-limit']) {
+  const fixture = repo.createJob('operator', 'e2e-source', { ...seeded.options, ...(name.includes('limit') ? { maxObjects: 2 } : {}), targetLabels: name === 'retry' || name === 'stale' ? ['e2e-outage'] : [] }, `e2e-${name}`);
+  fixture.data = structuredClone(seeded.data);
+  fixture.state = 'needs_review'; fixture.phase = 3; fixture.review = structuredClone(seeded.review);
+  fixture.progress = 'Review discovered layers';
+  if (name === 'retry' || name === 'stale') {
+    fixture.phase = 2; fixture.state = 'failed'; fixture.review = undefined;
+    fixture.error = { code: 'PROVIDER_RATE_LIMIT', message: 'E2E simulated rate limit.', retryable: true };
+  }
+  if (name === 'empty' || name === 'narrow') {
+    fixture.data.proposals = []; fixture.data.discovery = undefined;
+    fixture.data.proposalTargets = [{ id: 'manual-object', label: 'Object', proposalIds: [], approved: false, rejected: false, groupMode: 'single', role: 'object' } satisfies ProposalReviewTarget];
+  }
+  if (name === 'failed-limit') {
+    const choices = (fixture.data.proposalTargets as ProposalReviewTarget[]).map(({ classification, ...target }, i) => { void classification; return { ...target, approved: i !== 1, rejected: i === 1, ...(i === 0 ? { label: 'Saved custom name', role: 'shape' as const } : {}) }; });
+    fixture.data.reviewSubmission = { action: 'save-proposals', expectedRevision: fixture.revision, targets: choices } satisfies DecompositionReview;
+    fixture.data.attempt = 1; fixture.state = 'failed'; fixture.review = undefined;
+    fixture.error = { code: 'TARGET_LIMIT', message: 'Keep the approved targets within the object limit.', retryable: true };
+  }
+  stateJobs[name] = repo.updateJob(fixture).id;
+}
+writeFileSync(join(target, 'e2e-state-jobs.json'), JSON.stringify(stateJobs));
 repo.close();

@@ -1,8 +1,11 @@
 import { useRef, useState, type KeyboardEvent } from 'react';
-import { Check, LayoutTemplate, SlidersHorizontal, Sparkles, Type, ArrowUpRight } from 'lucide-react';
-import { CANVAS_PRESETS, validateCanvasSize, type CanvasSize } from '@frameflow/shared';
+import { Check, LayoutTemplate, SlidersHorizontal, Sparkles, Type, ArrowUpRight, Grid2x2, PaintBucket, Blend, ImagePlus } from 'lucide-react';
+import { CANVAS_PRESETS, LAYER_LIMITS, validateCanvasSize, type CanvasSize, type DesignLayer } from '@frameflow/shared';
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
-import { canvasResized } from '../../store/editorSlice';
+import { canvasBackgroundChanged, canvasResized, layerAdded } from '../../store/editorSlice';
+import { elementSelected } from '../../store/uiSlice';
+import { assets } from '../../lib/assets/runtimeAssets';
+import { backgroundLayer } from '../decomposition/importScene';
 import { fitRequested, tabChanged, type LeftTab } from '../../store/uiSlice';
 import { AIPanel } from '../ai/AIPanel';
 import { TextPanel } from '../text/TextPanel';
@@ -30,7 +33,7 @@ export function DesignPanel({ onNewDesign }: { onNewDesign: () => void }) {
     tabRefs.current[TABS[next].id]?.focus();
   }
   return (
-    <aside className="design-panel" aria-label="Design tools">
+    <aside className="design-panel" id="design-tools" aria-label="Design tools">
       <div className="panel-tabs" role="tablist" aria-label="Editor tools">
         {TABS.map(({ id, label, icon: Icon }, index) => (
           <button key={id} ref={(node) => { tabRefs.current[id] = node; }} role="tab" id={`tab-${id}`}
@@ -64,7 +67,7 @@ function CanvasSettings() {
   }
   return (
     <div className="canvas-settings">
-      <div className="section-intro"><span className="eyebrow">THE STARTING POINT</span><h2>Make room for your idea.</h2><p>Choose a format. Make it yours.</p></div>
+      <div className="section-intro"><span className="eyebrow">THE STARTING POINT</span><h2>Choose your canvas size.</h2><p>Start with a preset or set your own dimensions.</p></div>
       <div className="section-label"><h3>Canvas size</h3><span>Pixels</span></div>
       <div className="preset-list" aria-label="Canvas size presets">
         {CANVAS_PRESETS.map((preset) => {
@@ -74,7 +77,7 @@ function CanvasSettings() {
               onClick={() => { applySize(preset); setCustomOpen(false); setErrors({}); setDraft({ width: String(preset.width), height: String(preset.height) }); }}>
               <span className="preset-preview" aria-hidden="true"><span style={{ aspectRatio: `${preset.width} / ${preset.height}` }} /></span>
               <span className="preset-copy"><strong>{preset.name}</strong><span>{preset.width} × {preset.height}</span></span>
-              {selected ? <Check size={15} className="preset-check" /> : <span className="preset-ratio">{preset.ratio}</span>}
+              <span className="preset-meta"><span className="preset-ratio">{preset.ratio}</span>{selected && <Check size={15} className="preset-check" aria-hidden="true" />}</span>
             </button>
           );
         })}
@@ -102,7 +105,45 @@ function CanvasSettings() {
         <button className="button primary-button apply-button" type="submit">Apply size<ArrowUpRight size={15} /></button>
       </form>}
       <p role="status" className="sr-only">{message}</p>
+      <BackgroundSettings />
       <div className="design-note"><span className="eyebrow">A FRAME, NOT A LIMIT</span><p>You can change your canvas size at any time.</p></div>
     </div>
   );
+}
+
+const BACKGROUND_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+/** Transparent or a solid colour on the canvas itself; a gradient or an uploaded picture as a locked bottom layer. */
+function BackgroundSettings() {
+  const dispatch = useAppDispatch();
+  const variant = useAppSelector(selectActiveVariant);
+  const [error, setError] = useState('');
+  const upload = useRef<HTMLInputElement>(null);
+  const { width, height, backgroundColor, transparent } = variant.canvas;
+  const full = (variant.layers?.length ?? 0) >= LAYER_LIMITS.maxLayers;
+  const timestamp = () => new Date().toISOString();
+  const addBottom = (layer: DesignLayer) => { dispatch(layerAdded({ variantId: variant.id, layer, position: 'bottom', timestamp: timestamp() })); dispatch(elementSelected(layer.id)); };
+  const gradient = () => addBottom({ id: `layer-${crypto.randomUUID()}`, type: 'shape', name: 'Background gradient', shapeType: 'rectangle', x: 0, y: 0, width, height, rotation: 0, opacity: 1, visible: true, locked: true,
+    fill: backgroundColor, gradient: { from: backgroundColor, to: '#d9e6df', angle: 90 }, radius: 0 });
+  const image = async (file?: File) => {
+    setError('');
+    if (!file) return;
+    if (!BACKGROUND_TYPES.includes(file.type) || file.size > 25 * 1024 * 1024) { setError('Choose a PNG, JPEG or WebP image up to 25 MB.'); return; }
+    const id = `background-${crypto.randomUUID()}`;
+    try { await assets.putAsset(id, file); } catch { setError('This image could not be saved in your browser. Try a smaller one.'); return; }
+    addBottom(backgroundLayer(`layer-${crypto.randomUUID()}`, id, width, height, 'Background image'));
+  };
+  return <section className="background-settings" aria-label="Background">
+    <div className="section-label"><h3>Background</h3><span>{transparent ? 'Transparent' : backgroundColor.toUpperCase()}</span></div>
+    <div className="background-options">
+      <button className={`button ${transparent ? 'is-selected' : ''}`} aria-pressed={Boolean(transparent)} onClick={() => dispatch(canvasBackgroundChanged({ variantId: variant.id, transparent: true, timestamp: timestamp() }))}><Grid2x2 size={14} />Transparent</button>
+      <label className={`button background-colour ${transparent ? '' : 'is-selected'}`}><PaintBucket size={14} />Solid colour
+        <input type="color" aria-label="Background colour" value={backgroundColor.toLowerCase()} onChange={e => dispatch(canvasBackgroundChanged({ variantId: variant.id, transparent: false, color: e.target.value, timestamp: timestamp() }))}
+          onClick={() => { if (transparent) dispatch(canvasBackgroundChanged({ variantId: variant.id, transparent: false, timestamp: timestamp() })); }} /></label>
+      <button className="button" disabled={full} onClick={gradient}><Blend size={14} />Add gradient</button>
+      <button className="button" disabled={full} onClick={() => upload.current?.click()}><ImagePlus size={14} />Add image</button>
+      <input ref={upload} type="file" accept={BACKGROUND_TYPES.join(',')} hidden aria-label="Background image" onChange={e => { void image(e.target.files?.[0]); e.target.value = ''; }} />
+    </div>
+    <p className="size-help">{transparent ? 'Exports as a PNG with a transparent background.' : 'A gradient or image goes behind all your layers; select it to change it.'}</p>
+    {error && <p className="field-error" role="alert">{error}</p>}
+  </section>;
 }

@@ -103,6 +103,8 @@ test('mocked generation previews before one atomic apply, preserves exact editab
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await openAI(page);
+  await expect(page.locator('.event-fields summary')).toBeInViewport({ ratio: 1 });
+  await expect(page.getByLabel('Event eyebrow', { exact: true })).toHaveAccessibleDescription('Small text above the main title.');
   const original = await existingDesign(page);
   const response = await mockImage(page);
   let requests = 0; let body: GenerateRequest | undefined;

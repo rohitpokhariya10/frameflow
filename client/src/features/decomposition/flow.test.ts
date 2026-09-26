@@ -14,6 +14,7 @@ describe('presentation flow', () => {
     expect(flowStep(job({ state: 'needs_review', phase: 5, review: { gate: 'alpha-review', code: 'x', message: '', actions: [], artifactIds: [] } }))).toBe('edges');
     expect(flowStep(job({ state: 'completed', phase: 6 }))).toBe('ready');
     expect(flowStep(job({ state: 'failed', phase: 3 }))).toBe('error');
+    expect(flowStep(job({ state: 'failed', phase: 3, error: { code: 'TARGET_LIMIT', message: '', retryable: true }, reviewSubmission: { expectedRevision: 1, action: 'save-proposals', targets: [] } }))).toBe('review');
     expect(flowStep(job({ state: 'needs_review', phase: 3, review: { code: 'SUBMISSION_UNKNOWN', message: '', actions: [], artifactIds: [] } }))).toBe('error');
     expect(stepperIndex(job({ state: 'running', phase: 1 }))).toBe(1);
     expect(stepperIndex(job({ state: 'queued', phase: 3, reviewSubmission: { expectedRevision: 1, action: 'approve-proposals', targets: [] } }))).toBe(3);
@@ -49,4 +50,8 @@ describe('presentation flow', () => {
     expect(friendlyError({ state: 'failed', error: { code: 'PROVIDER_CREDITS', message: 'x', retryable: false } }).canRetry).toBe(false);
     expect(readySummary({ layers: [{ type: 'background' }, { type: 'image' }, { type: 'text' }, { type: 'text' }, { type: 'shape' }] } as never)).toEqual({ editable: 4, text: 2, shapes: 1, images: 1, background: true });
   });
+});
+
+it('never reports a provisional AI selection as looking right', () => {
+  expect(selectionStatus({ provisional: true, qualityTier: 'PASS', qualityChecks: [] })).toMatchObject({ tone: 'check', title: 'Check this selection', details: ['AI found a possible selection. Check it and fix any missing or extra areas.'] });
 });

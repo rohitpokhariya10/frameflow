@@ -3,25 +3,39 @@
  * (DECOMP_E2E_REPLAY_DIR + DECOMP_E2E_REPLAY_JOB), or a synthetic poster that mirrors live layerize geometry.
  */
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import Database from 'better-sqlite3';
 import sharp from 'sharp';
-import { DecompositionRepository } from './repository.js';
-import { ArtifactStore } from './artifactStore.js';
+import type { ArtifactRecord, JobRecord, SourceAsset } from './repository.js';
 import type { CachedInference } from './context.js';
 import type { ProviderLayerMetadata } from './providers/adapters.js';
 
 export type Replay = { source: Buffer; outputs: Buffer[]; layers: ProviderLayerMetadata[]; requestId: string };
 
 async function replayFrom(dir: string, jobId: string): Promise<Replay> {
-  const repo = new DecompositionRepository(dir), store = new ArtifactStore(dir, repo);
+  // Evidence may be a live data directory: never run migrations, insert owners or change pragmas there.
+  const db = new Database(resolve(dir, 'decomposition.sqlite'), { readonly: true, fileMustExist: true });
+  const record = <T>(table: 'decomposition_jobs' | 'source_assets' | 'artifacts', id: string): T | undefined => {
+    const row = db.prepare(`SELECT json FROM ${table} WHERE id=?`).get(id) as { json: string } | undefined;
+    return row ? JSON.parse(row.json) as T : undefined;
+  };
+  const artifactBytes = async (id: string) => {
+    const artifact = record<ArtifactRecord>('artifacts', id);
+    if (!artifact || artifact.retentionState === 'deleted' || !/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+\.[a-z0-9]+$/.test(artifact.storageKey)) throw new Error(`Replay artifact ${id} is unavailable.`);
+    const bytes = await readFile(resolve(dir, 'artifacts', artifact.storageKey));
+    if (bytes.length !== artifact.bytes || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) throw new Error(`Replay artifact ${id} failed integrity verification.`);
+    return bytes;
+  };
   try {
-    const job = repo.getJob(jobId);
+    const job = record<JobRecord>('decomposition_jobs', jobId);
     const cached = job?.data.seedreamInference as CachedInference | undefined;
     if (!job || !cached?.layers) throw new Error(`Job ${jobId} has no cached Seedream discovery to replay.`);
-    const source = repo.getSource(job.sourceId)!;
+    const source = record<SourceAsset>('source_assets', job.sourceId)!;
     const outputs: Buffer[] = [];
-    for (const id of cached.artifactIds) outputs.push(await store.read(repo.getArtifact(id)!));
-    return { source: await store.read(repo.getArtifact(source.masterArtifactId)!), outputs, layers: cached.layers, requestId: cached.requestId };
-  } finally { repo.close(); }
+    for (const id of cached.artifactIds) outputs.push(await artifactBytes(id));
+    return { source: await artifactBytes(source.masterArtifactId), outputs, layers: cached.layers, requestId: cached.requestId };
+  } finally { db.close(); }
 }
 
 async function crop(width: number, height: number, fill: string, inset = 0.06) {

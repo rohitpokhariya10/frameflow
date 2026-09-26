@@ -1,4 +1,4 @@
-import type { DecompositionCapabilities, DecompositionClientContext, DecompositionJobSummary, DecompositionManifest, DecompositionOptions, DecompositionReview } from '@frameflow/shared';
+import type { DecompositionCapabilities, DecompositionClientContext, DecompositionJobSummary, DecompositionManifest, DecompositionOptions, DecompositionReview, DecompositionStroke, DetectedLayerCutout } from '@frameflow/shared';
 
 const base = '/api/decomposition';
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -21,6 +21,8 @@ export const decompositionApi = {
   cancel: (id: string) => request<DecompositionJobSummary>(`/jobs/${encodeURIComponent(id)}/cancel`, json({})),
   retry: (id: string, expectedRevision: number) => request<DecompositionJobSummary>(`/jobs/${encodeURIComponent(id)}/retry`, json({ expectedRevision })),
   remove: (id: string) => request(`/jobs/${encodeURIComponent(id)}/delete`, json({})),
+  /** A detected layer left for later, cut from the original image with its detected area (no AI). */
+  cutout: (id: string, targetId: string, strokes: DecompositionStroke[] = []) => request<DetectedLayerCutout>(`/jobs/${encodeURIComponent(id)}/detected/${encodeURIComponent(targetId)}/cutout`, json({ strokes })),
   result: (id: string) => request<DecompositionManifest>(`/jobs/${encodeURIComponent(id)}/result`),
 };
 export const artifactUrl = (id: string) => `${base}/artifacts/${encodeURIComponent(id)}`;

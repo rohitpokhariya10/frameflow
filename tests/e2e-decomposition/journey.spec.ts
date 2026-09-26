@@ -6,7 +6,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
  * A non-technical customer's journey through "Image to layers", against the isolated E2E stack (no provider key;
  * deterministic fake discovery/segmentation). Screenshots of each state land in artifacts/decomposition/ux/.
  */
-const shots = 'artifacts/decomposition/ux';
+const shots = process.env.DECOMP_E2E_SHOTS ?? 'artifacts/decomposition/ux';
 const data = () => process.env.DECOMP_E2E_DATA!;
 const uploadImage = () => join(data(), 'upload-source.png');
 type FakeCall = { model: string; points: number; box: boolean };
@@ -81,7 +81,23 @@ test('upload → processing → review layers: combine, split, rename, remove, c
   const names = await page.locator('.ws-layer-name').allInnerTexts();
   const person = names.find(n => /woman|person/i.test(n))!, phone = names.find(n => /phone/i.test(n) && !/woman|person/i.test(n))!;
   const headline = names.find(n => /PRO|headline/i.test(n) && n !== person && n !== phone)!;
+  const removable = names.find(n => /signature|footer|bar/i.test(n))!;
   expect([person, phone, headline].every(Boolean)).toBe(true);
+
+  // Real posters can contain more discoveries than a job may keep. Resolve the count through the real controls
+  // before exercising split (which adds a kept layer), preserving the journey's image/text/type examples.
+  const ambiguousNames = await page.locator('.ws-layer').filter({ hasText: 'Choose type' }).locator('.ws-layer-name').allInnerTexts();
+  const protectedNames = new Set([person, phone, headline, removable, ambiguousNames[0]]);
+  const keptRows = page.locator('.ws-layer[data-choice="add"]');
+  const maxObjects = (await (await page.request.get('/api/decomposition/capabilities')).json() as { limits: { maxObjects: number } }).limits.maxObjects;
+  for (const name of names.filter(name => !protectedNames.has(name))) {
+    if (await keptRows.count() <= maxObjects) break;
+    const row = layerRow(page, name);
+    if (await row.getByRole('checkbox').isDisabled()) continue;
+    await row.locator('.ws-layer-main').click();
+    await page.getByRole('radio', { name: 'Remove', exact: true }).click();
+  }
+  expect(await keptRows.count()).toBeLessThanOrEqual(maxObjects);
 
   // Selecting a layer highlights it in the preview; arrow keys move through the list.
   await layerRow(page, person).locator('.ws-layer-main').click();
@@ -117,14 +133,13 @@ test('upload → processing → review layers: combine, split, rename, remove, c
   await layerRow(page, headline).locator('.ws-layer-main').click();
   await page.getByLabel('Layer name').fill('PRO');
   await expect(layerRow(page, /^PRO$/)).toHaveCount(1);
-  const removable = names.find(n => /signature|footer|bar/i.test(n))!;
   await layerRow(page, removable).locator('.ws-layer-main').click();
   await page.getByRole('radio', { name: 'Remove' }).click();
   await expect(layerRow(page, removable)).toContainText('Removed');
 
   // An ambiguous layer blocks Continue until its type is chosen.
   const continueButton = page.getByRole('button', { name: 'Continue' });
-  const ambiguous = page.locator('.ws-layer').filter({ hasText: 'Choose type' }).first();
+  const ambiguous = page.locator('.ws-layer[data-choice="add"]').filter({ hasText: 'Choose type' }).first();
   await expect(ambiguous).toBeVisible();
   await expect(continueButton).toBeDisabled();
   await expect(page.locator('.ws-footer-status')).toContainText('Choose a type for');
@@ -132,6 +147,10 @@ test('upload → processing → review layers: combine, split, rename, remove, c
   await expect(page.getByText('AI wasn\'t sure what this is. Choose a type to continue.')).toBeVisible();
   await page.screenshot({ animations: 'disabled', path: `${shots}/03c-choose-type.png` });
   await page.getByRole('radio', { name: 'Text' }).click();
+  while (await ambiguous.count()) {
+    await ambiguous.locator('.ws-layer-main').click();
+    await page.getByRole('radio', { name: 'Text' }).click();
+  }
   await expect(continueButton).toBeEnabled();
 
   // Reload: the choices come back (resume from the same job and draft).
@@ -141,7 +160,7 @@ test('upload → processing → review layers: combine, split, rename, remove, c
   await expect(layerRow(page, 'Woman with phone')).toHaveCount(1);
   await expect(layerRow(page, /^PRO$/)).toHaveCount(1);
   await expect(layerRow(page, removable)).toContainText('Removed');
-  await expect(page.locator('.ws-layer').filter({ hasText: 'Choose type' })).toHaveCount(0);
+  await expect(page.locator('.ws-layer[data-choice="add"]').filter({ hasText: 'Choose type' })).toHaveCount(0);
 
   // "Save for later" stores the choices on the server (any browser or device can continue), clicked once.
   await clickOnce(page, page.getByRole('button', { name: 'Save for later' }));
@@ -222,12 +241,13 @@ test('continue → refine selection with the brush and AI refine → check edges
   // Ready.
   await expect(page.getByRole('heading', { name: 'Your editable design is ready' })).toBeVisible({ timeout: 60_000 });
   const stats = page.locator('.ws-ready-stats');
-  await expect(stats).toContainText('editable layers'); await expect(stats).toContainText('background');
+  await expect(stats).toContainText('editable layers');
   await expectPlainLanguage(page);
   await page.getByRole('button', { name: 'Review layers' }).click();
   await expect(page.getByRole('list', { name: 'Layers in your design' })).toContainText('Woman with phone');
   await page.screenshot({ animations: 'disabled', path: `${shots}/07-ready.png` });
-  await page.getByRole('button', { name: 'Open in editor' }).click();
+  await expect(page.getByRole('region', { name: 'Open on blank canvas' })).toBeVisible();
+  await page.getByRole('region', { name: 'Keep original background' }).getByRole('button', { name: 'Keep original background' }).click();
   await expect(workspace(page)).toBeHidden();
 
   // Editor: the layers panel, image transform, shape styling and text conversion.

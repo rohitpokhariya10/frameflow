@@ -45,7 +45,8 @@ export async function exportPng(variant: DesignVariant): Promise<Blob> {
       } catch { throw new Error(`Layer "${layer.name}" could not load for export. Delete or replace it, then retry.`); }
     }
     group = new Group({ listening: false });
-    group.add(new Rect({ width: canvas.width, height: canvas.height, fill: canvas.backgroundColor }));
+    // A transparent canvas exports with real alpha: nothing is painted behind the layers.
+    if (!canvas.transparent) group.add(new Rect({ width: canvas.width, height: canvas.height, fill: canvas.backgroundColor }));
     if (image && background) group.add(new KonvaImage({ image, ...imagePlacement(
       { width: image.naturalWidth, height: image.naturalHeight }, canvas, background.fit, background.focalPoint,
     ) }));
@@ -53,7 +54,7 @@ export async function exportPng(variant: DesignVariant): Promise<Blob> {
       if (!layer.visible) continue;
       const node = new Group({ x: layer.x, y: layer.y, rotation: layer.rotation, opacity: layer.opacity });
       if (layer.type === 'image') node.add(new KonvaImage({ image: bitmaps.get(layer.assetId)!, width: layer.width, height: layer.height }));
-      else if (layer.shapeType === 'ellipse') node.add(new Ellipse({ x: layer.width / 2, y: layer.height / 2, radiusX: layer.width / 2, radiusY: layer.height / 2, ...shapeFillProps(layer), ...strokeProps(layer) }));
+      else if (layer.shapeType === 'ellipse') node.add(new Ellipse({ x: layer.width / 2, y: layer.height / 2, radiusX: layer.width / 2, radiusY: layer.height / 2, ...shapeFillProps(layer, 'center'), ...strokeProps(layer) }));
       else node.add(new Rect({ width: layer.width, height: layer.height, cornerRadius: cornerRadius(layer), ...shapeFillProps(layer), ...strokeProps(layer) }));
       group.add(node);
     }
