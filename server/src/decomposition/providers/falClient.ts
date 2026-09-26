@@ -9,12 +9,12 @@ import type { NetworkPolicy } from './network.js';
 export type ProviderRequestRecord = {
   id: string; jobId: string; stepId: string; endpoint: string; inputHash: string; adapterVersion: string;
   status: 'SUBMITTING' | 'SUBMISSION_UNKNOWN' | 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
-  providerRequestId?: string; seed?: number; output?: unknown; nextPollAt: number; attempts: number;
+  providerRequestId?: string; seed?: number; sentSeed?: number; returnedSeed?: number; output?: unknown; nextPollAt: number; attempts: number;
   createdAt: number; updatedAt: number; diagnostic?: string;
 };
 export type ProviderRepository = {
   getProviderRequest(stepId: string, inputHash: string): ProviderRequestRecord | undefined;
-  reserveProviderRequest(input: { jobId: string; stepId: string; endpoint: string; inputHash: string; adapterVersion: string; seed?: number }, maxGlobalCalls: number, maxConcurrent: number): ProviderRequestRecord;
+  reserveProviderRequest(input: { jobId: string; stepId: string; endpoint: string; inputHash: string; adapterVersion: string; seed?: number; sentSeed?: number }, maxGlobalCalls: number, maxConcurrent: number): ProviderRequestRecord;
   updateProviderRequest(id: string, patch: Partial<ProviderRequestRecord>): unknown;
 };
 export type FalTransport = {
@@ -128,7 +128,7 @@ export class DurableFalClient {
     }
     if (!record) {
       const adapter = endpointRegistry[input.model];
-      record = this.repository.reserveProviderRequest({ jobId: input.jobId, stepId: input.stepId, endpoint: adapter.endpoint, adapterVersion: adapter.adapterVersion, inputHash: input.inputHash, seed: typeof input.input.seed === 'number' ? input.input.seed : undefined }, this.options.maxGlobalCalls, this.options.maxConcurrent ?? 2);
+      record = this.repository.reserveProviderRequest({ jobId: input.jobId, stepId: input.stepId, endpoint: adapter.endpoint, adapterVersion: adapter.adapterVersion, inputHash: input.inputHash, seed: typeof input.input.seed === 'number' ? input.input.seed : undefined, sentSeed: typeof input.input.seed === 'number' ? input.input.seed : undefined }, this.options.maxGlobalCalls, this.options.maxConcurrent ?? 2);
       // Persist SUBMITTING before contacting fal. Any crash after this point is ambiguous without an ID.
       try {
         const result = await this.transport.submit(record.endpoint, input.input);
@@ -164,7 +164,7 @@ export class DurableFalClient {
         return { state: 'pending', nextPollAt: record.nextPollAt, request: record };
       }
       const output = normalizeProviderOutput(input.model, await this.transport.result(record.endpoint, record.providerRequestId));
-      this.update(record, { status: 'COMPLETED', output, seed: output.seed ?? record.seed });
+      this.update(record, { status: 'COMPLETED', output, returnedSeed: output.seed, seed: output.seed ?? record.seed });
       return { state: 'completed', output, request: record };
     } catch (error) {
       const normalized = error instanceof ProviderError ? error : new ProviderError('PROVIDER_NETWORK', 'Provider lookup failed.', true);

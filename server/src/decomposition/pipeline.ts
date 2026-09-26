@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { deterministicProposalSeed, semanticDiscovery, semanticReview } from './phases/semanticPipeline.js';
+import { semanticDiscovery, semanticReview } from './phases/semanticPipeline.js';
 import { extractVisibleLayers } from './phases/extract.js';
 import { mockReviewObjects } from './providers/mock.js';
 import { validDecompositionReview, type DecompositionReview } from '@frameflow/shared';
@@ -75,14 +75,13 @@ export async function runPhase(context: PipelineContext) {
   const analysis = await context.artifact(String(job.data.analysisArtifactId));
   const transform = job.data.analysisTransform as ImageTransform;
   if (phase === 3) {
-    const seed = deterministicProposalSeed(source.workingMasterSha256, job.options);
-    context.job.data.qwenSeed = seed; context.save();
-    const result = await createLayerProposals(analysis, context.infer, 4, seed);
+    const result = await createLayerProposals(analysis, context.infer, 4);
+    const request = context.job.data.qwenRequest as { sentSeed?: number; effectiveInput?: { prompt?: string }; requestFingerprint?: string } | undefined;
     const saved: SavedProposal[] = [];
     for (const [i, proposal] of result.proposals.entries()) {
       const record = await context.put('qwen-proposal', proposal.rgba, `03-qwen/proposal-${seq(i)}.png`);
       const { id, label, width, height, registered, warnings } = proposal;
-      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed, prompt: null, promptNote: 'Qwen layered has no semantic text input here; target intent is persisted in job options.' } });
+      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed: request?.sentSeed, prompt: request?.effectiveInput?.prompt, requestFingerprint: request?.requestFingerprint, promptNote: 'Fixed image caption for discovery only; explicit target intent belongs to source SAM segmentation.' } });
     }
     context.job.data.proposals = saved;
     result.warnings.forEach((warning) => context.warn(warning));

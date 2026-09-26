@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { DecompositionReview, SemanticTarget } from '@frameflow/shared';
 import type { PipelineContext } from '../context.js';
 import { createTransform } from '../image/coordinates.js';
@@ -17,9 +17,6 @@ export type SemanticCandidate = {
   statistics: ReturnType<typeof measureMask>;
 };
 const json = (value: unknown) => Buffer.from(JSON.stringify(value, null, 2));
-export function deterministicProposalSeed(sourceHash: string, settings: unknown) {
-  return createHash('sha256').update(sourceHash + JSON.stringify(settings)).digest().readUInt32BE(0) & 0x7fffffff;
-}
 async function saveTrio(context: PipelineContext, master: Buffer, mask: Mask, alpha: Mask, base: string) {
   const revisionId = randomUUID();
   const ownership = await context.put('ownership-mask', await encodeMask(mask), `${base}-mask.png`);

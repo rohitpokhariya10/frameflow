@@ -14,7 +14,7 @@ export interface JobRecord {
 export interface Lease { workerId: string; fence: number; revision: number }
 export interface StepRecord { id: string; jobId: string; phase: number; objectId: string; inputHash: string; attempt: number; status: 'running' | 'completed' | 'failed' | 'skipped'; outputArtifactIds: string[]; leaseOwner?: string; leaseUntil: number; fence: number; createdAt: number; updatedAt: number }
 export interface ProviderRequestRecord {
-  id: string; jobId: string; stepId: string; endpoint: string; inputHash: string; adapterVersion: string; seed?: number;
+  id: string; jobId: string; stepId: string; endpoint: string; inputHash: string; adapterVersion: string; seed?: number; sentSeed?: number; returnedSeed?: number;
   status: 'SUBMITTING' | 'SUBMISSION_UNKNOWN' | 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED'; providerRequestId?: string;
   output?: unknown; nextPollAt: number; attempts: number; createdAt: number; updatedAt: number; diagnostic?: string;
 }
@@ -82,6 +82,16 @@ export class DecompositionRepository {
   }
   getJob(id: string, ownerId?: string) { const job = decode<JobRecord>(this.db.prepare('SELECT json FROM decomposition_jobs WHERE id=?').get(id)); return job && (!ownerId || job.ownerId === ownerId) ? job : undefined; }
   listJobs(ownerId: string) { return this.db.prepare('SELECT json FROM decomposition_jobs WHERE owner_id=? AND tombstoned_at IS NULL ORDER BY rowid DESC LIMIT 100').all(ownerId).map((row) => decode<JobRecord>(row)!); }
+  /** Completed Qwen outputs only; never reuse another owner's, expired, mock, or tombstoned work. */
+  findReusableQwen(ownerId: string, fingerprint: string, currentJobId: string): JobRecord | undefined {
+    return decode<JobRecord>(this.db.prepare(`SELECT json FROM decomposition_jobs
+      WHERE owner_id=? AND id!=? AND tombstoned_at IS NULL
+      AND json_extract(json,'$.expiresAt')>?
+      AND json_extract(json,'$.data.verificationMode')='live'
+      AND json_extract(json,'$.data.qwenInference.qwen.requestFingerprint')=?
+      AND json_extract(json,'$.data.qwenInference.qwen.sentSeed')=json_extract(json,'$.data.qwenInference.qwen.returnedSeed')
+      ORDER BY rowid DESC LIMIT 1`).get(ownerId, currentJobId, Date.now(), fingerprint));
+  }
   private persist(job: JobRecord) { this.db.prepare('UPDATE decomposition_jobs SET state=?,revision=?,phase=?,lease_owner=?,lease_until=?,fence=?,tombstoned_at=?,json=? WHERE id=?').run(job.state,job.revision,job.phase,job.leaseOwner ?? null,job.leaseUntil,job.fence,job.tombstonedAt ?? null,JSON.stringify(job),job.id); }
   updateJob(job: JobRecord, lease?: Lease) {
     return this.db.transaction(() => {
@@ -125,7 +135,7 @@ export class DecompositionRepository {
   steps(jobId:string){return this.db.prepare('SELECT json FROM decomposition_steps WHERE job_id=? ORDER BY phase,attempt').all(jobId).map((row)=>decode<StepRecord>(row)!);}
   getProviderRequest(stepId:string,inputHash:string){return decode<ProviderRequestRecord>(this.db.prepare('SELECT json FROM provider_requests WHERE step_id=? AND input_hash=?').get(stepId,inputHash));}
   providerRequests(jobId:string){return this.db.prepare('SELECT json FROM provider_requests WHERE job_id=?').all(jobId).map((row)=>decode<ProviderRequestRecord>(row)!);}
-  reserveProviderRequest(input:{jobId:string;stepId:string;endpoint:string;inputHash:string;adapterVersion:string;seed?:number},maxGlobalCalls:number,maxConcurrent:number):ProviderRequestRecord{
+  reserveProviderRequest(input:{jobId:string;stepId:string;endpoint:string;inputHash:string;adapterVersion:string;seed?:number;sentSeed?:number},maxGlobalCalls:number,maxConcurrent:number):ProviderRequestRecord{
     return this.db.transaction(()=>{const existing=this.getProviderRequest(input.stepId,input.inputHash);if(existing)return existing;const job=this.getJob(input.jobId);if(!job||job.cancelRequested||job.tombstonedAt)throw new DecompositionError('JOB_CANCELLED','Job cancelled.',409);const step=decode<StepRecord>(this.db.prepare('SELECT json FROM decomposition_steps WHERE id=? AND job_id=?').get(input.stepId,input.jobId));if(!step||job.state!=='running'||!job.leaseOwner||job.leaseUntil<=Date.now()||step.fence!==job.fence||step.leaseOwner!==job.leaseOwner)throw new DecompositionError('STALE_LEASE','A current worker lease is required before reserving inference.',409);if(job.deadlineAt<=Date.now())throw new DecompositionError('DEADLINE_EXCEEDED','Job active deadline exceeded.',408);const global=(this.db.prepare('SELECT calls_used FROM account_budget WHERE id=1').get() as {calls_used:number}).calls_used;if(job.callsUsed>=job.options.maxCalls||global>=maxGlobalCalls)throw new DecompositionError('CALL_BUDGET','The configured call reservation budget is exhausted.',409);const active=(this.db.prepare("SELECT COUNT(*) n FROM provider_requests WHERE status IN ('SUBMITTING','QUEUED','IN_PROGRESS')").get() as {n:number}).n;if(active>=maxConcurrent)throw new DecompositionError('MODEL_BUSY','The model request limit is occupied.',429,true);const now=Date.now();const request:ProviderRequestRecord={...input,id:randomUUID(),status:'SUBMITTING',nextPollAt:now,attempts:0,createdAt:now,updatedAt:now};this.db.prepare('INSERT INTO provider_requests VALUES(?,?,?,?,?,?)').run(request.id,input.jobId,input.stepId,input.inputHash,request.status,JSON.stringify(request));job.callsUsed++;this.persist(job);this.db.prepare('UPDATE account_budget SET calls_used=calls_used+1 WHERE id=1').run();return request;})();
   }
   private writeProvider(request:ProviderRequestRecord){this.db.prepare('UPDATE provider_requests SET status=?,json=? WHERE id=?').run(request.status,JSON.stringify(request),request.id);}

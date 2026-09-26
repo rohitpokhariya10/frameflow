@@ -1,6 +1,6 @@
 /** Verified against the linked fal model API pages on 2026-09-26. */
 export const endpointRegistry = {
-  qwen: { endpoint: 'fal-ai/qwen-image-layered', adapterVersion: '1', outputField: 'images', encoding: 'rgba-alpha' },
+  qwen: { endpoint: 'fal-ai/qwen-image-layered', adapterVersion: '2', outputField: 'images', encoding: 'rgba-alpha' },
   sam2: { endpoint: 'fal-ai/sam2/auto-segment', adapterVersion: '1', outputField: 'individual_masks', encoding: 'luminance' },
   sam3: { endpoint: 'fal-ai/sam-3-1/image', adapterVersion: '2', outputField: 'masks', encoding: 'luminance' },
   birefnet: { endpoint: 'fal-ai/birefnet/v2', adapterVersion: '1', outputField: 'image', encoding: 'luminance' },
@@ -15,6 +15,7 @@ export type NormalizedProviderOutput = {
   images: ProviderImage[];
   encoding: 'rgba-alpha' | 'luminance' | 'rgb';
   seed?: number;
+  prompt?: string;
   scores?: number[];
   /** Normalized cx,cy,w,h, NEVER pixel-space input boxes. */
   boxes?: [number, number, number, number][];
@@ -35,6 +36,10 @@ export type ProviderInputOptions = {
   maskWidth?: number;
   maskHeight?: number;
   prompt?: string;
+  negativePrompt?: string;
+  numInferenceSteps?: number;
+  guidanceScale?: number;
+  acceleration?: 'none' | 'regular' | 'high';
   highResolutionMatte?: boolean;
   numLayers?: number;
   maxMasks?: number;
@@ -71,7 +76,18 @@ export function buildProviderInput(model: Model, options: ProviderInputOptions):
   const input: ProviderInput = { image_url: imageUrl(options.imageUrl) };
   if (options.seed !== undefined && ['qwen', 'finegrain', 'flux'].includes(model)) input.seed = integer(options.seed, 0, 2147483647, 'seed');
   switch (model) {
-    case 'qwen': return { ...input, num_layers: integer(options.numLayers ?? 4, 1, 6, 'numLayers'), output_format: 'png', enable_safety_checker: true };
+    case 'qwen': {
+      const caption = options.prompt ?? 'An image containing foreground elements and a background.';
+      const negative = options.negativePrompt ?? '';
+      if (typeof caption !== 'string' || !caption.trim() || caption.length > 2000 || typeof negative !== 'string' || negative.length > 2000) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Qwen caption must be nonempty and prompts must be bounded.');
+      const guidance = options.guidanceScale ?? 5;
+      if (!Number.isFinite(guidance) || guidance < 1 || guidance > 20) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Qwen guidance must be between 1 and 20.');
+      const acceleration = options.acceleration ?? 'regular';
+      if (!['none', 'regular', 'high'].includes(acceleration)) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Invalid Qwen acceleration.');
+      return { ...input, prompt: caption.trim().normalize('NFC'), negative_prompt: negative.trim().normalize('NFC'), num_layers: integer(options.numLayers ?? 4, 1, 6, 'numLayers'),
+        num_inference_steps: integer(options.numInferenceSteps ?? 28, 1, 50, 'numInferenceSteps'), guidance_scale: guidance, acceleration,
+        output_format: 'png', enable_safety_checker: true, sync_mode: false };
+    }
     case 'sam2': return { ...input, output_format: 'png', points_per_side: 32, pred_iou_thresh: 0.88, stability_score_thresh: 0.95, min_mask_region_area: 0 };
     case 'sam3': {
       const width = integer(options.width, 1, 4096, 'width');
@@ -141,6 +157,10 @@ export function normalizeProviderOutput(model: Model, value: unknown, candidateC
   if (seed !== undefined) {
     if (!Number.isSafeInteger(seed) || (seed as number) < 0) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid provider seed.');
     output.seed = seed as number;
+  }
+  if (model === 'qwen' && source.prompt !== undefined && source.prompt !== null) {
+    if (typeof source.prompt !== 'string' || source.prompt.length > 16000) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid returned Qwen prompt.');
+    output.prompt = source.prompt;
   }
   if (model === 'sam3' && source.scores !== undefined) {
     if (!Array.isArray(source.scores) || source.scores.length !== list.length || source.scores.some(score => typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 1)) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid segmentation scores.');

@@ -6,16 +6,20 @@ export type InferenceRequest = {
   image: Buffer;
   mask?: Buffer;
   prompt?: string;
+  negativePrompt?: string;
+  numInferenceSteps?: number;
+  guidanceScale?: number;
+  acceleration?: ProviderInputOptions['acceleration'];
   points?: ProviderInputOptions['points'];
   boxes?: ProviderInputOptions['boxes'];
   numLayers?: number;
   maxMasks?: number;
   seed?: number;
   highResolutionMatte?: boolean;
-  /** Stable phase/object/attempt identity, included in the durable execution hash. */
+  /** Stable phase/object identity for the step record; excluded from inference cache identity. */
   key?: string;
   /** Local provenance only; never sent as an undocumented fal input field. */
   transform?: ImageTransform;
 };
-export type InferenceOutput = Buffer[] & { scores?: number[]; boxes?: [number, number, number, number][]; requestId?: string };
+export type InferenceOutput = Buffer[] & { scores?: number[]; boxes?: [number, number, number, number][]; requestId?: string; seed?: number };
 export type Infer = (model: Model, request: InferenceRequest) => Promise<InferenceOutput>;

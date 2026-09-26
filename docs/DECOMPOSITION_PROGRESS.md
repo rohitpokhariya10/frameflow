@@ -225,3 +225,29 @@ SAM 01a0dc67-8e6f-7190-9aff-b794a3f982af, 01a0dc67-b7e5-7ad1-b37b-9c4665cea5d7,
 Original artifacts retained. Browser screenshot in ignored artifacts/decomposition/source-semantic/.
 45 focused tests now pass, including semantic partial-result failure preserving prior mask.
 Next user request is Qwen reproducibility investigation; keep this source-driven architecture.
+
+## 2026-09-26 — Qwen reproducibility (follow-up)
+
+Read historical jobs before changing requests. Eleven Qwen records across four source hashes:
+legacy calls omitted seed; same-source provider PNG hashes were identical, but returned seeds
+and proposal hashes differed. Poster legacy seeds: 275634882 / 1365631058 / 1344302420.
+Latest poster seed sent/returned: 2096359909. Recreated all four original→master→analysis paths
+twice; source, master and input hashes exactly matched history. No encoding nondeterminism found.
+Old returned caption was discarded; historical provider model revision is unknown. Consequently
+seed is the proven differing parameter, without claiming all provider-side defaults were identical.
+
+Added explicit Qwen caption/negative prompt/steps/guidance/acceleration/output settings, canonical
+SHA-256 effective-request seed/fingerprint, independent sent/returned seeds and returned-caption
+persistence, sanitized request/result logs, and same-owner cross-job verified artifact reuse.
+Cached files are copied into the new job; expired/tombstoned/other-owner/mock results are excluded.
+Pending differently fingerprinted requests block new billing; known matching IDs resume.
+SAM 3.1 semantic ownership, boundary alpha and original RGB extraction remain intact.
+
+Evidence, full parameter comparison and limits: docs/QWEN_REPRODUCIBILITY.md.
+Local ignored reports: artifacts/decomposition/qwen-reproducibility/{historical-comparison,input-verification}.json.
+56 focused tests passed (12 files), root typecheck, focused lint and root build passed; final
+cache-metadata consistency assertion rerun passed all 11 reproducibility tests. No additional
+paid calls for this investigation; no same-seed two-call provider equality claim.
+Existing poster remains phase5/needs_review, five total calls, final 1200×1500 mask/alpha/overlay
+saved and visually inspected. Source-driven hardening checkpoint pushed separately as 89f14c0.
+Next: user inspects/approves existing Phase-5 target. No Phase 7+ implementation or inference.

@@ -8,7 +8,7 @@ import { DecompositionRepository } from '../repository.js';
 import { ArtifactStore } from '../artifactStore.js';
 import { PipelineContext } from '../context.js';
 import { readDecompositionConfig, normalizeDecompositionOptions } from '../config.js';
-import { semanticDiscovery, semanticReview, saveTrio, deterministicProposalSeed } from './semanticPipeline.js';
+import { semanticDiscovery, semanticReview, saveTrio } from './semanticPipeline.js';
 import { recoverSemanticOwnership, semanticTarget, scoreSemanticMask, proposalSeeds } from './semanticOwnership.js';
 import { encodeMask, decodeMask, emptyMask, unionMasks, measureMask } from '../image/masks.js';
 import type { Infer } from '../providers/inference.js';
@@ -89,7 +89,6 @@ it('identical provider input reuses durable outputs across step keys, preserving
     const context=new PipelineContext(f.context.job,f.repo,f.store,f.context.config,provider,'worker');
     const first=await context.infer('sam3',{image:f.master,prompt:'object',key:'first'});const second=await context.infer('sam3',{image:f.master,prompt:'object',key:'retry'});
     expect(advance).toHaveBeenCalledTimes(1);expect(second[0]).toEqual(first[0]);expect(second.scores).toEqual([0.9]);expect(second.boxes).toEqual([[0.5,0.5,0.4,0.7]]);
-    expect(deterministicProposalSeed('hash',{target:'object'})).toBe(deterministicProposalSeed('hash',{target:'object'}));
     expect(measureMask(f.full).area).toBeGreaterThan(measureMask(f.torso).area);
   }finally{await f.cleanup();}
 });
