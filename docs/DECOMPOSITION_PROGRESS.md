@@ -251,3 +251,44 @@ paid calls for this investigation; no same-seed two-call provider equality claim
 Existing poster remains phase5/needs_review, five total calls, final 1200×1500 mask/alpha/overlay
 saved and visually inspected. Source-driven hardening checkpoint pushed separately as 89f14c0.
 Next: user inspects/approves existing Phase-5 target. No Phase 7+ implementation or inference.
+## 2026-09-26 — Scene-graph plan, Step 1–3 checkpoint: Seedream discovery + provider selection
+
+Scope for this checkpoint: Seedream layer discovery adapter, normalized proposal contracts,
+provider selection/fallback, focused tests. Proposal-review, classification, SAM, alpha and
+scene-graph stages are NOT changed by this checkpoint.
+
+Endpoint `bytedance/seedream/v5/pro/layerize` (fal API page verified 2026-09-26): input
+`image_url`, optional `prompt`, `image_size` (auto…auto_2K), `enhance_prompt_mode`,
+`enable_safety_checker`, `sync_mode`; 512–6000 px sides, aspect 1/16–16; no seed. Output
+`layers[]` {image, z_index, bounding_box{absolute px LTRB, normalized 0–1000}, name, description};
+base layer is z_index 0 without bbox/name. `images[]` duplicates layers and is ignored.
+Undocumented: whether non-base layers are full-canvas or bbox crops — both are handled.
+
+Implemented:
+- `providers/adapters.ts`: `seedream` registry entry, wire builder (no seed ever sent),
+  `layers[]` normalization (z-index uniqueness, bounded/sanitized name/description, box validation,
+  ≤17 layers, safety refusal preserved).
+- `providers/seedreamRequest.ts`: canonical request fingerprint (`seedream-layerize-v1`, source SHA,
+  analysis-input SHA, exact wire settings); `deterministic: false` recorded explicitly.
+- `context.ts`: Seedream job-level cache, same-owner cross-job reuse (`findReusableSeedream`, files copied
+  into the new job), layer metadata persisted in the inference cache and durable provider record, sanitized
+  request/result logs. Donor-copy logic shared with Qwen (Qwen behaviour unchanged).
+- `phases/discovery.ts`: `DiscoveryProposal` contract; Seedream registration onto the analysis canvas
+  (full-canvas or bbox-placed crop; different-aspect canvases stay unregistered, never stretched);
+  base layer kept separately (future BACKGROUND element, not fed to SAM); ≤12 proposals (review limit),
+  back-to-front ids; small analysis images uniformly upscaled to 512 px minimum.
+- Provider plan fixed per job (`data.discoveryPlan`): live default Seedream → Qwen fallback
+  (`DECOMP_DISCOVERY_PROVIDER`, `DECOMP_DISCOVERY_FALLBACK`); mock mode and jobs that already attempted
+  Qwen stay on Qwen. Fallback only after unavailable/schema/empty/rejected/network/deadline/unusable
+  results; never after SUBMISSION_UNKNOWN, auth, credits, rate limit, safety, cancel or stale lease.
+- Phase 3 persists `data.discovery` (DiscoverySummary: provider, model, attempts, fallbackFrom, fingerprint,
+  request id, base layer) and extended optional `ProposalSummary` fields. Seedream artifacts under
+  `03-discovery/`; Qwen keeps `03-qwen/`. Historical proposals without new fields still summarize.
+
+Verification: 67 focused tests (8 files) pass, including new `providers/seedream.test.ts`,
+`phases/discovery.test.ts`, `discoveryPhase.test.ts`. Root typecheck, focused lint, root build pass.
+Full decomposition suite: 3 failures pre-exist without this change (reviewFlow phase-5, router 503,
+semanticSource manual correction — reproduced on a copy with these changes removed) plus an
+intermittent `repository.test.ts` lease-timing flake (1 ms lease). No paid calls made.
+
+Next (not started): Step 4–5 proposal review uses provider labels/roles and base layer as background target.

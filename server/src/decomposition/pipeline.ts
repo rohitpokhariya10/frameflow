@@ -5,10 +5,11 @@ import { decodeRgba } from './image/extract.js';
 import { semanticDiscovery, semanticReview } from './phases/semanticPipeline.js';
 import { extractVisibleLayers } from './phases/extract.js';
 import { mockReviewObjects } from './providers/mock.js';
-import { validDecompositionReview, type DecompositionReview } from '@frameflow/shared';
-import type { PipelineContext } from './context.js';
+import { validDecompositionReview, type DecompositionReview, type DiscoverySummary } from '@frameflow/shared';
+import type { CachedInference, PipelineContext } from './context.js';
 import { createAnalysis } from './phases/analysis.js';
-import { createLayerProposals, type LayerProposal } from './phases/proposals.js';
+import { type LayerProposal } from './phases/proposals.js';
+import { discoverLayers, resolveDiscoveryPlan, DISCOVERY_CONTRACT_VERSION } from './phases/discovery.js';
 import { segmentObjects } from './phases/segmentation.js';
 import { refineObjects, type RefinementObject } from './phases/refinement.js';
 import { applyBrush, decodeMask, encodeMask, mapMaskToNative, measureMask, overlapMasks, unionMasks, emptyMask, resizeMask, validateGuidance } from './image/masks.js';
@@ -17,7 +18,7 @@ import type { ImageTransform } from './image/coordinates.js';
 import { overlayMasks } from './image/overlay.js';
 import { DecompositionError } from './errors.js';
 
-interface SavedProposal { id: string; label: string; artifactId: string; width: number; height: number; registered: boolean; warnings: string[] }
+interface SavedProposal { id: string; label: string; artifactId: string; width: number; height: number; registered: boolean; warnings: string[]; [field: string]: unknown }
 interface SavedCandidate {
   id: string; label: string; source?: string; sourceCandidateIds?: string[]; proposalId?: string; maskArtifactId: string; analysisMaskArtifactId: string; overlayArtifactId: string;
   selected: boolean; warnings: string[]; statistics: ReturnType<typeof measureMask>; proposalMatches: unknown[];
@@ -85,18 +86,34 @@ export async function runPhase(context: PipelineContext) {
   const analysis = await context.artifact(String(job.data.analysisArtifactId));
   const transform = job.data.analysisTransform as ImageTransform;
   if (phase === 3) {
-    const result = await createLayerProposals(analysis, context.infer, 4);
-    const request = context.job.data.qwenRequest as { sentSeed?: number; effectiveInput?: { prompt?: string }; requestFingerprint?: string } | undefined;
+    const plan = resolveDiscoveryPlan(job.data, context.config);
+    job.data.discoveryPlan = plan; context.save();
+    const result = await discoverLayers(analysis, context.infer, { plan, count: 4 });
+    const qwen = result.provider === 'qwen' ? context.job.data.qwenRequest as { sentSeed?: number; effectiveInput?: { prompt?: string }; requestFingerprint?: string } | undefined : undefined;
+    const seedream = result.provider === 'seedream' ? (context.job.data.seedreamInference as CachedInference | undefined)?.seedream : undefined;
+    const requestFingerprint = qwen?.requestFingerprint ?? seedream?.requestFingerprint;
+    // Historical Qwen artifact paths are kept so existing inspection and exports keep working.
+    const dir = result.provider === 'qwen' ? '03-qwen' : '03-discovery';
     const saved: SavedProposal[] = [];
     for (const [i, proposal] of result.proposals.entries()) {
-      const record = await context.put('qwen-proposal', proposal.rgba, `03-qwen/proposal-${seq(i)}.png`);
-      const alpha = await context.put('qwen-alpha', await encodeMask(proposal.alpha), `03-qwen/proposal-${seq(i)}-alpha.png`);
-      const { id, label, width, height, registered, warnings } = proposal;
-      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ alphaArtifactId: alpha.artifactId, bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed: request?.sentSeed, prompt: request?.effectiveInput?.prompt, requestFingerprint: request?.requestFingerprint, promptNote: 'Fixed image caption for discovery only; explicit target intent belongs to source SAM segmentation.' } });
+      const record = await context.put(`${result.provider}-proposal`, proposal.rgba, `${dir}/proposal-${seq(i)}.png`);
+      const alpha = await context.put(`${result.provider}-alpha`, await encodeMask(proposal.alpha), `${dir}/proposal-${seq(i)}-alpha.png`);
+      const { id, label, width, height, registered, warnings, provider, providerModel, labelSource, description, zIndex, providerOrder, providerBbox, sourceRegistration, bounds, coverage, metadataWarnings } = proposal;
+      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ alphaArtifactId: alpha.artifactId, bounds, coverage, seed: qwen?.sentSeed, prompt: qwen?.effectiveInput?.prompt, requestFingerprint,
+        provider, providerModel, labelSource, description, zIndex, providerOrder, providerBbox, sourceRegistration, metadataWarnings, sourceHash: source.workingMasterSha256, providerRequestId: result.providerRequestId,
+        revision: 1, contractVersion: DISCOVERY_CONTRACT_VERSION, rgbAuthority: 'discovery-only',
+        promptNote: 'Fixed discovery request; explicit target intent belongs to source SAM segmentation.' } });
     }
     context.job.data.proposals = saved;
+    const base = result.baseLayer && await context.put(`${result.provider}-base`, result.baseLayer.rgba, `${dir}/base.png`);
+    const discovery: DiscoverySummary = { contractVersion: DISCOVERY_CONTRACT_VERSION, provider: result.provider, providerModel: result.providerModel, ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}),
+      requestFingerprint, providerRequestId: result.providerRequestId, deterministic: result.deterministic, sourceHash: source.workingMasterSha256, attempts: result.attempts, warnings: result.warnings,
+      ...(base && result.baseLayer ? { baseLayer: { artifactId: base.artifactId, width: result.baseLayer.width, height: result.baseLayer.height, zIndex: result.baseLayer.zIndex, name: result.baseLayer.name, description: result.baseLayer.description, sourceRegistration: result.baseLayer.sourceRegistration } } : {}) };
+    context.job.data.discovery = discovery;
     result.warnings.forEach((warning) => context.warn(warning));
-    await context.put('proposal-metadata', json({ proposals: saved, warnings: result.warnings, provenance: context.job.data.inferences }), '03-qwen/proposals.json', 'application/json');
+    console.info(JSON.stringify({ event: 'decomposition_discovery', jobId: job.id, phase: 3, provider: result.provider, providerModel: result.providerModel, fallbackFrom: result.fallbackFrom,
+      providerRequestId: result.providerRequestId, requestFingerprint, proposalCount: saved.length, usableCount: saved.filter(p => p.registered && !p.warnings.length).length, attempts: result.attempts.map(a => ({ provider: a.provider, outcome: a.outcome, code: a.code })), callsUsed: job.callsUsed }));
+    await context.put('proposal-metadata', json({ discovery, proposals: saved, warnings: result.warnings, provenance: context.job.data.inferences }), `${dir}/proposals.json`, 'application/json');
     await initializeProposalReview(context, master);
     context.finish(3, 'Review discovered layers before source segmentation'); return;
   }

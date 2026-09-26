@@ -6,7 +6,7 @@ import { DecompositionError } from './errors.js';
 
 const phases = [
   ['01-original', '01 · Original and working master'], ['02-analysis', '02 · Analysis and preview'],
-  ['03-qwen', '03 · Qwen proposals'], ['04-sam2', '04 · Segmentation candidates'], ['05-refined', '05 · Refined masks and overlays'],
+  ['03-discovery', '03 · Discovered layers'], ['03-qwen', '03 · Qwen proposals'], ['04-sam2', '04 · Segmentation candidates'], ['05-refined', '05 · Refined masks and overlays'],
 ] as const;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const imageMime = new Set(['image/png', 'image/jpeg', 'image/webp']);

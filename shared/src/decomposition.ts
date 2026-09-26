@@ -137,6 +137,20 @@ export interface ProposalSummary {
   id: string; label: string; artifactId: string; alphaArtifactId?: string; width: number; height: number;
   registered: boolean; warnings: string[]; bounds?: DecompositionBox | null; coverage?: number;
   seed?: number; requestFingerprint?: string;
+  /** Discovery contract fields. Optional: historical Qwen jobs persisted before discovery-v1 omit them. */
+  provider?: DiscoveryProviderName; providerModel?: string; labelSource?: 'provider' | 'generic'; description?: string;
+  zIndex?: number; providerOrder?: number; providerBbox?: DecompositionBox; sourceRegistration?: DiscoverySourceRegistration;
+  sourceHash?: string; providerRequestId?: string; revision?: number; contractVersion?: string; metadataWarnings?: string[];
+}
+export type DiscoveryProviderName = 'seedream' | 'qwen';
+/** How a provider layer was placed on the analysis canvas. Unregistered layers are never stretched into place. */
+export interface DiscoverySourceRegistration { method: 'full-canvas' | 'bbox-placed' | 'unregistered'; providerWidth: number; providerHeight: number; scaleX: number; scaleY: number }
+export interface DiscoverySummary {
+  contractVersion: string; provider: DiscoveryProviderName; providerModel: string; fallbackFrom?: DiscoveryProviderName;
+  requestFingerprint?: string; providerRequestId?: string; deterministic: boolean; sourceHash: string;
+  attempts: { provider: DiscoveryProviderName; providerModel: string; outcome: 'used' | 'failed' | 'unreliable'; code?: string; providerRequestId?: string; proposalCount?: number }[];
+  baseLayer?: { artifactId: string; width: number; height: number; zIndex: number; name?: string; description?: string; sourceRegistration: DiscoverySourceRegistration };
+  warnings: string[];
 }
 export interface ReviewedMask {
   id: string; label: string; maskArtifactId: string; alphaArtifactId: string; overlayArtifactId: string;

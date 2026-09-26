@@ -7,6 +7,9 @@ import { buildProviderInput, ProviderError, endpointRegistry } from './providers
 import { DurableFalClient, providerInputHash, validateProviderImage } from './providers/falClient.js';
 import { prepareQwenRequest } from './providers/qwenRequest.js';
 import type { QwenReproducibility } from './providers/qwenRequest.js';
+import { prepareSeedreamRequest } from './providers/seedreamRequest.js';
+import type { SeedreamReproducibility } from './providers/seedreamRequest.js';
+import type { ProviderLayerMetadata } from './providers/adapters.js';
 import type { Infer } from './providers/inference.js';
 import { sha256 } from './phases/source.js';
 
@@ -15,6 +18,7 @@ export type CachedInference = {
   dimensions: { width: number; height: number }[]; model: string; inputHash: string; settings: unknown; endpoint: string;
   adapterVersion: string; immutableModelRevision: 'unknown'; seed?: number; sentSeed?: number; returnedSeed?: number;
   inputImageSha256: string; outputSha256: string[]; qwen?: QwenReproducibility;
+  seedream?: SeedreamReproducibility; layers?: ProviderLayerMetadata[];
 };
 export class PipelineContext {
   step: StepRecord;
@@ -47,19 +51,42 @@ export class PipelineContext {
     this.check(); this.step.status = 'completed'; this.repository.updateStep(this.step, this.lease);
     this.job.phase = phase; this.job.progress = progress; this.save();
   }
+  /** Copy a verified donor job's outputs into this job, so deleting/expiring the donor cannot break the new result. */
+  private async copyDonorOutputs(donor: JobRecord, entry: CachedInference, warning: string): Promise<{ outputs: Buffer[]; ids: string[] } | undefined> {
+    if (!entry.artifactIds.length || entry.artifactIds.length > 17 || entry.outputSha256.length !== entry.artifactIds.length) return undefined;
+    const outputs: Buffer[] = [];
+    try {
+      for (const [i, id] of entry.artifactIds.entries()) {
+        const record = this.repository.getArtifact(id, this.job.ownerId);
+        if (!record || record.jobId !== donor.id || record.sha256 !== entry.outputSha256[i]) throw new Error('Unavailable cache');
+        outputs.push(await this.store.read(record));
+      }
+    } catch { this.warn(warning); return undefined; }
+    const ids: string[] = [];
+    for (const bytes of outputs) ids.push((await this.put('provider-output', bytes)).artifactId);
+    return { outputs, ids };
+  }
   /** Buffer-in, durable provider queue, validated immutable local artifacts out. */
   infer: Infer = async (model, request) => {
     this.check(); if (!this.provider) throw new ProviderError('PROVIDER_NOT_CONFIGURED', 'Set the server FAL_KEY to run decomposition.');
     const { image, mask, key, ...settings } = request;
     const source = this.repository.getSource(this.job.sourceId, this.job.ownerId)!;
     const qwen = model === 'qwen' ? prepareQwenRequest(sha256(image), source.originalSha256, settings) : undefined;
-    const inputHash = qwen?.requestFingerprint ?? providerInputHash(model, { image: sha256(image), mask: mask && sha256(mask), settings, endpoint: endpointRegistry[model].endpoint });
+    const dimensions = await sharp(image).metadata(); const maskDimensions = mask ? await sharp(mask).metadata() : undefined;
+    const seedream = model === 'seedream' ? prepareSeedreamRequest(sha256(image), source.originalSha256, { prompt: settings.prompt, imageSize: settings.imageSize, enhancePromptMode: settings.enhancePromptMode, width: dimensions.width, height: dimensions.height }) : undefined;
+    const inputHash = qwen?.requestFingerprint ?? seedream?.requestFingerprint ?? providerInputHash(model, { image: sha256(image), mask: mask && sha256(mask), settings, endpoint: endpointRegistry[model].endpoint });
     const cache = (this.job.data.inferences ??= {}) as Record<string, CachedInference>;
     const logQwenResult = (entry: CachedInference, cacheHit: false | 'job' | 'owner') => {
       if (!qwen) return;
       console.info(JSON.stringify({ event: 'qwen_layered_result', jobId: this.job.id, requestFingerprint: inputHash,
         sentSeed: entry.sentSeed, returnedSeed: entry.returnedSeed, proposalCount: entry.artifactIds.length, providerRequestId: entry.requestId, cacheHit }));
     };
+    const logSeedreamResult = (entry: CachedInference, cacheHit: false | 'job' | 'owner') => {
+      if (!seedream) return;
+      console.info(JSON.stringify({ event: 'seedream_layerize_result', jobId: this.job.id, provider: 'seedream', providerModel: seedream.model, requestFingerprint: inputHash,
+        layerCount: entry.artifactIds.length, providerRequestId: entry.requestId, deterministic: false, cacheHit }));
+    };
+    if (seedream) console.info(JSON.stringify({ event: 'seedream_layerize_request', jobId: this.job.id, provider: 'seedream', providerModel: seedream.model, inputSha256: seedream.inputSha256, requestFingerprint: inputHash, imageSize: seedream.effectiveInput.image_size }));
     if (qwen) {
       console.info(JSON.stringify({ event: 'qwen_layered_request', jobId: this.job.id, inputSha256: qwen.inputSha256,
         requestFingerprint: inputHash, model: qwen.model, seed: qwen.sentSeed, numLayers: qwen.effectiveInput.num_layers,
@@ -69,28 +96,31 @@ export class PipelineContext {
     if (cached) {
       const results: Buffer[] = []; for (const id of cached.artifactIds) results.push(await this.artifact(id));
       if (qwen) { this.job.data.qwenInference = cached; this.job.data.qwenRequest = cached.qwen; this.job.data.qwenSeed = cached.sentSeed; this.save(); }
-      logQwenResult(cached, 'job'); return Object.assign(results, { scores: cached.scores, boxes: cached.boxes, requestId: cached.requestId, seed: cached.returnedSeed });
+      if (seedream) { this.job.data.seedreamInference = cached; this.save(); }
+      logQwenResult(cached, 'job'); logSeedreamResult(cached, 'job');
+      return Object.assign(results, { scores: cached.scores, boxes: cached.boxes, requestId: cached.requestId, seed: cached.returnedSeed, layers: cached.layers });
     }
     if (qwen && this.job.data.verificationMode === 'live') {
       const donor = this.repository.findReusableQwen(this.job.ownerId, inputHash, this.job.id);
       const entry = donor?.data.qwenInference as CachedInference | undefined;
       if (entry?.qwen?.requestFingerprint === inputHash && entry.artifactIds.length > 0 && entry.artifactIds.length <= 6) {
-        const outputs: Buffer[] = [];
-        try {
-          for (const [i, id] of entry.artifactIds.entries()) {
-            const record = this.repository.getArtifact(id, this.job.ownerId);
-            if (!record || record.jobId !== donor!.id || record.sha256 !== entry.outputSha256[i]) throw new Error('Unavailable cache');
-            outputs.push(await this.store.read(record));
-          }
-        } catch { outputs.length = 0; this.warn('QWEN_CACHE_UNAVAILABLE'); }
-        if (outputs.length === entry.artifactIds.length) {
-          // Copy into this job, so deleting/expiring the donor cannot break the new result.
-          const ids: string[] = [];
-          for (const bytes of outputs) ids.push((await this.put('provider-output', bytes)).artifactId);
-          const copied: CachedInference = { ...entry, artifactIds: ids, qwen: { ...entry.qwen, cachedFromJobId: donor!.id } };
+        const donorCopy = await this.copyDonorOutputs(donor!, entry, 'QWEN_CACHE_UNAVAILABLE');
+        if (donorCopy) {
+          const copied: CachedInference = { ...entry, artifactIds: donorCopy.ids, qwen: { ...entry.qwen, cachedFromJobId: donor!.id } };
           cache[inputHash] = copied; this.job.data.qwenInference = copied; this.job.data.qwenRequest = copied.qwen; this.job.data.qwenSeed = copied.sentSeed; this.save();
-          logQwenResult(copied, 'owner'); return Object.assign(outputs, { requestId: copied.requestId, seed: copied.returnedSeed });
+          logQwenResult(copied, 'owner'); return Object.assign(donorCopy.outputs, { requestId: copied.requestId, seed: copied.returnedSeed });
         }
+      }
+    }
+    if (seedream && this.job.data.verificationMode === 'live') {
+      // No provider seed exists, so a same-owner completed response for the identical fingerprint is the only reproducible answer.
+      const donor = this.repository.findReusableSeedream(this.job.ownerId, inputHash, this.job.id);
+      const entry = donor?.data.seedreamInference as CachedInference | undefined;
+      const copied = entry?.seedream?.requestFingerprint === inputHash ? await this.copyDonorOutputs(donor!, entry, 'SEEDREAM_CACHE_UNAVAILABLE') : undefined;
+      if (copied) {
+        const reused: CachedInference = { ...entry!, artifactIds: copied.ids, seedream: { ...entry!.seedream!, cachedFromJobId: donor!.id } };
+        cache[inputHash] = reused; this.job.data.seedreamInference = reused; this.save();
+        logSeedreamResult(reused, 'owner'); return Object.assign(copied.outputs, { requestId: reused.requestId, layers: reused.layers });
       }
     }
     if (qwen) {
@@ -102,12 +132,11 @@ export class PipelineContext {
     const savedStep = savedRequest && this.repository.steps(this.job.id).find(step => step.id === savedRequest.stepId);
     const callStep = this.repository.createStep(this.job, savedStep ? savedStep.phase : this.step.phase, inputHash, savedStep ? savedStep.objectId : key ?? model, savedStep ? savedStep.attempt : Number(this.job.data.attempt ?? 1));
     const existing = this.repository.getProviderRequest(callStep.id, inputHash);
-    const dimensions = await sharp(image).metadata(); const maskDimensions = mask ? await sharp(mask).metadata() : undefined;
     // Upload only when a new request needs submission; known queue requests resume without re-upload.
     const imageUrl = existing ? 'https://fal.media/resumed-input' : await this.provider.transport.upload(image);
     const maskUrl = mask ? existing ? 'https://fal.media/resumed-mask' : await this.provider.transport.upload(mask) : undefined;
     this.check();
-    const input = qwen ? { ...qwen.effectiveInput, image_url: imageUrl } : buildProviderInput(model, { ...settings, imageUrl, maskUrl, width: dimensions.width, height: dimensions.height, maskWidth: maskDimensions?.width, maskHeight: maskDimensions?.height });
+    const input = qwen ? { ...qwen.effectiveInput, image_url: imageUrl } : seedream ? { ...seedream.effectiveInput, image_url: imageUrl } : buildProviderInput(model, { ...settings, imageUrl, maskUrl, width: dimensions.width, height: dimensions.height, maskWidth: maskDimensions?.width, maskHeight: maskDimensions?.height });
     for (;;) {
       this.check();
       const advanced = await this.provider.advance({ jobId: this.job.id, stepId: callStep.id, model, input, inputHash });
@@ -128,11 +157,12 @@ export class PipelineContext {
         const artifact = await this.put('provider-output', normalized);
         ids.push(artifact.artifactId); hashes.push(artifact.sha256); sizes.push({ width: size.width, height: size.height }); buffers.push(normalized);
       }
-      cache[inputHash] = { scores: advanced.output.scores, boxes: advanced.output.boxes, artifactIds: ids, requestId: advanced.request.providerRequestId!, dimensions: sizes, model, inputHash, settings, endpoint: endpointRegistry[model].endpoint, adapterVersion: endpointRegistry[model].adapterVersion, immutableModelRevision: 'unknown', seed: advanced.request.seed, sentSeed: qwen?.sentSeed ?? advanced.request.sentSeed, returnedSeed: advanced.output.seed, qwen: qwen && { ...qwen, returnedSeed: advanced.output.seed, returnedPrompt: advanced.output.prompt, providerRequestId: advanced.request.providerRequestId }, inputImageSha256: sha256(image), outputSha256: hashes };
+      cache[inputHash] = { scores: advanced.output.scores, boxes: advanced.output.boxes, artifactIds: ids, requestId: advanced.request.providerRequestId!, dimensions: sizes, model, inputHash, settings, endpoint: endpointRegistry[model].endpoint, adapterVersion: endpointRegistry[model].adapterVersion, immutableModelRevision: 'unknown', seed: advanced.request.seed, sentSeed: qwen?.sentSeed ?? advanced.request.sentSeed, returnedSeed: advanced.output.seed, qwen: qwen && { ...qwen, returnedSeed: advanced.output.seed, returnedPrompt: advanced.output.prompt, providerRequestId: advanced.request.providerRequestId }, seedream: seedream && { ...seedream, providerRequestId: advanced.request.providerRequestId }, layers: advanced.output.layers, inputImageSha256: sha256(image), outputSha256: hashes };
+      if (seedream) this.job.data.seedreamInference = cache[inputHash];
       if (qwen) { this.job.data.qwenInference = cache[inputHash]; if (advanced.output.seed !== qwen.sentSeed) this.warn('QWEN_SEED_UNVERIFIED'); }
       this.job.data.inferences = cache; this.save(); callStep.status = 'completed'; callStep.outputArtifactIds = ids; this.repository.updateStep(callStep, this.lease);
-      logQwenResult(cache[inputHash], false);
-      return Object.assign(buffers, { seed: advanced.output.seed, scores: advanced.output.scores, boxes: advanced.output.boxes, requestId: advanced.request.providerRequestId });
+      logQwenResult(cache[inputHash], false); logSeedreamResult(cache[inputHash], false);
+      return Object.assign(buffers, { seed: advanced.output.seed, scores: advanced.output.scores, boxes: advanced.output.boxes, requestId: advanced.request.providerRequestId, layers: advanced.output.layers });
     }
   };
 }

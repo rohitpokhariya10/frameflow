@@ -1,5 +1,6 @@
 /** Verified against the linked fal model API pages on 2026-09-26. */
 export const endpointRegistry = {
+  seedream: { endpoint: 'bytedance/seedream/v5/pro/layerize', adapterVersion: '1', outputField: 'layers', encoding: 'rgba-alpha' },
   qwen: { endpoint: 'fal-ai/qwen-image-layered', adapterVersion: '2', outputField: 'images', encoding: 'rgba-alpha' },
   sam2: { endpoint: 'fal-ai/sam2/auto-segment', adapterVersion: '1', outputField: 'individual_masks', encoding: 'luminance' },
   sam3: { endpoint: 'fal-ai/sam-3-1/image', adapterVersion: '2', outputField: 'masks', encoding: 'luminance' },
@@ -11,8 +12,18 @@ export const endpointRegistry = {
 export type Model = keyof typeof endpointRegistry;
 export type ProviderInput = Record<string, unknown>;
 export type ProviderImage = { url: string; width?: number; height?: number; contentType?: string };
+/** Seedream layer metadata, index-aligned with `images`. Absolute boxes are provider-canvas pixels [left, top, right, bottom]. */
+export type ProviderLayerMetadata = {
+  zIndex: number;
+  name?: string;
+  description?: string;
+  bboxAbsolute?: [number, number, number, number];
+  bboxNormalized?: [number, number, number, number];
+};
+export const SEEDREAM_MAX_LAYERS = 17;
 export type NormalizedProviderOutput = {
   images: ProviderImage[];
+  layers?: ProviderLayerMetadata[];
   encoding: 'rgba-alpha' | 'luminance' | 'rgb';
   seed?: number;
   prompt?: string;
@@ -46,6 +57,8 @@ export type ProviderInputOptions = {
   seed?: number;
   points?: { x: number; y: number; label: 0 | 1; objectId?: number }[];
   boxes?: { x: number; y: number; width: number; height: number; objectId?: number }[];
+  imageSize?: 'auto' | 'auto_1K' | 'auto_1.5K' | 'auto_2K';
+  enhancePromptMode?: 'standard' | 'fast';
 };
 
 function integer(value: unknown, minimum: number, maximum: number, field: string): number {
@@ -76,6 +89,20 @@ export function buildProviderInput(model: Model, options: ProviderInputOptions):
   const input: ProviderInput = { image_url: imageUrl(options.imageUrl) };
   if (options.seed !== undefined && ['qwen', 'finegrain', 'flux'].includes(model)) input.seed = integer(options.seed, 0, 2147483647, 'seed');
   switch (model) {
+    case 'seedream': {
+      // Discovery only: the endpoint documents no seed, so it is never sent. Inputs must be 512–6000 px with aspect 1/16–16.
+      if (options.width !== undefined || options.height !== undefined) {
+        const width = integer(options.width, 512, 6000, 'width'), height = integer(options.height, 512, 6000, 'height');
+        if (width / height > 16 || height / width > 16) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Seedream layerize requires an aspect ratio between 1/16 and 16.');
+      }
+      const instructions = options.prompt ?? '';
+      if (typeof instructions !== 'string' || instructions.length > 2000) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Seedream layer instructions must be bounded.');
+      const imageSize = options.imageSize ?? 'auto';
+      if (!['auto', 'auto_1K', 'auto_1.5K', 'auto_2K'].includes(imageSize)) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Invalid Seedream image size.');
+      const enhance = options.enhancePromptMode ?? 'standard';
+      if (!['standard', 'fast'].includes(enhance)) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Invalid Seedream prompt mode.');
+      return { ...input, ...(instructions.trim() ? { prompt: instructions.trim().normalize('NFC') } : {}), image_size: imageSize, enhance_prompt_mode: enhance, enable_safety_checker: true, sync_mode: false };
+    }
     case 'qwen': {
       const caption = options.prompt ?? 'An image containing foreground elements and a background.';
       const negative = options.negativePrompt ?? '';
@@ -148,6 +175,7 @@ export function normalizeProviderOutput(model: Model, value: unknown, candidateC
     if (source.has_nsfw_concepts.some(Boolean)) throw new ProviderError('PROVIDER_SAFETY_REFUSAL', 'The provider declined this image under its safety policy.');
   }
   const adapter = endpointRegistry[model];
+  if (model === 'seedream') return normalizeSeedreamOutput(source, candidateCap);
   const raw = source[adapter.outputField];
   const list = adapter.outputField === 'image' ? [raw] : raw;
   if (!Array.isArray(list) || !list.length) throw new ProviderError('PROVIDER_EMPTY_OUTPUT', 'The provider returned no usable image candidates.');
@@ -171,6 +199,42 @@ export function normalizeProviderOutput(model: Model, value: unknown, candidateC
     output.boxes = source.boxes as [number, number, number, number][];
   }
   return output;
+}
+
+function text(value: unknown, maximum: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid provider layer text.');
+  // Provider text is display metadata only: strip control characters and bound its length.
+  const cleaned = Array.from(value, ch => { const code = ch.charCodeAt(0); return code < 32 || code === 127 ? ' ' : ch; }).join('').replace(/\s+/g, ' ').trim().normalize('NFC').slice(0, maximum);
+  return cleaned || undefined;
+}
+function quad(value: unknown, maximum: number): [number, number, number, number] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length !== 4 || value.some(item => typeof item !== 'number' || !Number.isFinite(item) || item < 0 || item > maximum) || value[2] <= value[0] || value[3] <= value[1]) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid provider layer bounding box.');
+  return value as [number, number, number, number];
+}
+/** Seedream `layers` are authoritative for structure; `images` repeats them for galleries and is ignored. */
+function normalizeSeedreamOutput(source: Record<string, unknown>, candidateCap: number): NormalizedProviderOutput {
+  const layers = source.layers;
+  if (!Array.isArray(layers) || !layers.length) throw new ProviderError('PROVIDER_EMPTY_OUTPUT', 'The provider returned no usable layers.');
+  if (layers.length > Math.min(candidateCap, SEEDREAM_MAX_LAYERS)) throw new ProviderError('PROVIDER_CANDIDATE_LIMIT', 'The provider returned too many layers.');
+  const images: ProviderImage[] = [], metadata: ProviderLayerMetadata[] = [];
+  for (const value of layers) {
+    const layer = record(value);
+    if (!Number.isSafeInteger(layer.z_index) || (layer.z_index as number) < 0 || (layer.z_index as number) > 1000) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Invalid provider layer z-index.');
+    images.push(parseImage(layer.image));
+    const box = layer.bounding_box === undefined || layer.bounding_box === null ? undefined : record(layer.bounding_box);
+    const entry: ProviderLayerMetadata = { zIndex: layer.z_index as number };
+    const name = text(layer.name, 100), description = text(layer.description, 500);
+    const bboxAbsolute = quad(box?.absolute, 16384), bboxNormalized = quad(box?.normalized, 1000);
+    if (name) entry.name = name;
+    if (description) entry.description = description;
+    if (bboxAbsolute) entry.bboxAbsolute = bboxAbsolute;
+    if (bboxNormalized) entry.bboxNormalized = bboxNormalized;
+    metadata.push(entry);
+  }
+  if (new Set(metadata.map(layer => layer.zIndex)).size !== metadata.length) throw new ProviderError('PROVIDER_SCHEMA_CHANGED', 'Provider layers share a z-index.');
+  return { images, layers: metadata, encoding: 'rgba-alpha' };
 }
 
 export function normalizedBoxToPixels(box: [number, number, number, number], width: number, height: number) {

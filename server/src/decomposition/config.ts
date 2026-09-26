@@ -9,6 +9,8 @@ export interface DecompositionConfig {
   maxCallsPerJob: number; maxAccountCalls: number; phaseTimeoutMs: number; jobTimeoutMs: number; retentionDays: number; allowEraseFallback: boolean;
   maxUploadBytes: number; minSide: number; maxSide: number; maxPixels: number; maxArtifactBytes: number; maxJobBytes: number; maxQueue: number;
   leaseMs: number; sessionMs: number; trustedMediaHosts: string[];
+  /** Layer discovery: Seedream primary with Qwen fallback by default. Mock mode always uses the Qwen fixture. */
+  discoveryProvider: 'seedream' | 'qwen'; discoveryFallback: 'qwen' | 'none';
 }
 const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export function readDecompositionConfig(env = process.env): DecompositionConfig {
@@ -16,6 +18,9 @@ export function readDecompositionConfig(env = process.env): DecompositionConfig 
   const number = (name: string, fallback: number, min: number, max: number) => { const value = Number(env[name] ?? fallback); if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer between ${min} and ${max}.`); return value; };
   const providerMode = env.DECOMP_PROVIDER_MODE ?? 'live';
   if (!['mock','live'].includes(providerMode) || (production && providerMode === 'mock')) throw new Error('DECOMP_PROVIDER_MODE must be live, or mock in development only.');
+  const discoveryProvider = env.DECOMP_DISCOVERY_PROVIDER ?? 'seedream', discoveryFallback = env.DECOMP_DISCOVERY_FALLBACK ?? 'qwen';
+  if (!['seedream','qwen'].includes(discoveryProvider)) throw new Error('DECOMP_DISCOVERY_PROVIDER must be seedream or qwen.');
+  if (!['qwen','none'].includes(discoveryFallback)) throw new Error('DECOMP_DISCOVERY_FALLBACK must be qwen or none.');
   const authMode = env.DECOMP_AUTH_MODE ?? 'local-operator';
   if (authMode !== 'local-operator' && authMode !== 'development') throw new Error('DECOMP_AUTH_MODE must be local-operator or development.');
   if (enabled && production && (!env.DECOMP_DATA_DIR || authMode === 'development')) throw new Error('Production decomposition requires DECOMP_DATA_DIR and local-operator authentication.');
@@ -30,7 +35,8 @@ export function readDecompositionConfig(env = process.env): DecompositionConfig 
     jobConcurrency: number('DECOMP_JOB_CONCURRENCY',1,1,1), modelConcurrency: number('DECOMP_MODEL_CONCURRENCY',2,1,2), maxCallsPerJob: number('DECOMP_MAX_CALLS_PER_JOB',20,1,100), maxAccountCalls: number('DECOMP_MAX_ACCOUNT_CALLS',1000,1,100000),
     phaseTimeoutMs: number('DECOMP_PHASE_TIMEOUT_MS',300000,1000,1800000), jobTimeoutMs: number('DECOMP_JOB_TIMEOUT_MS',1200000,1000,7200000), retentionDays: number('DECOMP_ARTIFACT_RETENTION_DAYS',7,1,365), allowEraseFallback: env.DECOMP_ALLOW_ERASE_FALLBACK !== 'false',
     maxUploadBytes: number('DECOMP_MAX_UPLOAD_BYTES',25*1024*1024,1024,128*1024*1024), minSide: 256, maxSide: 4096, maxPixels: 12000000, maxArtifactBytes: 128*1024*1024, maxJobBytes: number('DECOMP_MAX_JOB_BYTES',512*1024*1024,1024*1024,2*1024*1024*1024), maxQueue: number('DECOMP_MAX_QUEUE',20,1,100), leaseMs: 60000, sessionMs: 12*60*60*1000,
-    trustedMediaHosts: (env.DECOMP_TRUSTED_MEDIA_HOSTS ?? 'fal.media,*.fal.media').split(',').map((host) => host.trim()).filter(Boolean) };
+    trustedMediaHosts: (env.DECOMP_TRUSTED_MEDIA_HOSTS ?? 'fal.media,*.fal.media').split(',').map((host) => host.trim()).filter(Boolean),
+    discoveryProvider: discoveryProvider as 'seedream' | 'qwen', discoveryFallback: discoveryFallback as 'qwen' | 'none' };
 }
 export function normalizeDecompositionOptions(value: unknown, config: DecompositionConfig): DecompositionOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new DecompositionError('INVALID_OPTIONS','Supply decomposition options.');

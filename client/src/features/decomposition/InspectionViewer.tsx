@@ -5,7 +5,7 @@ import { artifactUrl } from './api';
 /** Phase-5 inspection only: proposals and masks, no editable layers or final package. */
 export function InspectionViewer({ job }: { job: DecompositionJobSummary }) {
   const [surface, setSurface] = useState('checker');
-  const groups = ['01-original', '02-analysis', '03-qwen', '04-semantic', '04-sam2', '05-refined', '06-extracted'];
+  const groups = ['01-original', '02-analysis', '03-discovery', '03-qwen', '04-semantic', '04-sam2', '05-refined', '06-extracted'];
   const labels = ['Original', 'Analysis', 'Qwen proposals', 'Semantic targets — inspect completeness', 'Advanced / raw proposals', 'Ownership and alpha — review required', 'Extracted layers'];
   const latest = [...new Map(job.artifacts.map((artifact) => [artifact.relativePath, artifact])).values()];
   return <section aria-label="Phase 1 to 6 inspection">

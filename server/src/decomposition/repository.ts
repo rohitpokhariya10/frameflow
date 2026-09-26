@@ -92,6 +92,15 @@ export class DecompositionRepository {
       AND json_extract(json,'$.data.qwenInference.qwen.sentSeed')=json_extract(json,'$.data.qwenInference.qwen.returnedSeed')
       ORDER BY rowid DESC LIMIT 1`).get(ownerId, currentJobId, Date.now(), fingerprint));
   }
+  /** Completed Seedream discovery only. The endpoint has no seed, so reuse is keyed purely on the exact request fingerprint. */
+  findReusableSeedream(ownerId: string, fingerprint: string, currentJobId: string): JobRecord | undefined {
+    return decode<JobRecord>(this.db.prepare(`SELECT json FROM decomposition_jobs
+      WHERE owner_id=? AND id!=? AND tombstoned_at IS NULL
+      AND json_extract(json,'$.expiresAt')>?
+      AND json_extract(json,'$.data.verificationMode')='live'
+      AND json_extract(json,'$.data.seedreamInference.seedream.requestFingerprint')=?
+      ORDER BY rowid DESC LIMIT 1`).get(ownerId, currentJobId, Date.now(), fingerprint));
+  }
   private persist(job: JobRecord) { this.db.prepare('UPDATE decomposition_jobs SET state=?,revision=?,phase=?,lease_owner=?,lease_until=?,fence=?,tombstoned_at=?,json=? WHERE id=?').run(job.state,job.revision,job.phase,job.leaseOwner ?? null,job.leaseUntil,job.fence,job.tombstonedAt ?? null,JSON.stringify(job),job.id); }
   updateJob(job: JobRecord, lease?: Lease) {
     return this.db.transaction(() => {
