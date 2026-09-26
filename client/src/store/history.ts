@@ -1,6 +1,6 @@
 import { createAction, type UnknownAction } from '@reduxjs/toolkit';
 import type { ProjectDocument } from '@frameflow/shared';
-import { editorSlice, textUpdated, textMoved, textWidthResized } from './editorSlice';
+import { editorSlice, layerUpdated, textUpdated, textMoved, textWidthResized } from './editorSlice';
 
 export const HISTORY_LIMIT = 30;
 export const undo = createAction('history/undo');
@@ -29,7 +29,7 @@ export function historyReducer(state: HistoryState = initialHistory(editorSlice.
   const { document } = editorSlice.reducer({ document: state.document }, action);
   if (document === state.document) return state;
   // Numeric controls supply a unique focus-session ID. Pointer commits do not.
-  const payload = textUpdated.match(action) || textMoved.match(action) || textWidthResized.match(action) ? action.payload : null;
+  const payload = textUpdated.match(action) || textMoved.match(action) || textWidthResized.match(action) || layerUpdated.match(action) ? action.payload : null;
   const group = payload?.editSession
     ? { key: JSON.stringify([payload.variantId, payload.id, action.type, payload.editSession]), time: Date.parse(payload.timestamp), explicit: true }
     : textUpdated.match(action) && Object.keys(action.payload.changes).length === 1 && 'text' in action.payload.changes

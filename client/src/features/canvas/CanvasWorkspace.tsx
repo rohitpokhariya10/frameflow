@@ -6,6 +6,7 @@ import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store
 import { fitRequested, tabChanged, zoomChanged, variantSelected } from '../../store/uiSlice';
 import { calculateFitZoom, VIEWPORT } from './viewport';
 import { TextElementNode } from './TextElementNode';
+import { DesignLayerNode } from './DesignLayerNode';
 import { focusCanvas, useTextActions } from '../text/useTextActions';
 import { BackgroundArtwork } from './BackgroundArtwork';
 import { textNodeStyle } from '../text/textGeometry';
@@ -23,7 +24,7 @@ export function CanvasWorkspace() {
   const pair = preview?.adaptation ? { source: preview.adaptation.source, target: preview.variant }
     : compare && !preview && relative ? current.sourceVariantId ? { source: relative, target: current } : { source: current, target: relative } : null;
   const comparing = Boolean(pair);
-  const { canvas, elements, id, background } = preview?.variant ?? current;
+  const { canvas, elements, id, background, layers } = preview?.variant ?? current;
   const [artworkError, setArtworkError] = useState('');
   const { zoom, fitRequest, selectedElementId } = useAppSelector((state) => state.ui);
   const actions = useTextActions();
@@ -58,6 +59,7 @@ export function CanvasWorkspace() {
                 <Layer listening={false} clipWidth={canvas.width} clipHeight={canvas.height}><Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} />
                   {background && <BackgroundArtwork background={background} canvas={canvas} onError={setArtworkError} />}
                 </Layer>
+                {!preview && layers?.length ? <Layer clipWidth={canvas.width} clipHeight={canvas.height}>{layers.map((layer) => <DesignLayerNode key={layer.id} layer={layer} selected={selectedElementId === layer.id} variantId={id} />)}</Layer> : null}
                 <Layer>{elements.map((element) => preview
                   ? <Text key={element.id} name="preview-text" {...textNodeStyle(element)} x={element.x} y={element.y} listening={false} />
                   : <TextElementNode key={element.id} element={element} selected={selectedElementId === element.id} canvas={canvas} variantId={id} zoom={zoom} />)}</Layer>

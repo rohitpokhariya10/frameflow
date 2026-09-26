@@ -23,12 +23,33 @@ export interface TextElement {
 
 export interface CanvasSize { width: number; height: number }
 
+/** Editable layers below text (e.g. from image decomposition). Logical canvas pixels; rotation in degrees. */
+export interface DesignLayerBase {
+  id: string; name: string; x: number; y: number; width: number; height: number;
+  rotation: number; opacity: number; visible: boolean; locked: boolean;
+  /** Decomposition provenance: the job and scene layer this came from. */
+  source?: { jobId: string; layerId: string; kind: 'image' | 'text' | 'shape' };
+}
+export interface ImageLayerElement extends DesignLayerBase {
+  type: 'image'; assetId: string;
+  /** For text rasters: an editable suggestion the user can convert into a text element. */
+  textSuggestion?: { text: string; confidence: 'none' | 'low'; fill?: string; fontSize?: number; fontWeight?: 400 | 600 | 700 };
+}
+export interface ShapeLayerElement extends DesignLayerBase {
+  type: 'shape'; shapeType: 'rectangle' | 'rounded-rectangle' | 'ellipse';
+  fill: string; gradient?: { from: string; to: string; angle: number }; stroke?: { color: string; width: number }; radius: number;
+}
+export type DesignLayer = ImageLayerElement | ShapeLayerElement;
+export const LAYER_LIMITS = { maxLayers: 60, minSide: 1, maxSide: 16384 } as const;
+
 export interface DesignVariant {
   id: string;
   name: string;
   revision: number;
   canvas: CanvasSize & { backgroundColor: string };
   elements: TextElement[];
+  /** Optional, back-to-front, rendered above the background and below text. Absent on older documents. */
+  layers?: DesignLayer[];
   background?: {
     assetId: string;
     fit: 'cover' | 'contain';

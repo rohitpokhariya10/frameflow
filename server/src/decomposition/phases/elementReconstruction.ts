@@ -36,9 +36,11 @@ export type ShapeFit = {
 
 /**
  * Fit a simple vector shape to a native binary mask and estimate its fill from source pixels. A shape is only returned
- * when geometry and colour both fit well; otherwise the caller keeps the source-pixel raster.
+ * when geometry and colour both fit well; otherwise the caller keeps the source-pixel raster. `occluders` marks source
+ * pixels owned by elements in front (e.g. a person over a panel): geometry still uses the full shape, but colour is
+ * sampled only where the shape itself is visible.
  */
-export function fitShape(mask: Mask, pixels: SourcePixels): ShapeFit {
+export function fitShape(mask: Mask, pixels: SourcePixels, occluders?: Mask): ShapeFit {
   const bbox = maskBounds(mask);
   if (!bbox) return { shapeType: 'raster', bbox: { x: 0, y: 0, width: 0, height: 0 }, fitIoU: 0, confidence: 0, reasons: ['EMPTY_REGION'] };
   const area = measureMask(mask).area, boxArea = bbox.width * bbox.height, w = bbox.width, h = bbox.height;
@@ -55,19 +57,21 @@ export function fitShape(mask: Mask, pixels: SourcePixels): ShapeFit {
     { shapeType: 'rounded-rectangle', fit: radius >= 2 ? iou(mask, rounded, bbox) : 0, radius },
     { shapeType: 'ellipse', fit: iou(mask, (x, y) => ((x - cx) / (w / 2)) ** 2 + ((y - cy) / (h / 2)) ** 2 <= 1, bbox) },
   ];
+  const reasons: string[] = [];
   let best = [...candidates].sort((a, b) => b.fit - a.fit)[0];
   // Resampling nibbles a pixel or two off sharp corners; a near-zero radius is still a rectangle.
   if (best.shapeType === 'rounded-rectangle' && best.radius! < Math.max(3, Math.min(w, h) * 0.03) && candidates[0].fit >= 0.95) best = candidates.find(c => c.shapeType === 'rectangle')!;
-  const reasons: string[] = [];
   // Colour: interior only (edges carry antialiasing and neighbours). Quadrant means detect a linear gradient.
-  const interior = morphMask(mask, Math.max(1, Math.round(Math.min(w, h) * 0.03)), 'erode');
+  const eroded = morphMask(mask, Math.max(1, Math.round(Math.min(w, h) * 0.03)), 'erode');
+  const interior = occluders ? { ...eroded, data: eroded.data.map((v, i) => (v && !occluders.data[i] ? 255 : 0)) } : eroded;
+  if (occluders && measureMask(interior).area < measureMask(eroded).area * 0.15) reasons.push('SHAPE_MOSTLY_OCCLUDED');
   const inQuadrant = (qx: number, qy: number) => (i: number) => {
     if (!interior.data[i]) return false;
     const x = i % mask.width, y = Math.floor(i / mask.width);
     return (qx < 0 || (x < cx) === (qx === 0)) && (qy < 0 || (y < cy) === (qy === 0));
   };
   const all = meanColor(pixels, i => interior.data[i] > 0);
-  if (!all) return { shapeType: 'raster', bbox, fitIoU: best.fit, confidence: 0, reasons: ['NO_INTERIOR'] };
+  if (!all) return { shapeType: 'raster', bbox, fitIoU: best.fit, confidence: 0, reasons: [...reasons, 'NO_INTERIOR'] };
   const [left, right, top, bottom, topLeft, bottomRight] = [inQuadrant(0, -1), inQuadrant(1, -1), inQuadrant(-1, 0), inQuadrant(-1, 1), inQuadrant(0, 0), inQuadrant(1, 1)].map(fn => meanColor(pixels, fn));
   const pairs = [
     { angle: 0, from: left, to: right }, { angle: 90, from: top, to: bottom }, { angle: 45, from: topLeft, to: bottomRight },

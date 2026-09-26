@@ -71,8 +71,29 @@ export async function buildSceneGraph(context: PipelineContext, master: Buffer, 
       metadata: { proposalIds: target?.proposalIds ?? [] } } });
   }
 
+  // Elements in front of a shape (approved image objects and text) hide part of it; its fill is sampled around them.
+  const fronts: { z: number | undefined; alpha: Mask }[] = [];
+  for (const object of refined) fronts.push({ z: zOf(targets.find(t => t.id === object.id)?.proposalIds ?? []), alpha: await decodeMask(await context.artifact(object.alphaArtifactId), { encoding: 'luminance' }) });
+  const regions = new Map<string, Mask | undefined>();
   for (const element of elements.filter(e => e.kind === 'TEXT' || e.kind === 'SHAPE')) {
-    const alpha = await regionAlpha(element);
+    const alpha = await regionAlpha(element); regions.set(element.targetId, alpha);
+    if (alpha && element.kind === 'TEXT') fronts.push({ z: zOf(element.proposalIds), alpha });
+  }
+  // Every registered discovered layer above a shape occludes it too, whether or not the user kept it (e.g. unapproved text
+  // printed on a panel): those pixels belong to that layer, not to the shape's fill.
+  for (const proposal of proposals.filter(p => p.registered && !p.warnings.length && p.alphaArtifactId && p.zIndex !== undefined)) {
+    fronts.push({ z: proposal.zIndex, alpha: mapMaskToNative(await decodeMask(await context.artifact(proposal.alphaArtifactId!), { encoding: 'luminance' }), transform, 'alpha') });
+  }
+  const occludersAbove = (z: number | undefined): Mask | undefined => {
+    const above = fronts.filter(f => z === undefined ? false : f.z === undefined || f.z > z);
+    if (!above.length) return undefined;
+    const union: Mask = { width: source.width, height: source.height, data: new Uint8Array(source.width * source.height) };
+    for (const front of above) for (let i = 0; i < union.data.length; i++) if (front.alpha.data[i] >= 128) union.data[i] = 255;
+    return union;
+  };
+
+  for (const element of elements.filter(e => e.kind === 'TEXT' || e.kind === 'SHAPE')) {
+    const alpha = regions.get(element.targetId);
     const raster = alpha && await sourceRaster(pixels, alpha);
     if (!alpha || !raster) { warnings.push(`ELEMENT_REGION_UNAVAILABLE:${element.targetId}`); continue; }
     const rasterArtifact = await context.put(`scene-${element.kind.toLowerCase()}-raster`, raster.png, `06-scene/${element.targetId}-raster.png`);
@@ -84,7 +105,7 @@ export async function buildSceneGraph(context: PipelineContext, master: Buffer, 
         metadata: { proposalIds: element.proposalIds, styleEstimate: 'glyph-pixels', ocr: 'unavailable' } } });
     } else {
       const binary: Mask = { ...alpha, data: alpha.data.map(v => (v >= 128 ? 255 : 0)) };
-      const fit = fitShape(binary, pixels);
+      const fit = fitShape(binary, pixels, occludersAbove(zOf(element.proposalIds)));
       ordered.push({ z: zOf(element.proposalIds), layer: { ...common, type: 'shape', shapeType: fit.shapeType, bbox: fit.shapeType === 'raster' ? raster.bbox : fit.bbox, confidence: fit.confidence, fitIoU: fit.fitIoU,
         ...(fit.fill ? { fill: fit.fill } : {}), ...(fit.gradient ? { gradient: fit.gradient } : {}), ...(fit.radius !== undefined ? { radius: fit.radius } : {}),
         metadata: { proposalIds: element.proposalIds, reasons: fit.reasons } } });

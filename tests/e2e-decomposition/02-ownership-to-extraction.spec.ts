@@ -48,6 +48,14 @@ test('image objects go to SAM; ownership review, manual and AI corrections, qual
   await proposalReview(page).getByRole('button', { name: 'Approve target' }).click();
   await button(/^Background ·/).click();
   await proposalReview(page).getByRole('button', { name: 'Approve target' }).click();
+  // The panel comes back as an approved shape so the editable design carries a vector layer.
+  const panelButton = proposalReview(page).locator('.decomp-row > button').filter({ hasText: /panel · shape · Rejected$/i }).first();
+  if (await panelButton.count()) { await panelButton.click(); await proposalReview(page).getByRole('button', { name: 'Approve target' }).click(); }
+  // Approve every suggested shape (e.g. a footer or spec bar) so vector shapes are reconstructed too.
+  for (const t of (await proposalReview(page).locator('.decomp-row > button').allTextContents()).filter(text => / · Suggested shape · Needs review$/.test(text))) {
+    await button(new RegExp(`^${t.split(' · ')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} ·`)).click();
+    await proposalReview(page).getByRole('button', { name: 'Approve target' }).click();
+  }
   // Leave only typed elements approved.
   for (const t of (await proposalReview(page).locator('.decomp-row > button').allTextContents()).filter(text => /Type needed · Approved$/.test(text))) {
     await button(new RegExp(`^${t.split(' · ')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} ·`)).click();

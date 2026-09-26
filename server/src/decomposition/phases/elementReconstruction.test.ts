@@ -68,3 +68,16 @@ describe('text reconstruction', () => {
     expect(style).toMatchObject({ color: '#fa7814', fontSize: 40, fontWeight: 700 });
   });
 });
+
+describe('occlusion-aware shape fill', () => {
+  it('samples a panel colour around a person standing in front of it, instead of rejecting it as texture', () => {
+    const panelMask = mask((x, y) => x >= 40 && x < 260 && y >= 30 && y < 210);
+    const person = mask((x, y) => ((x - 150) / 45) ** 2 + ((y - 130) / 90) ** 2 <= 1);
+    // Orange panel pixels with a photo-like person painted over them.
+    const scene = pixels((x, y) => ((x - 150) / 45) ** 2 + ((y - 130) / 90) ** 2 <= 1 ? [((x * 73 + y * 151) % 255), ((x * 31) % 255), ((y * 97) % 255)] : [240, 110, 30]);
+    expect(fitShape(panelMask, scene).shapeType).toBe('raster');
+    expect(fitShape(panelMask, scene, person)).toMatchObject({ shapeType: 'rectangle', fill: '#f06e1e' });
+    // A shape that is almost entirely hidden cannot be coloured confidently.
+    expect(fitShape(panelMask, scene, panelMask)).toMatchObject({ shapeType: 'raster', reasons: expect.arrayContaining(['SHAPE_MOSTLY_OCCLUDED']) });
+  });
+});

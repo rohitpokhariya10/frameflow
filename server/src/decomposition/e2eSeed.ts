@@ -45,7 +45,9 @@ async function crop(width: number, height: number, fill: string, inset = 0.06) {
 
 /** Mirrors observed live geometry: full-canvas base, bbox crops uniformly upscaled per layer. */
 async function synthetic(): Promise<Replay> {
-  const source = await sharp({ create: { width: 800, height: 1000, channels: 3, background: '#f4efe8' } }).png().toBuffer();
+  // A coloured footer bar that nothing overlaps, so a vector shape is always reconstructable.
+  const footer = await sharp({ create: { width: 692, height: 80, channels: 3, background: '#2f6f5e' } }).png().toBuffer();
+  const source = await sharp({ create: { width: 800, height: 1000, channels: 3, background: '#f4efe8' } }).composite([{ input: footer, left: 54, top: 902 }]).png().toBuffer();
   const box = (l: number, t: number, r: number, b: number) => [l, t, r, b] as [number, number, number, number];
   const layers: ProviderLayerMetadata[] = [
     { zIndex: 0 },
@@ -53,9 +55,10 @@ async function synthetic(): Promise<Replay> {
     { zIndex: 2, name: 'PRO headline', description: 'Large headline text', bboxAbsolute: box(100, 40, 660, 230) },
     { zIndex: 3, name: 'Woman holding phone', description: 'Person holding a phone', bboxAbsolute: box(40, 140, 640, 830) },
     { zIndex: 4, name: 'Phone', description: 'Phone held by the person', bboxAbsolute: box(420, 520, 780, 720) },
+    { zIndex: 5, name: 'Footer bar', description: 'Solid green footer bar', bboxAbsolute: box(60, 1010, 835, 1100) },
   ];
   const outputs = [await sharp({ create: { width: 896, height: 1120, channels: 3, background: '#f4efe8' } }).png().toBuffer(),
-    await crop(720, 684, '#f06a1c'), await crop(980, 333, '#f58a2a'), await crop(660, 759, '#6a3a5c'), await crop(837, 465, '#e0782c')];
+    await crop(720, 684, '#f06a1c'), await crop(980, 333, '#f58a2a'), await crop(660, 759, '#6a3a5c'), await crop(837, 465, '#e0782c'), await crop(1163, 135, '#2f6f5e', 0)];
   return { source, outputs, layers, requestId: 'synthetic-e2e' };
 }
 

@@ -1,0 +1,15 @@
+.layers-list { margin-top: 18px; border-top: 1px solid var(--color-line); padding-top: 14px; }
+.layers-list ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.layers-list li { display: flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; }
+.layers-list li.selected { border-color: #a9c0ad; background: var(--color-selected); }
+.layer-select { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 8px; text-align: left; min-width: 0; }
+.layer-name { font-size: 11px; font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-kind { font-size: 9px; color: var(--color-muted); }
+.layer-inspector { display: flex; flex-direction: column; gap: 10px; }
+.layer-field { display: flex; flex-direction: column; gap: 4px; font-size: 10px; color: var(--color-muted); }
+.layer-field input[type="number"], .layer-field input:not([type]) { border: 1px solid var(--color-line); border-radius: 6px; padding: 6px 8px; font-size: 11px; color: var(--color-ink); }
+.layer-field input[type="color"] { width: 44px; height: 28px; border: 1px solid var(--color-line); border-radius: 6px; padding: 2px; }
+.layer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.layer-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.layer-actions .button { font-size: 10px; gap: 5px; }
+.layer-text-suggestion { border: 1px solid var(--color-line); border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }

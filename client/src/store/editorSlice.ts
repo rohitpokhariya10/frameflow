@@ -1,9 +1,12 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import { createTextElement, TEXT_LIMITS, validTextChanges, validateCanvasSize, type CanvasSize, type ProjectDocument, type TextKind, type TextChanges } from '@frameflow/shared';
+import { createTextElement, LAYER_LIMITS, TEXT_LIMITS, validTextChanges, validateCanvasSize, type CanvasSize, type DesignLayer, type DesignVariant, type ProjectDocument, type TextElement, type TextKind, type TextChanges } from '@frameflow/shared';
 import type { DesignPreview } from './aiSlice';
-import { isProjectDocument } from '../lib/persistence/schema';
+import { isDesignLayer, isProjectDocument, isTextElement } from '../lib/persistence/schema';
 
 interface TextTarget { variantId: string; id: string; timestamp: string; editSession?: string }
+interface LayerTarget { variantId: string; id: string; timestamp: string; editSession?: string }
+/** Fields a user may change on a layer; type, asset and provenance are immutable. */
+export type LayerChanges = Partial<Pick<DesignLayer, 'name' | 'x' | 'y' | 'width' | 'height' | 'rotation' | 'opacity' | 'visible' | 'locked'>> & { fill?: string; radius?: number; stroke?: { color: string; width: number } | null; gradient?: null };
 const finitePosition = (position: { x: number; y: number }) => Number.isFinite(position.x) && Number.isFinite(position.y);
 export const DEFAULT_DESIGN_NAME = 'New design';
 
@@ -115,6 +118,71 @@ export const editorSlice = createSlice({
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },
+    layerUpdated(state, action: PayloadAction<LayerTarget & { changes: LayerChanges }>) {
+      const { variantId, id, changes, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      const index = variant?.layers?.findIndex((item) => item.id === id) ?? -1;
+      if (!variant?.layers || index < 0) return;
+      const current = variant.layers[index];
+      const { stroke, gradient, fill, radius, ...common } = changes;
+      if (current.type === 'image' && (stroke !== undefined || gradient !== undefined || fill !== undefined || radius !== undefined)) return;
+      const next = { ...current, ...common, ...(fill !== undefined ? { fill, gradient: undefined } : {}), ...(radius !== undefined ? { radius } : {}) } as DesignLayer & { stroke?: unknown; gradient?: unknown };
+      if (stroke === null) delete next.stroke; else if (stroke) next.stroke = stroke;
+      if (gradient === null || next.gradient === undefined) delete next.gradient;
+      if (!isDesignLayer(next) || JSON.stringify(next) === JSON.stringify(current)) return;
+      variant.layers[index] = next;
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
+    layerDeleted(state, action: PayloadAction<LayerTarget>) {
+      const { variantId, id, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      if (!variant?.layers?.some((item) => item.id === id)) return;
+      variant.layers = variant.layers.filter((item) => item.id !== id);
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
+    layerDuplicated(state, action: PayloadAction<LayerTarget & { newId: string }>) {
+      const { variantId, id, newId, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      const index = variant?.layers?.findIndex((item) => item.id === id) ?? -1;
+      if (!variant?.layers || index < 0 || variant.layers.length >= LAYER_LIMITS.maxLayers || variant.layers.some((item) => item.id === newId)) return;
+      const source = variant.layers[index];
+      const copy = { ...source, id: newId, name: `${source.name} copy`.slice(0, 200), x: source.x + 24, y: source.y + 24, locked: false };
+      if (!isDesignLayer(copy)) return;
+      variant.layers.splice(index + 1, 0, copy);
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
+    layerReordered(state, action: PayloadAction<LayerTarget & { direction: 'forward' | 'backward' }>) {
+      const { variantId, id, direction, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      const index = variant?.layers?.findIndex((item) => item.id === id) ?? -1;
+      const target = direction === 'forward' ? index + 1 : index - 1;
+      if (!variant?.layers || index < 0 || target < 0 || target >= variant.layers.length) return;
+      [variant.layers[index], variant.layers[target]] = [variant.layers[target], variant.layers[index]];
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
+    /** A decomposed image becomes a new version: background source, image/shape layers and any text elements. */
+    decomposedDesignImported(state, action: PayloadAction<{ variant: DesignVariant; timestamp: string }>) {
+      const { variant, timestamp } = action.payload;
+      if (state.document.variants.length >= 30 || state.document.variants.some((item) => item.id === variant.id)) return;
+      const document = { ...state.document, updatedAt: timestamp, variants: [...state.document.variants, variant] };
+      if (isProjectDocument(document)) state.document = document;
+    },
+    /** Replace a text raster with an editable text element (one undo step); the raster is kept hidden. */
+    layerConvertedToText(state, action: PayloadAction<LayerTarget & { element: TextElement }>) {
+      const { variantId, id, element, timestamp } = action.payload;
+      const variant = state.document.variants.find((item) => item.id === variantId);
+      const layer = variant?.layers?.find((item) => item.id === id);
+      if (!variant || !layer || layer.type !== 'image' || !layer.textSuggestion || variant.elements.length >= TEXT_LIMITS.maxElements
+        || variant.elements.some((item) => item.id === element.id) || !isTextElement(element)) return;
+      variant.elements.push(element);
+      layer.visible = false;
+      variant.revision += 1;
+      state.document.updatedAt = timestamp;
+    },
     canvasResized(state, action: PayloadAction<{ variantId: string; size: CanvasSize; timestamp: string }>) {
       const { variantId, size, timestamp } = action.payload;
       if (!validateCanvasSize(size.width, size.height).valid) return;
@@ -126,4 +194,4 @@ export const editorSlice = createSlice({
     },
   },
 });
-export const { documentRenamed, canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied, adaptedDesignApplied } = editorSlice.actions;
+export const { layerUpdated, layerDeleted, layerDuplicated, layerReordered, decomposedDesignImported, layerConvertedToText, documentRenamed, canvasResized, textAdded, textUpdated, textMoved, textWidthResized, textDuplicated, textDeleted, textAutoLayoutApplied, generatedDesignApplied, adaptedDesignApplied } = editorSlice.actions;

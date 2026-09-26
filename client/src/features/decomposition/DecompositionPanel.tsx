@@ -3,7 +3,11 @@ import type { DecompositionCapabilities, DecompositionClientContext, Decompositi
 import { useAppDispatch, useAppSelector, selectActiveVariant } from '../../store';
 import { decompositionActions, decompositionContextMatches } from '../../store/decompositionSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
-import { decompositionApi as api, rememberJob, recoveredJob } from './api';
+import { decompositionApi as api, rememberJob, recoveredJob, artifactUrl } from './api';
+import { sceneToVariant } from './importScene';
+import { isDesignVariant } from '../../lib/persistence/schema';
+import { decomposedDesignImported } from '../../store/editorSlice';
+import { variantSelected } from '../../store/uiSlice';
 import { ProposalReview } from './ProposalReview';
 import { AlphaReview } from './AlphaReview';
 import { MaskReview } from './MaskReview';
@@ -14,6 +18,7 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
   const dispatch = useAppDispatch();
   const projectId = useAppSelector((s) => s.editor.document.id);
   const variant = useAppSelector(selectActiveVariant);
+  const variantCount = useAppSelector((s) => s.editor.document.variants.length);
   const { context, job, error } = useAppSelector((s) => s.decomposition);
   const [capabilities, setCapabilities] = useState<DecompositionCapabilities | null>(null);
   const [message, setMessage] = useState('');
@@ -108,6 +113,21 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
           {job.state === 'needs_review' && job.review?.gate === 'alpha-review' && <AlphaReview key={`${job.id}-${job.revision}`} job={job} onSubmit={review} busy={busy} />}
           {job.state === 'needs_review' && job.review?.gate !== 'alpha-review' && job.candidates?.length && job.sourcePreviewArtifactId && job.review?.actions.some(action => ['accept-masks', 'guided-refine', 'manual-masks'].includes(action)) ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
           {job.state === 'needs_review' && !job.review?.gate && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => void run(() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] }))}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
+          {job.state === 'completed' && job.sceneGraph && <section aria-label="Editable design"><h4>Editable design</h4>
+            <p>{job.sceneGraph.layers.length} layers at {job.sceneGraph.width} × {job.sceneGraph.height} px: {job.sceneGraph.layers.map(l => `${l.name} (${l.type === 'shape' && l.shapeType === 'raster' ? 'image' : l.type})`).join(', ')}.</p>
+            <p>Text arrives as source-pixel images with an unverified suggestion; convert each to editable text in the layer panel. Moving an object reveals the original pixels behind it.</p>
+            <button className="decomp-primary" disabled={busy} onClick={() => void run(async () => {
+              const fetchArtifact = async (id: string) => { const response = await fetch(artifactUrl(id), { credentials: 'same-origin' }); if (!response.ok) throw new Error('A layer image could not be downloaded. Try again.'); return response.blob(); };
+              const variant = await sceneToVariant(job, fetchArtifact, assets);
+              if (!isDesignVariant(variant) || variantCount >= 30) {
+                await Promise.all([variant.background?.assetId, ...(variant.layers ?? []).map(l => l.type === 'image' ? l.assetId : undefined)].filter((id): id is string => !!id).map(id => assets.deleteAsset(id).catch(() => undefined)));
+                throw new Error(variantCount >= 30 ? 'This design already has the maximum of 30 versions.' : 'The scene could not be converted into a valid design.');
+              }
+              dispatch(decomposedDesignImported({ variant, timestamp: new Date().toISOString() }));
+              dispatch(variantSelected(variant.id));
+              setMessage('Opened as a new version. Select layers on the canvas or in the Layers list.');
+              onClose?.();
+            })}>Open as editable design</button></section>}
           <InspectionViewer job={job} />
         </section>}
         <details><summary>Recover jobs ({jobs.length})</summary><p>Opening a job only attaches its viewer. Closing this panel or changing designs does not cancel server work.</p>{jobs.map((saved) => <div className="decomp-row" key={saved.id}><button onClick={() => void run(async () => attach(await api.job(saved.id)))}>{saved.id.slice(0, 8)} · {saved.state} · phase {saved.phase}</button><button onClick={() => void run(async () => { await api.remove(saved.id); setJobs(await api.jobs()); if (job?.id === saved.id) dispatch(decompositionActions.detached()); })}>Delete job and artifacts</button></div>)}</details>

@@ -9,12 +9,16 @@ import { historyKey, selectionKey } from './selectionKeyboard';
 import { undo, redo } from '../../store/history';
 import { recoveryWarningChanged } from '../../store/saveSlice';
 import { ExportButton } from '../export/ExportButton';
+import { LayerInspector, LayersList } from '../layers/LayerInspector';
 
 export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
-  const { canvas, id: variantId } = useAppSelector(selectActiveVariant);
+  const variant = useAppSelector(selectActiveVariant);
+  const { canvas, id: variantId } = variant;
+  const selectedId = useAppSelector((state) => state.ui.selectedElementId);
   const adapting = useAppSelector((state) => Boolean(state.ai.preview?.adaptation));
   const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' && Boolean(state.ai.preview));
   const selected = useAppSelector((state) => preview ? undefined : selectSelectedText(state));
+  const selectedLayer = preview ? undefined : variant.layers?.find((layer) => layer.id === selectedId);
   const actions = useTextActions();
   const dispatch = useAppDispatch();
   const canUndo = useAppSelector((state) => state.editor.past.length > 0);
@@ -51,14 +55,15 @@ export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
       <div className="editor-body">
         <DesignPanel onNewDesign={onNewDesign} />
         <CanvasWorkspace />
-        <aside className={`properties-panel ${selected ? 'has-selection' : ''}`} aria-label="Properties">
-          {selected ? <TextInspector key={`${variantId}-${selected.id}`} element={selected} /> : <>
+        <aside className={`properties-panel ${selected || selectedLayer ? 'has-selection' : ''}`} aria-label="Properties">
+          {selectedLayer ? <><LayerInspector key={`${variantId}-${selectedLayer.id}`} variant={variant} layer={selectedLayer} /><LayersList variant={variant} selectedId={selectedId} /></> : selected ? <TextInspector key={`${variantId}-${selected.id}`} element={selected} /> : <>
           <div className="panel-heading"><h2>Properties</h2><span className="subtle-label">No selection</span></div>
           <div className="properties-empty">
             <div className="selection-hint" aria-hidden="true"><span /><MousePointer2 size={22} strokeWidth={1.4} /></div>
             <h3>{preview ? 'Review your design' : 'Select an element'}</h3>
             <p>{preview ? `Use this ${adapting ? 'version' : 'design'} from the AI panel, then select any text to edit its wording and layout.` : 'Choose a text element on the canvas to edit typography, position and layout.'}</p>
           </div>
+          {!preview && <LayersList variant={variant} selectedId={selectedId} />}
           <div className="panel-footnote"><span className="tiny-frame" aria-hidden="true" /><p>A little space.<br />A lot of possibility.</p></div>
           </>}
         </aside>
