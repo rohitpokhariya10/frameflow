@@ -329,3 +329,26 @@ Tests: `proposalReviewFlow.test.ts` (provider labels, background, approve/reject
 provenance across reload, forged-field rejection, background never segmented), `ProposalReview.test.ts` (UX).
 Live data (0 provider traffic): new poster job 7afa2ec2 reused the recovered Seedream result via the same-owner cache
 (`cacheHit: owner`, callsUsed 0) and opened review with 9 named elements + Background.
+
+## 2026-09-26 — Architecture milestone: classification → editable canvas
+
+Commits: 553ea32 (isolated browser tests), a85b7d8 (classification), d1a2ae7 (quality gate + BiRefNet for all image
+objects), d25dedc (final review), 0e25641 (scene graph), 6464b65 (editable canvas).
+
+- Classification: IMAGE_OBJECT / TEXT / SHAPE / BACKGROUND / UNKNOWN from explicit type, base layer, user intent and
+  provider wording; UNKNOWN blocks approval; only image objects reach SAM; no implicit proposal/SAM2 fallback.
+- Quality gate: PASS/REVIEW/FAIL with named checks; FAIL never reaches alpha; tiers persisted and recomputed after
+  guided/manual corrections; tiny patches rejected in SAM candidate scoring.
+- BiRefNet: one constrained call per confirmed image object (boundary band only).
+- Final review: rejected alpha edits return to the gate with the previous revision.
+- Scene graph (phase 6): background (original source), image layers (source RGB × approved alpha, native),
+  text layers (source raster + estimated style + low-confidence suggestion; no OCR), shape layers (vector fit with
+  gradient, occlusion-aware fill; raster when unsure), provider z-order.
+- Editor: optional `layers` on design versions (schema v1, backward compatible); layer rendering, transform,
+  inspector, undo, export; "Open as editable design"; text raster → editable text conversion.
+Verification: isolated Playwright suite (4 tests) passes on synthetic data and on the replayed real poster discovery
+with an E2E-only fake SAM/BiRefNet and no fal key; existing editor suite 67/67 (desktop); client 168 unit tests;
+root typecheck, lint, build. Offline check on the real poster with real discovery silhouettes: main orange panel →
+rounded rectangle r≈115 px, 45° gradient, IoU 0.998. No paid provider calls in this milestone.
+Known pre-existing failures unchanged: reviewFlow (legacy SAM2 path expectation), router (untracked draft);
+repository lease test flaky.
