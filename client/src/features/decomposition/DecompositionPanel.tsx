@@ -83,7 +83,7 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
   };
   return <div className={embedded ? "decomp-inline" : "decomp-backdrop"}><div className="decomp-panel" role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label="Image decomposition">
     <div className="decomp-row"><h2>Image decomposition</h2>{onClose && <button onClick={onClose} aria-label="Close image decomposition">Close</button>}</div>
-    <p>Inspect original → analysis → Qwen proposals → SAM2 candidates → refined SAM3 masks and alpha. Then extract original pixels into transparent PNGs. Stops at phase 6.</p>
+    <p>Name a target to segment it from the original image. Inspect ownership, correct with points or a brush, then confirm alpha and extract original pixels. Qwen proposals and raw masks are inspection evidence. Stops at phase 6.</p>
     {(message || error) && <p role="alert">{message || error}</p>}
     {!capabilities ? <p>Checking decomposition service…</p> : !capabilities.enabled ? <p>{capabilities.message}</p> : <>
       {!capabilities.authenticated ? <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await api.login(password); setPassword(''); setCapabilities(await api.capabilities()); }); }}>
@@ -102,7 +102,7 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
           {job.error && <p role="alert">{job.error.message}</p>}{job.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
           {['queued', 'running', 'needs_review', 'cancel_requested'].includes(job.state) && <button disabled={busy || job.state === 'cancel_requested'} onClick={() => void run(() => update(() => api.cancel(job.id)))}>Cancel job</button>}
           {job.state === 'failed' && <button disabled={busy} onClick={() => void run(() => update(() => api.retry(job.id, job.revision)))}>Retry failed step</button>}
-          {job.state === 'needs_review' && job.candidates?.length && job.sourcePreviewArtifactId && (job.phase === 4 || job.review?.code !== 'REFINEMENT_VISUAL_REVIEW') ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
+          {job.state === 'needs_review' && job.candidates?.length && job.sourcePreviewArtifactId && job.review?.actions.some(action => ['accept-masks', 'guided-refine', 'manual-masks'].includes(action)) ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
           {job.state === 'needs_review' && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => void run(() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] }))}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
           <InspectionViewer job={job} />
         </section>}

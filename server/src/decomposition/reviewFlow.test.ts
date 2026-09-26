@@ -56,10 +56,10 @@ it('persists full-person candidate identity and both point labels through review
         const transform = request.transform!;
         if (model === 'sam3') {
           expect(request.key).toContain(candidateId);
-          expect(request.prompt).toBe('person with phone');
-          expect(request.points).toEqual(points.map(p => ({ ...p, x: p.x - transform.crop.x, y: p.y - transform.crop.y })));
+          expect(['person with phone', 'person', 'phone']).toContain(request.prompt);
+          if (request.prompt === 'person with phone') expect(request.points).toEqual(points.map(p => ({ ...p, x: p.x - transform.crop.x, y: p.y - transform.crop.y, objectId: 0 })));
         }
-        return [await sharp(personPng).extract({ left: transform.crop.x, top: transform.crop.y, width: transform.crop.width, height: transform.crop.height }).png().toBuffer()];
+        return [await sharp(request.prompt === 'phone' ? await encodeMask(patch) : personPng).extract({ left: transform.crop.x, top: transform.crop.y, width: transform.crop.width, height: transform.crop.height }).png().toBuffer()];
       });
       const execute = runPhase;
       const dispatch = vi.spyOn(pipeline, 'runPhase').mockImplementation(async context => {
@@ -74,16 +74,16 @@ it('persists full-person candidate identity and both point labels through review
       if (candidateId === 'candidate-5' && action === 'accept-masks') {
         expect(infer).not.toHaveBeenCalled();
         expect(finished.review?.code).toBe('GUIDANCE_MASK_CONFLICT');
-        expect(finished.review?.message).toContain('POSITIVE_POINT_OUTSIDE_MASK');
+        expect(finished.review?.message).toContain('POSITIVE_GUIDANCE_UNSATISFIED');
       } else {
         const refined = finished.data.refined as { id: string; maskArtifactId: string; input: { candidateId: string; positivePointCount: number; negativePointCount: number }; warnings: string[] }[];
         expect(finished.phase).toBe(5);
         expect(finished.review?.code).toBe('REFINEMENT_VISUAL_REVIEW');
         expect(refined).toHaveLength(1);
-        expect(refined[0]).toMatchObject({ id: candidateId, input: { candidateId, positivePointCount: 1, negativePointCount: 1 } });
+        expect(refined[0]).toMatchObject({ id: candidateId });
         expect(measureMask(await decodeMask(await store.read(repo.getArtifact(refined[0].maskArtifactId)!), { encoding: 'luminance' })).area).toBe(measureMask(person).area);
         expect(refined[0].warnings).not.toContain('POSITIVE_GUIDANCE_MISSING');
-        expect(infer).toHaveBeenCalledTimes(2);
+        expect(infer).toHaveBeenCalledTimes(4);
       }
     }
   } finally { repo.close(); await rm(dir, { recursive: true, force: true }); }

@@ -42,12 +42,12 @@ export class PipelineContext {
   /** Buffer-in, durable provider queue, validated immutable local artifacts out. */
   infer: Infer = async (model, request) => {
     this.check(); if (!this.provider) throw new ProviderError('PROVIDER_NOT_CONFIGURED', 'Set the server FAL_KEY to run decomposition.');
-    const { image, mask, ...settings } = request;
-    const inputHash = providerInputHash(model, { image: sha256(image), mask: mask && sha256(mask), settings });
-    const cache = (this.job.data.inferences ??= {}) as Record<string, { artifactIds: string[]; requestId: string; dimensions: { width: number; height: number }[]; model: string; inputHash: string; settings: unknown; endpoint: string; seed?: number; inputImageSha256: string; outputSha256: string[] }>;
+    const { image, mask, key, ...settings } = request;
+    const inputHash = providerInputHash(model, { image: sha256(image), mask: mask && sha256(mask), settings, endpoint: endpointRegistry[model].endpoint });
+    const cache = (this.job.data.inferences ??= {}) as Record<string, { scores?: number[]; boxes?: [number, number, number, number][]; artifactIds: string[]; requestId: string; dimensions: { width: number; height: number }[]; model: string; inputHash: string; settings: unknown; endpoint: string; adapterVersion: string; immutableModelRevision: 'unknown'; seed?: number; inputImageSha256: string; outputSha256: string[] }>;
     const cached = cache[inputHash];
-    if (cached) { const results: Buffer[] = []; for (const id of cached.artifactIds) results.push(await this.artifact(id)); return results; }
-    const callStep = this.repository.createStep(this.job, this.step.phase, inputHash, request.key ?? model, Number(this.job.data.attempt ?? 1));
+    if (cached) { const results: Buffer[] = []; for (const id of cached.artifactIds) results.push(await this.artifact(id)); return Object.assign(results, { scores: cached.scores, boxes: cached.boxes, requestId: cached.requestId }); }
+    const callStep = this.repository.createStep(this.job, this.step.phase, inputHash, key ?? model, Number(this.job.data.attempt ?? 1));
     const existing = this.repository.getProviderRequest(callStep.id, inputHash);
     const dimensions = await sharp(image).metadata(); const maskDimensions = mask ? await sharp(mask).metadata() : undefined;
     // Upload only when a new request needs submission; known queue requests resume without re-upload.
@@ -75,9 +75,9 @@ export class PipelineContext {
         const artifact = await this.put('provider-output', normalized);
         ids.push(artifact.artifactId); hashes.push(artifact.sha256); sizes.push({ width: size.width, height: size.height }); buffers.push(normalized);
       }
-      cache[inputHash] = { artifactIds: ids, requestId: advanced.request.providerRequestId!, dimensions: sizes, model, inputHash, settings, endpoint: endpointRegistry[model].endpoint, seed: advanced.request.seed, inputImageSha256: sha256(image), outputSha256: hashes };
+      cache[inputHash] = { scores: advanced.output.scores, boxes: advanced.output.boxes, artifactIds: ids, requestId: advanced.request.providerRequestId!, dimensions: sizes, model, inputHash, settings, endpoint: endpointRegistry[model].endpoint, adapterVersion: endpointRegistry[model].adapterVersion, immutableModelRevision: 'unknown', seed: advanced.request.seed, inputImageSha256: sha256(image), outputSha256: hashes };
       this.job.data.inferences = cache; this.save(); callStep.status = 'completed'; callStep.outputArtifactIds = ids; this.repository.updateStep(callStep, this.lease);
-      return buffers;
+      return Object.assign(buffers, { scores: advanced.output.scores, boxes: advanced.output.boxes, requestId: advanced.request.providerRequestId });
     }
   };
 }

@@ -11,9 +11,11 @@ export type InferenceRequest = {
   numLayers?: number;
   maxMasks?: number;
   seed?: number;
+  highResolutionMatte?: boolean;
   /** Stable phase/object/attempt identity, included in the durable execution hash. */
   key?: string;
   /** Local provenance only; never sent as an undocumented fal input field. */
   transform?: ImageTransform;
 };
-export type Infer = (model: Model, request: InferenceRequest) => Promise<Buffer[]>;
+export type InferenceOutput = Buffer[] & { scores?: number[]; boxes?: [number, number, number, number][]; requestId?: string };
+export type Infer = (model: Model, request: InferenceRequest) => Promise<InferenceOutput>;

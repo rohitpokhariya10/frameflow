@@ -1,8 +1,8 @@
-/** Verified against the linked fal model API pages on 2026-09-25. */
+/** Verified against the linked fal model API pages on 2026-09-26. */
 export const endpointRegistry = {
   qwen: { endpoint: 'fal-ai/qwen-image-layered', adapterVersion: '1', outputField: 'images', encoding: 'rgba-alpha' },
   sam2: { endpoint: 'fal-ai/sam2/auto-segment', adapterVersion: '1', outputField: 'individual_masks', encoding: 'luminance' },
-  sam3: { endpoint: 'fal-ai/sam-3/image', adapterVersion: '1', outputField: 'masks', encoding: 'luminance' },
+  sam3: { endpoint: 'fal-ai/sam-3-1/image', adapterVersion: '2', outputField: 'masks', encoding: 'luminance' },
   birefnet: { endpoint: 'fal-ai/birefnet/v2', adapterVersion: '1', outputField: 'image', encoding: 'luminance' },
   finegrain: { endpoint: 'fal-ai/finegrain-eraser/mask', adapterVersion: '1', outputField: 'image', encoding: 'rgb' },
   flux: { endpoint: 'fal-ai/flux-pro/v1/fill', adapterVersion: '1', outputField: 'images', encoding: 'rgb' },
@@ -35,6 +35,7 @@ export type ProviderInputOptions = {
   maskWidth?: number;
   maskHeight?: number;
   prompt?: string;
+  highResolutionMatte?: boolean;
   numLayers?: number;
   maxMasks?: number;
   seed?: number;
@@ -89,7 +90,7 @@ export function buildProviderInput(model: Model, options: ProviderInputOptions):
       });
       return { ...input, prompt: prompt(options.prompt), point_prompts, box_prompts, apply_mask: false, output_format: 'png', return_multiple_masks: true, max_masks: integer(options.maxMasks ?? 3, 1, 6, 'maxMasks'), include_scores: true, include_boxes: true };
     }
-    case 'birefnet': return { ...input, model: 'Matting', operating_resolution: '1024x1024', mask_only: true, output_format: 'png' };
+    case 'birefnet': return { ...input, model: options.highResolutionMatte ? 'General Use (Dynamic)' : 'Matting', operating_resolution: options.highResolutionMatte ? '2048x2048' : '1024x1024', mask_only: true, output_format: 'png' };
     case 'finegrain':
     case 'flux': {
       const width = integer(options.width, 1, 4096, 'width');

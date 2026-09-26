@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { deterministicProposalSeed, semanticDiscovery, semanticReview } from './phases/semanticPipeline.js';
 import { extractVisibleLayers } from './phases/extract.js';
 import { mockReviewObjects } from './providers/mock.js';
 import { validDecompositionReview, type DecompositionReview } from '@frameflow/shared';
@@ -74,12 +75,14 @@ export async function runPhase(context: PipelineContext) {
   const analysis = await context.artifact(String(job.data.analysisArtifactId));
   const transform = job.data.analysisTransform as ImageTransform;
   if (phase === 3) {
-    const result = await createLayerProposals(analysis, context.infer, 4);
+    const seed = deterministicProposalSeed(source.workingMasterSha256, job.options);
+    context.job.data.qwenSeed = seed; context.save();
+    const result = await createLayerProposals(analysis, context.infer, 4, seed);
     const saved: SavedProposal[] = [];
     for (const [i, proposal] of result.proposals.entries()) {
       const record = await context.put('qwen-proposal', proposal.rgba, `03-qwen/proposal-${seq(i)}.png`);
       const { id, label, width, height, registered, warnings } = proposal;
-      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId });
+      saved.push({ id, label, width, height, registered, warnings, artifactId: record.artifactId, ...{ bounds: measureMask(proposal.alpha).bbox, coverage: measureMask(proposal.alpha).areaFraction, seed, prompt: null, promptNote: 'Qwen layered has no semantic text input here; target intent is persisted in job options.' } });
     }
     context.job.data.proposals = saved;
     result.warnings.forEach((warning) => context.warn(warning));
@@ -87,6 +90,7 @@ export async function runPhase(context: PipelineContext) {
     context.finish(3, 'Qwen proposals saved; source masks are next'); return;
   }
   if (phase === 4) {
+    if (job.data.verificationMode !== 'mock' && await semanticDiscovery(context, master, await proposals(context))) return;
     const result = await segmentObjects(analysis, context.infer, { proposals: await proposals(context), maxObjects: job.options.maxObjects });
     const saved: SavedCandidate[] = []; const overlays: { mask: Mask }[] = [];
     for (const candidate of result.candidates) {
@@ -112,9 +116,13 @@ export async function runPhase(context: PipelineContext) {
   if (!correction) throw new DecompositionError('REVIEW_REQUIRED', 'Confirm the candidate masks before refinement.', 409);
   if (!validDecompositionReview(correction, source.width, source.height)) throw new DecompositionError('INVALID_REVIEW', 'Review coordinates or structure are invalid.', 400);
   if (correction.action === 'approve-result' && job.data.refined) {
+    if ((job.data.refined as { refinementAccepted?: boolean }[]).some(item => item.refinementAccepted === false)) {
+      context.review('TARGET_NOT_RECOVERED', 'A rejected semantic mask cannot be approved. Correct the target or save a manual mask.', ['guided-refine', 'manual-masks']); context.save(); return;
+    }
     job.state = 'running'; job.data.resultReviewed = true; job.review = undefined;
     context.finish(5, 'Phase 5 of 6 — Refined masks accepted; extracting source pixels'); return;
   }
+  if (job.data.verificationMode !== 'mock' || correction.action === 'manual-masks') { await semanticReview(context, master, correction); return; }
   const candidates = job.data.candidates as SavedCandidate[];
   const selected = (correction.objects ?? []).filter((object) => object.selected !== false);
   if (!selected.length || selected.length > job.options.maxObjects) throw new DecompositionError('OBJECT_SELECTION_REQUIRED', `Select between 1 and ${job.options.maxObjects} objects.`, 409);
@@ -149,6 +157,9 @@ export async function runPhase(context: PipelineContext) {
   context.job.data.refinementInputs = refinementInputs;
   context.save();
   const result = await refineObjects(master, context.infer, nativeObjects);
+  if (result.objects.some(object => !object.refinementAccepted)) {
+    context.review('TARGET_NOT_RECOVERED', 'Segmentation did not recover the intended object. Correct guidance or repair the mask manually.', ['guided-refine', 'manual-masks']); context.save(); return;
+  }
   const refined = [];
   for (const [i, object] of result.objects.entries()) {
     const base = `05-refined/object-${seq(i)}`;

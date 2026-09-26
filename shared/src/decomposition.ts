@@ -16,7 +16,7 @@ export interface DecompositionPoint { x: number; y: number; label: 0 | 1 }
 export interface DecompositionStroke { mode: 'add' | 'subtract'; radius: number; points: { x: number; y: number }[] }
 export interface DecompositionReview {
   expectedRevision: number;
-  action: 'accept-masks' | 'guided-refine' | 'accept-visible-only' | 'approve-generation' | 'approve-result';
+  action: 'manual-masks' | 'accept-masks' | 'guided-refine' | 'accept-visible-only' | 'approve-generation' | 'approve-result';
   objects?: { id: string; candidateId?: string; label?: string; points?: DecompositionPoint[]; box?: DecompositionBox; strokes?: DecompositionStroke[]; selected?: boolean; completeHidden?: boolean }[];
   order?: string[];
   occlusion?: { frontObjectId: string; backObjectId: string }[];
@@ -47,7 +47,7 @@ export interface DecompositionJobSummary {
   warnings: string[]; review?: DecompositionReviewRequest; error?: { code: string; message: string; retryable: boolean };
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
-  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
@@ -85,7 +85,7 @@ export function validDecompositionManifest(value: unknown): value is Decompositi
   return [value.preview,value.qualityReport,value.provenance].every((ref) => ref === undefined || validDecompositionArtifact(ref));
 }
 export function validDecompositionReview(value: unknown, width: number, height: number): value is DecompositionReview {
-  if (!object(value) || !integer(value.expectedRevision) || !['accept-masks','guided-refine','accept-visible-only','approve-generation','approve-result'].includes(String(value.action))) return false;
+  if (!object(value) || !integer(value.expectedRevision) || !['manual-masks','accept-masks','guided-refine','accept-visible-only','approve-generation','approve-result'].includes(String(value.action))) return false;
   if (value.order !== undefined && (!strings(value.order) || value.order.length > 12 || new Set(value.order).size !== value.order.length)) return false;
   if (value.occlusion !== undefined && (!Array.isArray(value.occlusion) || value.occlusion.length > 144 || !value.occlusion.every((edge) => object(edge) && typeof edge.frontObjectId === 'string' && typeof edge.backObjectId === 'string' && edge.frontObjectId.length <= 100 && edge.backObjectId.length <= 100 && edge.frontObjectId !== edge.backObjectId))) return false;
   if (value.hiddenRegions !== undefined && (!Array.isArray(value.hiddenRegions) || value.hiddenRegions.length > 2 || !value.hiddenRegions.every((region) => object(region) && typeof region.objectId === 'string' && region.objectId.length <= 100 && typeof region.prompt === 'string' && region.prompt.length > 0 && region.prompt.length <= 2000 && Array.isArray(region.strokes) && region.strokes.length > 0 && region.strokes.length <= 100 && region.strokes.every((stroke) => object(stroke) && ['add','subtract'].includes(String(stroke.mode)) && finite(stroke.radius) && stroke.radius >= 1 && stroke.radius <= 256 && Array.isArray(stroke.points) && stroke.points.length > 0 && stroke.points.length <= 1000 && stroke.points.every((p) => object(p) && finite(p.x) && finite(p.y) && p.x >= 0 && p.y >= 0 && p.x < width && p.y < height))))) return false;
@@ -102,3 +102,9 @@ export function validDecompositionReview(value: unknown, width: number, height: 
 }
 
 export type ReviewCorrection = DecompositionReview;
+
+/** User intent is distinct from model labels and source-image evidence. */
+export interface SemanticTarget {
+  id: string; label: string; providerPrompt: string; compositionMode: 'single' | 'group';
+  memberHints?: string[]; origin: 'user' | 'proposal'; proposalId?: string;
+}

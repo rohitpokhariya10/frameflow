@@ -36,7 +36,8 @@ try {
   const review = page.getByRole('region', { name: 'Mask review' });
   await review.locator('select').nth(0).selectOption('semantic-proposal-1');
   await review.getByRole('button', { name: 'Use only this candidate' }).click();
-  assert.match(await review.innerText(), /Included \(1\): Proposal group proposal-1 \(semantic-proposal-1\)/);
+  assert.match(await review.innerText(), /Included \(1\): Proposal group proposal-1/);
+  await review.getByLabel('Advanced / raw proposals', { exact: true }).check();
   assert.match(await review.innerText(), /Synthesized from candidate-1, candidate-2; Qwen proposal-1/);
   await review.locator('select').nth(0).selectOption('candidate-6');
   await page.getByRole('button', { name: 'Use only this candidate' }).click();

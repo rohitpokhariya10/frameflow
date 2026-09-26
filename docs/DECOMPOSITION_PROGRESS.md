@@ -168,3 +168,60 @@ connectivity is restored; no Phase 7+ work. Current implementation uses explicit
 assignment, not automatic semantic labeling of Qwen images; unsupported/misaligned groups
 remain raw candidates with a guided fallback. Grouping and 90% correction coverage cap are
 review heuristics, not proofs of semantic correctness.
+
+## 2026-09-26 — Source-driven semantic ownership hardening
+
+Before: raw SAM2 candidate → prior-overlap-biased correction → rejected/retained mask could
+still be published as phase-5-ready. Provider scores/boxes did not reach candidate selection.
+After: user intent → working-master SAM 3.1 → local quality and group-member checks →
+review/correction → constrained high-resolution alpha → explicit approval → native extraction.
+Phase 7+ unchanged. Qwen RGB never enters ownership or extracted RGB.
+
+Verified official schemas on 2026-09-26:
+https://fal.ai/models/fal-ai/sam-3-1/image/api (same documented pixel points/boxes, object_id,
+masks/scores/normalized boxes); endpoint registry sam3 adapter v2 now uses that endpoint.
+https://fal.ai/models/fal-ai/birefnet/v2/api (Dynamic supports 2048 operating resolution).
+No model carousel; previous endpoint requests retain recorded endpoints in durable transport.
+
+SemanticTarget preserves user label, normalized prompt, single/group mode and member hints.
+Direct full-expression segmentation is independent of SAM2. Two-member groups additionally
+check atomic masks; ambiguous instances are review-required. A union is only a reviewable
+alternative with recorded member prompts, scores and a close spatial relationship. No automatic
+semantic label is inferred from Qwen image order. Automatic mode can use registered proposal
+bounds/interior/exterior seeds; mismatched proposals fall back to raw review. SAM2 is auxiliary.
+
+Quality rejects missed positive points, negative leaks, missing member coverage, protected
+ownership overlap, excessive coverage/border leakage, excessive components and low provider
+confidence. Current-mask IoU is only a weak score prior. Geometry cannot prove semantic intent;
+all successful masks still require human visual confirmation. Failed attempts keep previous
+artifacts and stay in phase 4; rejected legacy results cannot be approved into extraction.
+
+Manual-masks applies native ADD/SUBTRACT strokes, saves immutable revisions, and makes no
+provider call. Accepted ownership is matted only in a small uncertainty band; native interior
+is retained. Dynamic 2048 alpha is used on larger soft-target crops, Matting otherwise. Native
+mask/alpha/overlay are published together with matching revision IDs and checksums; overlay
+is made directly from the exact saved alpha. Target UI prioritizes semantic results; raw IDs
+and provenance stay in Advanced inspection. Qwen seed is deterministic from source SHA/options;
+bbox/coverage/registration/provenance are stored. Per-job inference cache excludes step key,
+preserves scores/boxes and skips duplicate inference on identical source/settings/adapter input.
+
+Verification so far: 44 focused tests passed across semantic ownership/review/coordinates,
+provider contracts/recovery, client submission, and native extraction. Root typecheck, focused
+lint, root build passed. Live test pending: job 84905d7d-678f-40f1-b884-517e5e4c44d9,
+woman holding phone poster, maximum six submissions, at most one guided correction.
+
+Live poster verification completed: job 84905d7d-678f-40f1-b884-517e5e4c44d9 is
+needs_review at phase 5, five total submissions, zero guided retries. First full-expression
+SAM mask failed member completeness; independently segmented woman/phone were spatially
+related and combined as an explicitly reviewable group. Browser confirmation started alpha.
+Native ownership is 1200×1500, 491394 pixels (27.2997%). Visual inspection confirms visible
+woman, arms/hands, phone, and hair bulk; poster text/panels excluded. Soft edges still need
+human inspection; no claim of perfect individual hair strands. SAM inputs/outputs 1200×1500;
+BiRefNet Dynamic 2048 operating mode returned 1168×1065 contextual crop, mapped to native.
+Mask/alpha/overlay share revision 61197ed1-de60-48da-8031-a2100462e34e. Request IDs:
+Qwen 01a0dc64-c793-77e1-8f6b-6e69b2fae51d;
+SAM 01a0dc67-8e6f-7190-9aff-b794a3f982af, 01a0dc67-b7e5-7ad1-b37b-9c4665cea5d7,
+01a0dc67-dd4c-7cb3-b693-e23975ed335f; alpha 01a0dc69-eceb-75f0-b287-79026eb68016.
+Original artifacts retained. Browser screenshot in ignored artifacts/decomposition/source-semantic/.
+45 focused tests now pass, including semantic partial-result failure preserving prior mask.
+Next user request is Qwen reproducibility investigation; keep this source-driven architecture.

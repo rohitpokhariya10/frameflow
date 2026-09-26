@@ -16,11 +16,11 @@ export type LayerProposal = {
 };
 
 /** Qwen proposes geometry only. Its RGB is never used for visible extraction. */
-export async function createLayerProposals(analysis: Buffer, infer: Infer, count = 4): Promise<{ proposals: LayerProposal[]; warnings: string[] }> {
+export async function createLayerProposals(analysis: Buffer, infer: Infer, count = 4, seed?: number): Promise<{ proposals: LayerProposal[]; warnings: string[] }> {
   const source = await sharp(analysis).metadata();
   const warnings: string[] = [];
   let outputs: Buffer[];
-  try { outputs = await infer('qwen', { image: analysis, numLayers: Math.min(6, Math.max(1, count)), key: 'phase03-proposals' }); }
+  try { outputs = await infer('qwen', { image: analysis, numLayers: Math.min(6, Math.max(1, count)), seed, key: 'phase03-proposals' }); }
   catch (error) {
     if (!(error instanceof ProviderError) || !['PROVIDER_EMPTY_OUTPUT', 'PROVIDER_INVALID_IMAGE', 'PROVIDER_UNAVAILABLE', 'PROVIDER_SCHEMA_CHANGED', 'PROVIDER_CANDIDATE_LIMIT'].includes(error.code)) throw error;
     return { proposals: [], warnings: ['PROPOSAL_UNRELIABLE', error.code] };
