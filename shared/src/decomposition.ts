@@ -27,6 +27,8 @@ export interface DecompositionReview {
 }
 export type ReviewGate = 'qwen-proposal-review' | 'semantic-mask-review' | 'alpha-review';
 export type QualityTier = 'PASS' | 'REVIEW' | 'FAIL';
+/** One named ownership check behind a REVIEW/FAIL tier, with a user-facing message. */
+export interface QualityCheckSummary { code: string; tier: 'REVIEW' | 'FAIL'; message: string }
 export interface DecompositionReviewRequest { gate?: ReviewGate; code: string; message: string; actions: string[]; artifactIds: string[] }
 export interface DecompositionArtifactRef {
   artifactId: string; relativePath: string; sha256: string; mimeType: string; bytes: number; width: number; height: number;
@@ -52,7 +54,7 @@ export interface DecompositionJobSummary {
   warnings: string[]; review?: DecompositionReviewRequest; error?: { code: string; message: string; retryable: boolean };
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
-  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; source?: 'sam2' | 'sam3' | 'synthesized'; target?: SemanticTarget; qualityStatus?: string; qualityTier?: QualityTier; qualityChecks?: QualityCheckSummary[]; revisionId?: string; sourceCandidateIds?: string[]; proposalId?: string; proposalMatches?: { proposalId: string; iou: number }[]; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
   proposals?: ProposalSummary[]; proposalTargets?: ProposalReviewTarget[]; refined?: ReviewedMask[]; discovery?: DiscoverySummary;
   reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;

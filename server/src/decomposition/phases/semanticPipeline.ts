@@ -8,13 +8,16 @@ import { overlayMasks } from '../image/overlay.js';
 import { ProviderError, endpointRegistry } from '../providers/adapters.js';
 import { recoverSemanticOwnership, semanticTarget, proposalSeeds, scoreSemanticMask } from './semanticOwnership.js';
 import type { LayerProposal } from './proposals.js';
+import { ownershipQuality, type QualityCheck } from './qualityGate.js';
 import type { Mask } from '../image/types.js';
 
 export type SemanticCandidate = {
   id: string; label: string; target: SemanticTarget; source: 'sam3'; selected: boolean;
   maskArtifactId: string; alphaArtifactId?: string; overlayArtifactId: string; memberArtifactIds: string[];
   qualityStatus: 'needs-correction' | 'needs-confirmation'; warnings: string[]; revisionId: string;
-  qualityTier?: QualityTier; manualOwnership?: boolean; groupId?: string;
+  qualityTier?: QualityTier; qualityChecks?: QualityCheck[]; manualOwnership?: boolean; groupId?: string;
+  /** Reviewed provisional region (proposal review) used as completeness evidence by the quality gate. */
+  provisionalMaskArtifactId?: string;
   statistics: ReturnType<typeof measureMask>;
 };
 const json = (value: unknown) => Buffer.from(JSON.stringify(value, null, 2));
@@ -74,11 +77,16 @@ export async function semanticDiscovery(context: PipelineContext, master: Buffer
     }
     context.repository.event(context.job, 'semantic_quality', JSON.stringify({ targetId: target.id, label: target.label, accepted: !!result.mask, requestIds: result.providerRequestIds, latencyMs: Date.now() - startedAt, inputRevision: context.job.revision }));
     const mask = result.mask ?? emptyMask(source.width, source.height);
+    const chosen = result.scores.filter(score => !score.reasons.length).sort((a, b) => b.score - a.score)[0];
+    const quality = ownershipQuality(mask, { target, points, box: intent?.userBox, provisional: proposal, members: result.members, providerScore: chosen?.providerScore });
     const trio = await saveTrio(context, master, mask, mask, `04-semantic/${target.id}`);
     const memberArtifactIds: string[] = [];
     for (const [i, member] of result.members.entries()) memberArtifactIds.push((await context.put('member-evidence', await encodeMask(member), `04-semantic/${target.id}-member-${i + 1}.png`)).artifactId);
-    saved.push({ id: target.id, label: target.label, target, source: 'sam3', selected: false, ...trio, memberArtifactIds, qualityStatus: result.mask ? 'needs-confirmation' : 'needs-correction', qualityTier: result.mask ? 'REVIEW' : 'FAIL', statistics: measureMask(mask), warnings: result.warnings });
-    await context.put('semantic-quality', json({ ...result, mask: undefined, members: undefined, memberArtifactIds, ...trio, provider: endpointRegistry.sam3, unknownImmutableModelRevision: true }), `04-semantic/${target.id}-quality.json`, 'application/json');
+    const tier = result.mask ? quality.tier : 'FAIL';
+    saved.push({ id: target.id, label: target.label, target, source: 'sam3', selected: false, ...trio, memberArtifactIds, qualityStatus: tier === 'FAIL' ? 'needs-correction' : 'needs-confirmation', qualityTier: tier, qualityChecks: quality.checks,
+      provisionalMaskArtifactId: intent?.maskArtifactId, statistics: measureMask(mask), warnings: [...new Set([...result.warnings, ...quality.checks.map(c => c.code)])] });
+    await context.put('semantic-quality', json({ ...result, mask: undefined, members: undefined, memberArtifactIds, ...trio, qualityGate: quality, provider: endpointRegistry.sam3, unknownImmutableModelRevision: true }), `04-semantic/${target.id}-quality.json`, 'application/json');
+    console.info(JSON.stringify({ event: 'ownership_quality', jobId: context.job.id, phase: 4, targetId: target.id, targetLabel: target.label, provider: 'sam3', requestIds: result.providerRequestIds, outputRevision: trio.revisionId, qualityStatus: tier, reasons: quality.checks.map(c => c.code), latencyMs: Date.now() - startedAt, callCount: context.job.callsUsed }));
     context.job.data.candidates = saved; context.save();
   }
   semanticGate(context, 'Inspect the entire requested target, including every group member. Failed targets need correction; matting starts only after you confirm ownership.');
@@ -126,16 +134,23 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
         }
         mask = result.mask;
       } else {
-        const failures = scoreSemanticMask(mask, { target: manual || candidate.manualOwnership ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, members: manual || candidate.manualOwnership ? undefined : members, protectedMask }).reasons;
-        if ((!manual && !candidate.manualOwnership && candidate.qualityStatus === 'needs-correction') || failures.length) {
-          context.job.phase = 4;
-          context.review('TARGET_NOT_RECOVERED', `Target needs correction (${failures.join(', ') || 'no accepted semantic mask'}). Refine with AI or save a manual mask.`, ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]); context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
+        const userOwned = manual || candidate.manualOwnership;
+        const failures = scoreSemanticMask(mask, { target: userOwned ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, members: userOwned ? undefined : members, protectedMask }).reasons;
+        const provisional = candidate.provisionalMaskArtifactId ? await decodeMask(await context.artifact(candidate.provisionalMaskArtifactId), { encoding: 'luminance', binary: true }) : undefined;
+        const gate = ownershipQuality(mask, { target: userOwned ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, members: userOwned ? undefined : members, protectedMask, provisional: userOwned ? undefined : provisional, manual: userOwned });
+        candidate.qualityTier = gate.tier; candidate.qualityChecks = gate.checks;
+        // FAIL never proceeds to alpha. REVIEW proceeds only because this submission is the user's explicit confirmation.
+        if ((!userOwned && candidate.qualityStatus === 'needs-correction') || failures.length || gate.tier === 'FAIL') {
+          const reasons = [...new Set([...gate.checks.filter(c => c.tier === 'FAIL').map(c => c.message), ...failures])];
+          context.job.phase = 4; context.job.data.candidates = candidates;
+          context.review('TARGET_NOT_RECOVERED', `Target needs correction (${reasons.join(' ') || 'no accepted semantic mask'}). Refine with AI or save a manual mask.`, ['accept-masks', 'guided-refine', 'manual-masks', 'merge-targets', 'split-target'], [candidate.overlayArtifactId]); context.job.review!.gate = 'semantic-mask-review'; context.save(); return;
         }
       }
       let alpha = mask;
       const warnings = manual ? ['MANUAL_OWNERSHIP_REQUIRES_VISUAL_CONFIRMATION'] : ['SEMANTIC_VISUAL_REVIEW_REQUIRED'];
-      // Alpha is a separate, bounded operation only after ownership passes. It cannot remove the interior.
-      if (!ownershipOnly && /\b(person|woman|man|girl|boy|hair|fur|portrait|dog|cat)\b/i.test(target.providerPrompt)) {
+      // Alpha is one bounded BiRefNet call per confirmed image object, only after ownership passes. The matte can change
+      // only the boundary ring (mask eroded..dilated): the deep interior stays owned and the deep exterior stays empty.
+      if (!ownershipOnly) {
         const bounds = maskBounds(mask)!; const pad = 16;
         const crop = { x: Math.max(0, bounds.x - pad), y: Math.max(0, bounds.y - pad), width: 0, height: 0 };
         crop.width = Math.min(mask.width, bounds.x + bounds.width + pad) - crop.x; crop.height = Math.min(mask.height, bounds.y + bounds.height + pad) - crop.y;
@@ -154,7 +169,11 @@ export async function semanticReview(context: PipelineContext, master: Buffer, c
         semanticMaskArtifactId: trio.maskArtifactId, qualityStatus: 'REVIEW', inputRevision: correction.expectedRevision, quality, warnings, refinementAccepted: true, ownershipSource: manual ? 'user' : 'source-semantic', memberArtifactIds: candidate.memberArtifactIds };
       refined.push(entry);
       // Updating the three references together makes the next review operate on this exact revision.
-      Object.assign(candidate, trio, { label: target.label, target, manualOwnership: manual || candidate.manualOwnership, qualityTier: 'REVIEW', qualityStatus: 'needs-confirmation', statistics: measureMask(mask), warnings });
+      // A new AI mask replaces manual ownership; a manual save makes it user-owned until the next AI refinement.
+      if (manual) candidate.manualOwnership = true; else if (result) candidate.manualOwnership = false;
+      const provisionalMask = candidate.provisionalMaskArtifactId && !manual ? await decodeMask(await context.artifact(candidate.provisionalMaskArtifactId), { encoding: 'luminance', binary: true }) : undefined;
+      const revised = ownershipQuality(mask, { target: manual || candidate.manualOwnership ? { ...target, compositionMode: 'single', memberHints: undefined } : target, points: object.points, box: object.box, protectedMask, members: result?.members ?? (manual ? undefined : members), provisional: provisionalMask, manual: manual || candidate.manualOwnership });
+      Object.assign(candidate, trio, { label: target.label, target, manualOwnership: candidate.manualOwnership, qualityTier: revised.tier, qualityChecks: revised.checks, qualityStatus: revised.tier === 'FAIL' ? 'needs-correction' : 'needs-confirmation', statistics: measureMask(mask), warnings: [...new Set([...warnings, ...revised.checks.map(c => c.code)])] });
       context.repository.event(context.job, 'semantic_refinement', JSON.stringify({ targetId: target.id, label: target.label, provider: entry.provider, inputRevision: correction.expectedRevision, maskRevision: trio.revisionId, requestIds: result?.providerRequestIds ?? [], quality, callsUsed: context.job.callsUsed, latencyMs: Date.now() - startedAt }));
       context.job.data.candidates = candidates; context.save();
     } catch (error) {

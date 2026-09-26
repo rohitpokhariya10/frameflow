@@ -64,8 +64,11 @@ it('manual correction makes no provider call and mask/alpha/overlay share one ex
     const infer=vi.fn<Infer>();f.context.infer=infer;
     await semanticReview(f.context,f.master,{action:'manual-masks',expectedRevision:f.context.job.revision,objects:[{id:'target',selected:true,strokes:[{mode:'add',radius:10,points:[{x:170,y:140}]},{mode:'subtract',radius:5,points:[{x:90,y:120}]}]}]});
     expect(infer).not.toHaveBeenCalled();
-    const records=f.context.job.data.refined as {maskRevisionId:string;alphaRevisionId:string;overlayRevisionId:string;maskArtifactId:string;alphaArtifactId:string;overlayArtifactId:string}[];
-    const r=records[0];expect(r.maskRevisionId).toBe(r.alphaRevisionId);expect(r.maskRevisionId).toBe(r.overlayRevisionId);
+    // A manual save returns to ownership review (it never jumps to alpha); the candidate carries the new exact revision.
+    expect(f.context.job.data.refined).toBeUndefined();expect(f.context.job.review?.gate).toBe('semantic-mask-review');
+    const r=(f.context.job.data.candidates as {revisionId:string;maskRevisionId:string;alphaRevisionId:string;overlayRevisionId:string;maskArtifactId:string;alphaArtifactId:string;overlayArtifactId:string;qualityTier:string}[])[0];
+    expect(r.revisionId).not.toBe(original.revisionId);expect(r.maskRevisionId).toBe(r.revisionId);expect(r.maskRevisionId).toBe(r.alphaRevisionId);expect(r.maskRevisionId).toBe(r.overlayRevisionId);
+    expect(r.qualityTier).not.toBe('PASS');
     const mask=await decodeMask(await f.context.artifact(r.maskArtifactId),{encoding:'luminance'}),alpha=await decodeMask(await f.context.artifact(r.alphaArtifactId),{encoding:'luminance'});
     expect(mask.data).toEqual(alpha.data);expect(mask.data[140*256+170]).toBe(255);expect(mask.data[120*256+90]).toBe(0);
     const overlay=await sharp(await f.context.artifact(r.overlayArtifactId)).ensureAlpha().raw().toBuffer();

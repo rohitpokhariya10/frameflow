@@ -10,7 +10,8 @@ import { runPhase } from './pipeline.js';
 
 export class DecompositionWorker {
   readonly id = randomUUID(); private stopping = false;
-  constructor(readonly repository: DecompositionRepository, readonly store: ArtifactStore, readonly config: DecompositionConfig, readonly provider?: DurableFalClient) {}
+  /** `prepare` lets an explicitly isolated test worker attach its own inference; production entry points never pass it. */
+  constructor(readonly repository: DecompositionRepository, readonly store: ArtifactStore, readonly config: DecompositionConfig, readonly provider?: DurableFalClient, private readonly prepare?: (context: PipelineContext) => Promise<void>) {}
   stop() { this.stopping = true; }
   async tick() {
     this.repository.workerHeartbeat(this.id);
@@ -25,6 +26,7 @@ export class DecompositionWorker {
       } else {
         if (job.data.verificationMode !== this.config.providerMode) throw new DecompositionError('WORKER_MODE_MISMATCH', 'The API and worker use different provider modes. Stop old workers, restart the API and one worker with the same DECOMP_PROVIDER_MODE, then retry this job.', 409);
         if (this.config.providerMode === 'mock') await attachMockProvider(context);
+        else if (this.prepare) await this.prepare(context);
         context.job.progress = `Phase ${job.phase + 1} of 6 — ${job.phase === 4 ? 'Checking selected masks and refining edges' : 'Processing'}`;
         context.save();
         await runPhase(context);

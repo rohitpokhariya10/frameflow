@@ -23,6 +23,8 @@ export function scoreSemanticMask(mask: Mask, evidence: SemanticEvidence, provid
   const reasons = validateGuidance(mask, { positivePoints: evidence.points?.filter(p => p.label === 1), negativePoints: evidence.points?.filter(p => p.label === 0), excludedMask: evidence.protectedMask })
     .map(code => code === 'POSITIVE_POINT_OUTSIDE_MASK' ? 'POSITIVE_GUIDANCE_UNSATISFIED' : code === 'PROTECTED_REGION_LEAK' ? 'PROTECTED_OWNERSHIP_OVERLAP' : code);
   if (stats.areaFraction > 0.9) reasons.push('MASK_COVERS_MOST_OF_CANVAS');
+  // A confident speck is never an object, a member, or a group.
+  if (stats.area < mask.width * mask.height * 0.001) reasons.push('MASK_TINY_PATCH');
   if (stats.componentCount > 128) reasons.push('MASK_TOO_FRAGMENTED');
   if (providerScore !== undefined && providerScore < 0.5) reasons.push('SEMANTIC_MASK_LOW_CONFIDENCE');
   const memberCoverage = (evidence.members ?? []).map(member => overlapMasks(mask, member).inclusionB);
