@@ -40,15 +40,17 @@ export async function semanticDiscovery(context: PipelineContext, master: Buffer
   const source = context.repository.getSource(context.job.sourceId)!;
   const analysisTransform = context.job.data.analysisTransform as ReturnType<typeof createTransform>;
   const targets = (context.job.data.proposalReviewApproved ? [] : context.job.options.targetLabels ?? []).map((label, i) => ({ target: semanticTarget(label, `target-${i + 1}`), proposal: undefined as Mask | undefined }));
-  // The discovered base layer is preserved as the background element; it is never sent to source segmentation.
-  const reviewed = context.job.data.proposalReviewApproved ? (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected && !t.baseLayer) : [];
+  // Only IMAGE_OBJECT elements are segmented. Text, shapes and the background take their own reconstruction routes.
+  const imageObjects = context.job.data.imageObjectTargetIds as string[] | undefined;
+  const reviewed = context.job.data.proposalReviewApproved ? (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected && !t.baseLayer && (!imageObjects || imageObjects.includes(t.id))) : [];
   for (const item of reviewed) {
     const target = semanticTarget(item.label, item.id); if (/^(Layer|Object) \d+$/.test(item.label)) target.providerPrompt = 'the indicated object'; target.proposalIds = item.proposalIds; target.role = item.role;
     if (item.groupMode === 'group') { target.compositionMode = 'group'; target.userConfirmedGroup = true; }
     const provisional = item.maskArtifactId ? await decodeMask(await context.artifact(item.maskArtifactId), { encoding: 'luminance', binary: true }) : undefined;
     targets.push({ target, proposal: provisional && maskBounds(provisional) ? provisional : undefined });
   }
-  if (!targets.length) for (const proposal of proposals.filter(p => p.registered && !p.warnings.length).slice(0, context.job.options.maxObjects)) {
+  // After a reviewed approval, proposals are never segmented implicitly.
+  if (!targets.length && !context.job.data.proposalReviewApproved) for (const proposal of proposals.filter(p => p.registered && !p.warnings.length).slice(0, context.job.options.maxObjects)) {
     targets.push({ target: { id: `semantic-${proposal.id}`, label: `Semantic ${proposal.id}`, providerPrompt: 'the indicated object', origin: 'proposal', compositionMode: 'single', proposalId: proposal.id }, proposal: mapMaskToNative(proposal.alpha, analysisTransform) });
   }
   if (!targets.length) return false;

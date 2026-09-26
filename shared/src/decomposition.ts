@@ -141,8 +141,16 @@ export interface ProposalReviewTarget {
   splitFromTargetId?: string;
   /** Server-computed history. Client-supplied values are ignored. */
   provenance?: ProposalTargetProvenance;
+  /** Server-computed reconstruction route; an explicit role always wins. Client-supplied values are ignored. */
+  classification?: ElementClassification;
   points?: DecompositionPoint[]; strokes?: DecompositionStroke[]; userBox?: DecompositionBox;
   provisionalMaskRevision?: string; maskArtifactId?: string; overlayArtifactId?: string;
+}
+/** IMAGE_OBJECT → source segmentation, TEXT → text reconstruction, SHAPE → vector geometry, BACKGROUND → kept, UNKNOWN → user decides. */
+export type ElementKind = 'IMAGE_OBJECT' | 'TEXT' | 'SHAPE' | 'BACKGROUND' | 'UNKNOWN';
+export interface ElementClassification {
+  kind: ElementKind; confidence: 'user' | 'high' | 'medium' | 'low';
+  source: 'user-role' | 'base-layer' | 'user-intent' | 'provider-label' | 'provider-description' | 'default'; reasons: string[];
 }
 export interface ProposalTargetProvenance {
   operation: 'discovered' | 'discovered-base' | 'target-label' | 'user-created' | 'user-group' | 'user-split';

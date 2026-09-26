@@ -4,6 +4,7 @@ import { DecompositionError } from '../errors.js';
 import { applyBrush, decodeMask, emptyMask, mapMaskToNative, unionMasks } from '../image/masks.js';
 import type { ImageTransform } from '../image/coordinates.js';
 import { saveTrio } from './semanticPipeline.js';
+import { classifyTarget } from './classification.js';
 
 export function proposalGate(context: PipelineContext) {
   context.review('QWEN_PROPOSAL_REVIEW', 'Choose what to isolate. Approve, rename, group or reject the discovered layers. Edit provisional regions on the original image; source segmentation will verify ownership.', ['save-proposals', 'approve-proposals']);
@@ -48,10 +49,11 @@ async function persistProposalTargets(context: PipelineContext, master: Buffer, 
     const old = prior.find(t => t.id === incoming.id);
     // Only the server marks the base layer; a client cannot promote an arbitrary target into it.
     const isBase = initial ? incoming.baseLayer === true : old?.baseLayer === true;
-    const { baseLayer: _base, provenance: _claimed, splitFromTargetId: _split, ...fields } = incoming; void _base; void _claimed; void _split;
+    const { baseLayer: _base, provenance: _claimed, splitFromTargetId: _split, classification: _class, ...fields } = incoming; void _base; void _claimed; void _split; void _class;
     const target: ProposalReviewTarget = { ...fields, ...(isBase ? { baseLayer: true } : {}) };
     if (isBase && target.proposalIds.length) throw new DecompositionError('INVALID_TARGET', 'The background layer cannot take discovered proposals; create a separate target instead.', 409);
     target.provenance = initial && incoming.provenance ? incoming.provenance : provenanceFor({ ...target, splitFromTargetId: incoming.splitFromTargetId }, old, prior, revision);
+    target.classification = classifyTarget(target, proposals);
     if (target.proposalIds.some(id => !proposals.some(p => p.id === id))) throw new DecompositionError('INVALID_PROPOSAL', 'Choose proposals belonging to this job.', 409);
     const sameMembers = old && JSON.stringify(old.proposalIds) === JSON.stringify(target.proposalIds);
     let mask = sameMembers && old.maskArtifactId ? await decodeMask(await context.artifact(old.maskArtifactId), { encoding: 'luminance', binary: true }) : emptyMask(source.width, source.height);
@@ -85,6 +87,16 @@ export async function applyProposalReview(context: PipelineContext, master: Buff
   // The background layer is kept, not segmented, so at least one object target must be approved to continue.
   const approved = (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected && !t.baseLayer);
   if (!approved.length) { proposalGate(context); context.job.review!.message = 'Approve at least one object target, or cancel this job.'; context.save(); return false; }
+  const proposals = context.job.data.proposals as ProposalSummary[];
+  const classified = (context.job.data.proposalTargets as ProposalReviewTarget[]).filter(t => t.approved && !t.rejected).map(t => ({ target: t, classification: classifyTarget(t, proposals) }));
+  const unknown = classified.filter(c => c.classification.kind === 'UNKNOWN');
+  // UNKNOWN elements stay reviewable: nothing is routed (or paid for) until the user chooses a type.
+  if (unknown.length) { proposalGate(context); context.job.review!.message = `Choose an element type (object, text, shape or background) for: ${unknown.map(c => c.target.label).join(', ')}.`; context.save(); return false; }
+  context.job.data.sceneElements = classified.filter(c => c.classification.kind !== 'IMAGE_OBJECT').map(({ target, classification }) => ({
+    targetId: target.id, label: target.label, kind: classification.kind, classification, proposalIds: target.proposalIds, description: target.description,
+    baseLayer: target.baseLayer === true, provisionalMaskArtifactId: target.maskArtifactId, provisionalMaskRevision: target.provisionalMaskRevision }));
+  context.job.data.imageObjectTargetIds = classified.filter(c => c.classification.kind === 'IMAGE_OBJECT').map(c => c.target.id);
+  context.repository.event(context.job, 'element_classification', JSON.stringify(classified.map(c => ({ targetId: c.target.id, label: c.target.label, kind: c.classification.kind, confidence: c.classification.confidence, source: c.classification.source }))));
   context.job.data.proposalReviewApproved = true;
   context.save(); return true;
 }

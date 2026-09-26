@@ -143,3 +143,31 @@ test('proposal review: names, previews, grouping, corrections, persistence, spli
   await page.screenshot({ path: `${shots}/04-after-split-reload.png`, fullPage: true });
   expect(errors).toEqual([]);
 });
+
+test('element classification: suggested types render, ambiguous elements block continuing until typed', async ({ page }) => {
+  await openSeededJob(page);
+  const { jobs } = await (await page.request.get('/api/decomposition/jobs')).json() as { jobs: { proposalTargets: { label: string; classification?: { kind: string }; role: string; baseLayer?: boolean }[] }[] };
+  // Every untyped discovered element shows the server's suggestion (or "Type needed" when ambiguous).
+  for (const t of jobs[0].proposalTargets.filter(t => t.role === 'unknown' && !t.baseLayer)) {
+    const expected = t.classification?.kind === 'UNKNOWN' ? 'Type needed' : `Suggested ${({ IMAGE_OBJECT: 'object', TEXT: 'text', SHAPE: 'shape', BACKGROUND: 'background' } as Record<string, string>)[t.classification!.kind]}`;
+    await expect(targetButton(page, new RegExp(`^${t.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · ${expected} ·`))).toBeVisible();
+  }
+  // Create an ambiguous element ("Text badge": text + shape wording), approve it, save.
+  await review(page).getByRole('button', { name: 'Create target' }).click();
+  await review(page).getByLabel('Target name').fill('Text badge');
+  await review(page).getByRole('button', { name: 'Approve target' }).click();
+  await saveAndWait(page, review(page).getByRole('button', { name: 'Save proposal review (no AI)' }));
+  await expect(targetButton(page, /^Text badge · Type needed · Approved$/)).toBeVisible();
+  await expect(review(page).getByText('Choose a type for: Text badge.')).toBeVisible();
+  await expect(review(page).getByRole('button', { name: 'Continue to source segmentation' })).toBeDisabled();
+  await page.screenshot({ path: `${shots}/05-type-needed.png`, fullPage: true });
+  await review(page).locator('.decomp-row > button').filter({ hasText: /^Text badge ·/ }).screenshot({ path: `${shots}/05b-type-needed-target.png` });
+  // Choosing a type unblocks continuing; the choice persists.
+  await targetButton(page, /^Text badge ·/).click();
+  await expect(review(page).getByText('The discovered evidence is ambiguous. Choose a type before continuing.')).toBeVisible();
+  await review(page).getByLabel('Element type').selectOption('text');
+  await expect(review(page).getByRole('button', { name: 'Continue to source segmentation' })).toBeEnabled();
+  await saveAndWait(page, review(page).getByRole('button', { name: 'Save proposal review (no AI)' }));
+  await page.reload(); await openSeededJob(page);
+  await expect(targetButton(page, /^Text badge · text · Approved$/)).toBeVisible();
+});

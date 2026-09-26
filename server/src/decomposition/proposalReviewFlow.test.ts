@@ -141,3 +141,50 @@ it('rejects a background-layer target that tries to take discovered proposals', 
     await expect(env.run()).rejects.toMatchObject({ code: 'INVALID_TARGET' });
   } finally { await env.cleanup(); }
 });
+
+it('classification: ambiguous approved elements wait for a type; nothing is segmented', async () => {
+  const env = await setup();
+  try {
+    let job = env.repo.getJob(env.id)!;
+    const targets = env.repo.summarize(job).proposalTargets!;
+    expect(targets.map(t => t.classification?.kind)).toEqual(['IMAGE_OBJECT', 'IMAGE_OBJECT', 'TEXT', 'SHAPE', 'BACKGROUND']);
+    const badge: ProposalReviewTarget = { id: 'target-badge', label: 'Text badge', proposalIds: [], groupMode: 'single', role: 'unknown', approved: true, rejected: false, userBox: { x: 5, y: 5, width: 20, height: 20 } };
+    env.submit({ expectedRevision: job.revision, action: 'approve-proposals', targets: [{ ...targets[0], approved: true }, ...targets.slice(1), badge] });
+    await env.run();
+    job = env.repo.getJob(env.id)!;
+    expect(job.state).toBe('needs_review'); expect(job.review?.message).toMatch(/Choose an element type .*Text badge/);
+    expect(job.data.proposalReviewApproved).toBeUndefined(); expect(env.samPrompts).toEqual([]);
+    expect(env.repo.summarize(job).proposalTargets!.find(t => t.id === 'target-badge')?.classification).toMatchObject({ kind: 'UNKNOWN', reasons: expect.arrayContaining(['CONFLICTING_NAME_EVIDENCE']) });
+  } finally { await env.cleanup(); }
+});
+
+it('classification: only image objects reach SAM; text, shape and background are recorded for their own routes', async () => {
+  const env = await setup();
+  try {
+    const job = env.repo.getJob(env.id)!;
+    const [woman, phone, headline, panel, background] = env.repo.summarize(job).proposalTargets!;
+    env.submit({ expectedRevision: job.revision, action: 'approve-proposals', targets: [{ ...woman, approved: true }, phone, { ...headline, approved: true }, { ...panel, approved: true }, { ...background, approved: true }] });
+    await env.run().catch(() => undefined);
+    const after = env.repo.getJob(env.id)!;
+    expect(env.samPrompts.length).toBeGreaterThan(0);
+    expect(env.samPrompts.every(p => /woman/i.test(p))).toBe(true);
+    expect(after.data.imageObjectTargetIds).toEqual([woman.id]);
+    expect((after.data.sceneElements as { label: string; kind: string; baseLayer: boolean }[]).map(e => [e.label, e.kind, e.baseLayer])).toEqual([['PRO headline', 'TEXT', false], ['Orange panel', 'SHAPE', false], ['Background', 'BACKGROUND', true]]);
+  } finally { await env.cleanup(); }
+});
+
+it('classification: with no image objects approved, segmentation is skipped entirely and the job completes without provider calls', async () => {
+  const env = await setup();
+  try {
+    const job = env.repo.getJob(env.id)!;
+    const targets = env.repo.summarize(job).proposalTargets!;
+    env.submit({ expectedRevision: job.revision, action: 'approve-proposals', targets: targets.map(t => ({ ...t, approved: /PRO|panel|Background/.test(t.label) })) });
+    await env.run();
+    expect(env.repo.getJob(env.id)!.data.noImageObjects).toBe(true);
+    await env.run();
+    const done = env.repo.getJob(env.id)!;
+    expect(done.state).toBe('completed'); expect(done.phase).toBe(6);
+    expect(env.samPrompts).toEqual([]);
+    expect(env.infer.mock.calls.map(c => c[0])).toEqual(['seedream']);
+  } finally { await env.cleanup(); }
+});

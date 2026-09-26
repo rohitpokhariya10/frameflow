@@ -47,7 +47,12 @@ export async function runPhase(context: PipelineContext) {
   if (phase === 6) {
     if (job.data.reviewWorkflow === 2 && !job.data.resultReviewed) throw new DecompositionError('FINAL_REVIEW_REQUIRED', 'Approve the current alpha revision before extracting pixels.', 409);
     const refined = job.data.refined as {id:string;label:string;alphaArtifactId:string;maskArtifactId:string}[];
-    if (!refined?.length) throw new DecompositionError('MASKS_REQUIRED','Accept refined masks before extraction.',409);
+    if (!refined?.length && !job.data.noImageObjects) throw new DecompositionError('MASKS_REQUIRED','Accept refined masks before extraction.',409);
+    if (!refined?.length) {
+      await context.put('extraction-metadata',json({phase:6,providerMode:job.data.verificationMode,nativeWidth:source.width,nativeHeight:source.height,objects:[],rgbProvenance:'Original working-master RGB',noImageObjects:true}),'06-extracted/metadata.json','application/json');
+      context.job.state='completed';context.job.review=undefined;context.job.data.extracted=[];
+      context.finish(6,'Phase 6 of 6 — Editable elements ready');return;
+    }
     const selections = [];
     for (const object of refined) selections.push({id:object.id,label:object.label,mask:await decodeMask(await context.artifact(object.alphaArtifactId),{encoding:'luminance'})});
     const result = await extractVisibleLayers(master,selections);
@@ -125,6 +130,9 @@ export async function runPhase(context: PipelineContext) {
         if (!await applyProposalReview(context, master, review)) return;
       }
       if (await semanticDiscovery(context, master, await proposals(context))) return;
+      // No IMAGE_OBJECT was approved: skip segmentation entirely (never fall back to automatic SAM2 proposals).
+      job.data.noImageObjects = true; job.data.refined = []; job.data.resultReviewed = true;
+      context.finish(5, 'No image objects to segment; building editable elements'); return;
     } else if (job.data.verificationMode !== 'mock' && await semanticDiscovery(context, master, await proposals(context))) return;
     const result = await segmentObjects(analysis, context.infer, { proposals: await proposals(context), maxObjects: job.options.maxObjects });
     const saved: SavedCandidate[] = []; const overlays: { mask: Mask }[] = [];
