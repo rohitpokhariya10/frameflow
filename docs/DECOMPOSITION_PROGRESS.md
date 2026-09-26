@@ -48,3 +48,32 @@ No live inference run. Local env is explicitly mock/development; existing Fal ke
 Startup: `npm run build`, then `npm start` and `npm run worker -w @frameflow/server`.
 Env: DECOMPOSITION_ENABLED=true, DECOMP_PROVIDER_MODE=mock, DECOMP_AUTH_MODE=development,
 DECOMP_DATA_DIR=./data/decomposition-ui-demo. Phase 7 remains outside scope.
+
+Worker troubleshooting: duplicate old mock worker and live worker shared the demo database,
+causing live jobs to fail before inference. Stopped the previously agent-started dev worker.
+Mode mismatch now reports WORKER_MODE_MISMATCH with restart instructions. Server typecheck passed.
+No job retried and no live model call initiated during diagnosis.
+
+## 2026-09-26 — Phase 4 → 5 review identity fix
+
+Implemented / offline verified. Read-only inspection of the affected saved live job confirmed
+candidate-5 (3,809 analysis pixels, 0.454% coverage) was selected as Person. All 11 positive
+and 13 negative points were persisted AND present in both saved SAM3 request settings.
+POSITIVE_GUIDANCE_MISSING meant a point lay outside support, not absent guidance.
+Rejected refinement deliberately retained that original patch. Positional overlay filenames
+also diverged from stable candidate IDs after deduplication; source context obscured ownership.
+
+Changed review UI/inspection/CSS, shared summary, repository summary, pipeline, mask validation,
+and two focused regressions. UI now identifies candidates/coverage/actual legacy filenames,
+uses a luminance ownership overlay, restores server corrections and per-revision session drafts.
+New candidate filenames use stable IDs. Phase 5 validates unique identity and point/support
+agreement before inference, records candidate/input artifact/point counts/acceptance, and reports
+POSITIVE_POINT_OUTSIDE_MASK accurately. No automatic semantic relabeling or mask expansion.
+Review payload permits up to the existing 64 candidate cap; selected-object cap stays unchanged.
+
+Verification: npm run typecheck passed; focused ESLint passed; 23 tests passed across review UI,
+persisted review→Phase 5, candidate/refinement, repository, and adapter contracts. Full-person
+regression preserves exact coverage through SAM3/BiRefNet mocks; wrong patch pauses with zero
+calls. No paid calls, DB edits, or historical artifact rewrites. Live/browser visual quality remains
+unverified for this fix. Restart API/worker and reload client to use it; inspect actual mask support
+before selecting the full person. Phase 7+ remains out of scope.

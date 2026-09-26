@@ -14,7 +14,7 @@ export function InspectionViewer({ job }: { job: DecompositionJobSummary }) {
     {groups.map((group, i) => <details key={group} open={i === Math.min(job.phase - 1, 5)}><summary>{labels[i]}</summary>
       <div className="decomp-layer-grid">{latest.filter((a) => a.relativePath.startsWith(group + '/') && a.mimeType.startsWith('image/') && !a.relativePath.includes('-native.png')).map((artifact) => <article key={artifact.artifactId}>
         <a href={artifactUrl(artifact.artifactId)} target="_blank" rel="noreferrer"><img className={`decomp-${surface}`} src={artifactUrl(artifact.artifactId)} alt={artifact.relativePath} loading="lazy" /></a>
-        <p>{artifact.relativePath.split('/').at(-1)}</p><small>{artifact.width} × {artifact.height}</small><br /><a href={`${artifactUrl(artifact.artifactId)}?download=1`}>Download PNG</a>
+        <p>{job.candidates?.find(c => [c.overlayArtifactId, c.maskArtifactId, c.analysisMaskArtifactId].includes(artifact.artifactId))?.id} </p><p>{artifact.relativePath.split('/').at(-1)}</p><small>{artifact.width} × {artifact.height}</small><br /><a href={`${artifactUrl(artifact.artifactId)}?download=1`}>Download PNG</a>
       </article>)}</div>
       {latest.filter((a) => a.relativePath.startsWith(group + '/') && a.mimeType === 'application/json').map((artifact) => <p key={artifact.artifactId}><a href={artifactUrl(artifact.artifactId)} target="_blank" rel="noreferrer">{artifact.relativePath.split('/').at(-1)}</a></p>)}
     </details>)}

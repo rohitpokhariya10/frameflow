@@ -47,7 +47,8 @@ export interface DecompositionJobSummary {
   warnings: string[]; review?: DecompositionReviewRequest; error?: { code: string; message: string; retryable: boolean };
   progress: string; callsUsed: number; createdAt: string; updatedAt: string; expiresAt: string;
   sourcePreviewArtifactId?: string; sourceWidth?: number; sourceHeight?: number;
-  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; area: number; selected?: boolean; warnings: string[] }[];
+  candidates?: { id: string; label: string; maskArtifactId: string; overlayArtifactId?: string; analysisMaskArtifactId?: string; statistics?: { area: number; areaFraction: number }; selected?: boolean; warnings: string[] }[];
+  reviewSubmission?: DecompositionReview;
   context?: DecompositionClientContext; artifacts: DecompositionArtifactRef[]; manifest?: DecompositionManifest;
 }
 export interface DecompositionCapabilities {
@@ -89,7 +90,7 @@ export function validDecompositionReview(value: unknown, width: number, height: 
   if (value.occlusion !== undefined && (!Array.isArray(value.occlusion) || value.occlusion.length > 144 || !value.occlusion.every((edge) => object(edge) && typeof edge.frontObjectId === 'string' && typeof edge.backObjectId === 'string' && edge.frontObjectId.length <= 100 && edge.backObjectId.length <= 100 && edge.frontObjectId !== edge.backObjectId))) return false;
   if (value.hiddenRegions !== undefined && (!Array.isArray(value.hiddenRegions) || value.hiddenRegions.length > 2 || !value.hiddenRegions.every((region) => object(region) && typeof region.objectId === 'string' && region.objectId.length <= 100 && typeof region.prompt === 'string' && region.prompt.length > 0 && region.prompt.length <= 2000 && Array.isArray(region.strokes) && region.strokes.length > 0 && region.strokes.length <= 100 && region.strokes.every((stroke) => object(stroke) && ['add','subtract'].includes(String(stroke.mode)) && finite(stroke.radius) && stroke.radius >= 1 && stroke.radius <= 256 && Array.isArray(stroke.points) && stroke.points.length > 0 && stroke.points.length <= 1000 && stroke.points.every((p) => object(p) && finite(p.x) && finite(p.y) && p.x >= 0 && p.y >= 0 && p.x < width && p.y < height))))) return false;
   if (value.objects === undefined) return true;
-  if (!Array.isArray(value.objects) || value.objects.length > 12) return false;
+  if (!Array.isArray(value.objects) || value.objects.length > 64) return false;
   const point = (p: unknown) => object(p) && finite(p.x) && finite(p.y) && p.x >= 0 && p.y >= 0 && p.x < width && p.y < height;
   return value.objects.every((entry) => {
     if (!object(entry) || typeof entry.id !== 'string' || entry.id.length > 100 || (entry.candidateId !== undefined && (typeof entry.candidateId !== 'string' || entry.candidateId.length > 100)) || (entry.label !== undefined && (typeof entry.label !== 'string' || !entry.label.trim() || entry.label.length > 100))) return false;

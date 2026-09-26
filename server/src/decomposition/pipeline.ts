@@ -7,7 +7,7 @@ import { createAnalysis } from './phases/analysis.js';
 import { createLayerProposals, type LayerProposal } from './phases/proposals.js';
 import { segmentObjects } from './phases/segmentation.js';
 import { refineObjects, type RefinementObject } from './phases/refinement.js';
-import { applyBrush, decodeMask, encodeMask, mapMaskToNative, measureMask, overlapMasks, unionMasks, emptyMask, resizeMask } from './image/masks.js';
+import { applyBrush, decodeMask, encodeMask, mapMaskToNative, measureMask, overlapMasks, unionMasks, emptyMask, resizeMask, validateGuidance } from './image/masks.js';
 import type { Mask } from './image/types.js';
 import type { ImageTransform } from './image/coordinates.js';
 import { overlayMasks } from './image/overlay.js';
@@ -89,11 +89,12 @@ export async function runPhase(context: PipelineContext) {
   if (phase === 4) {
     const result = await segmentObjects(analysis, context.infer, { proposals: await proposals(context), maxObjects: job.options.maxObjects });
     const saved: SavedCandidate[] = []; const overlays: { mask: Mask }[] = [];
-    for (const [i, candidate] of result.candidates.entries()) {
-      const mask = await context.put('candidate-mask', await encodeMask(candidate.mask), `04-sam2/candidate-${seq(i)}.png`);
+    for (const candidate of result.candidates) {
+      const candidateName = candidate.id.replace(/(\d+)$/, (number) => number.padStart(3, '0'));
+      const mask = await context.put('candidate-mask', await encodeMask(candidate.mask), `04-sam2/${candidateName}.png`);
       const native = mapMaskToNative(candidate.mask, transform);
-      const nativeRecord = await context.put('review-mask', await encodeMask(native), `04-sam2/review-${seq(i)}-native.png`);
-      const overlay = await context.put('candidate-overlay', await overlayMasks(analysis, [{ mask: candidate.mask }]), `04-sam2/candidate-${seq(i)}-overlay.png`);
+      const nativeRecord = await context.put('review-mask', await encodeMask(native), `04-sam2/${candidateName}-native.png`);
+      const overlay = await context.put('candidate-overlay', await overlayMasks(analysis, [{ mask: candidate.mask }]), `04-sam2/${candidateName}-overlay.png`);
       saved.push({ id: candidate.id, label: candidate.label, labelSource: candidate.labelSource, maskArtifactId: nativeRecord.artifactId, analysisMaskArtifactId: mask.artifactId, overlayArtifactId: overlay.artifactId, selected: result.selectedIds.includes(candidate.id), warnings: candidate.warnings, statistics: candidate.statistics, proposalMatches: candidate.proposalMatches });
       overlays.push({ mask: candidate.mask });
     }
@@ -117,11 +118,21 @@ export async function runPhase(context: PipelineContext) {
   const selected = (correction.objects ?? []).filter((object) => object.selected !== false);
   if (!selected.length || selected.length > job.options.maxObjects) throw new DecompositionError('OBJECT_SELECTION_REQUIRED', `Select between 1 and ${job.options.maxObjects} objects.`, 409);
   const nativeObjects: RefinementObject[] = [];
+  const seen = new Set<string>();
+  const refinementInputs = [];
   for (const object of selected) {
     const candidate = candidates.find((item) => item.id === (object.candidateId ?? object.id));
+    if (candidate && (object.id !== candidate.id || seen.has(candidate.id))) throw new DecompositionError('INVALID_CANDIDATE_MAPPING', 'Each review object must identify its own unique candidate.', 409);
     if (!candidate) throw new DecompositionError('INVALID_CANDIDATE', 'Choose a candidate from this job.', 409);
+    seen.add(candidate.id);
     const corrected = applyBrush(await decodeMask(await context.artifact(candidate.maskArtifactId), { encoding: 'luminance', binary: true }), object.strokes ?? []);
     if (!measureMask(corrected).area) throw new DecompositionError('EMPTY_MASK', 'The corrected object mask is empty.', 409);
+    const conflicts = validateGuidance(corrected, { positivePoints: object.points?.filter(p => p.label === 1), negativePoints: object.points?.filter(p => p.label === 0) });
+    if (conflicts.length) {
+      context.review('GUIDANCE_MASK_CONFLICT', `${candidate.id}: saved points conflict with this mask (${conflicts.join(', ')}). Select the full intended candidate or correct its visible support with the brush. Renaming a patch does not select the whole person. No refinement call was made.`, ['accept-masks', 'guided-refine'], [candidate.overlayArtifactId]);
+      context.save(); return;
+    }
+    refinementInputs.push({ candidateId: candidate.id, inputMaskArtifactId: candidate.maskArtifactId, positivePointCount: object.points?.filter(p => p.label === 1).length ?? 0, negativePointCount: object.points?.filter(p => p.label === 0).length ?? 0, correctedArea: measureMask(corrected).area });
     nativeObjects.push({ id: candidate.id, label: object.label?.trim() || candidate.label, mask: corrected, points: object.points, box: object.box, ownershipConfirmed: true });
   }
   for (const object of nativeObjects) {
@@ -134,6 +145,8 @@ export async function runPhase(context: PipelineContext) {
     }
     object.excludedMask = excluded;
   }
+  context.job.data.refinementInputs = refinementInputs;
+  context.save();
   const result = await refineObjects(master, context.infer, nativeObjects);
   const refined = [];
   for (const [i, object] of result.objects.entries()) {
@@ -142,7 +155,7 @@ export async function runPhase(context: PipelineContext) {
     const alpha = await context.put('refined-alpha', await encodeMask(object.alpha), `${base}-alpha.png`);
     const previewMask = resizeMask(object.alpha, transform.resizedWidth, transform.resizedHeight, 'alpha');
     const overlay = await context.put('refined-overlay', await overlayMasks(analysis, [{ mask: previewMask }]), `${base}-overlay.png`);
-    refined.push({ id: object.id, label: object.label, maskArtifactId: mask.artifactId, alphaArtifactId: alpha.artifactId, overlayArtifactId: overlay.artifactId, maskSha256: mask.sha256, alphaSha256: alpha.sha256, width: mask.width, height: mask.height, polarity: 'white-is-object', coordinateSpace: 'working-master-pixels', transform: object.transform, warnings: object.warnings, reviewRequired: object.reviewRequired });
+    refined.push({ input: refinementInputs.find(input => input.candidateId === object.id), refinementAccepted: object.refinementAccepted, id: object.id, label: object.label, maskArtifactId: mask.artifactId, alphaArtifactId: alpha.artifactId, overlayArtifactId: overlay.artifactId, maskSha256: mask.sha256, alphaSha256: alpha.sha256, width: mask.width, height: mask.height, polarity: 'white-is-object', coordinateSpace: 'working-master-pixels', transform: object.transform, warnings: object.warnings, reviewRequired: object.reviewRequired });
   }
   context.job.data.refined = refined; context.job.data.refinementHasDefects = result.reviewRequired;
   result.warnings.forEach((warning) => context.warn(warning));

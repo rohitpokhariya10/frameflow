@@ -183,7 +183,7 @@ export function validateGuidance(mask: Mask, guidance: { positivePoints?: Point[
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x >= mask.width || point.y >= mask.height) throw new ImageValidationError('GUIDANCE_BOUNDS', 'Guidance points must be inside the native image.');
     return mask.data[Math.floor(point.y) * mask.width + Math.floor(point.x)];
   };
-  if (guidance.positivePoints?.some(point => sample(point) < 128)) warnings.push('POSITIVE_GUIDANCE_MISSING');
+  if (guidance.positivePoints?.some(point => sample(point) < 128)) warnings.push('POSITIVE_POINT_OUTSIDE_MASK');
   if (guidance.negativePoints?.some(point => sample(point) > 0)) warnings.push('NEGATIVE_GUIDANCE_LEAK');
   if (guidance.excludedMask && overlapMasks(mask, guidance.excludedMask).intersection > 0) warnings.push('PROTECTED_REGION_LEAK');
   if (guidance.requiredMask && overlapMasks(mask, guidance.requiredMask).inclusionB < 0.99) warnings.push('REQUIRED_VISIBLE_REGION_MISSING');
