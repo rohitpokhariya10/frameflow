@@ -77,7 +77,10 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
     void api.job(id).then(value => { if (!active) return; const v=current.current.variant;const captured={projectId,variantId:v.id,variantRevision:v.revision,sourceAssetId:v.background?.assetId,operationToken:crypto.randomUUID()};dispatch(decompositionActions.attached(captured));dispatch(decompositionActions.received({token:captured.operationToken,job:value})); }).catch(()=>undefined);
     return () => {active=false;};
   },[capabilities,context,projectId,dispatch]);
-  const review = (body: DecompositionReview) => { if (job) void run(() => update(() => api.review(job.id, body))); };
+  const review = async (body: DecompositionReview) => {
+    if (!job) throw new Error('Reload the job before submitting review.');
+    await update(() => api.review(job.id, body));
+  };
   return <div className={embedded ? "decomp-inline" : "decomp-backdrop"}><div className="decomp-panel" role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label="Image decomposition">
     <div className="decomp-row"><h2>Image decomposition</h2>{onClose && <button onClick={onClose} aria-label="Close image decomposition">Close</button>}</div>
     <p>Inspect original → analysis → Qwen proposals → SAM2 candidates → refined SAM3 masks and alpha. Then extract original pixels into transparent PNGs. Stops at phase 6.</p>
@@ -95,12 +98,12 @@ export function DecompositionPanel({ onClose, embedded = false }: { onClose?: ()
         
         <button className="decomp-primary" disabled={busy || !capabilities.configured || (!file && !variant.background)} onClick={() => void start()}>Start decomposition</button>
         <p>{capabilities.providerMode === 'mock' ? 'Deterministic fixture responses; no paid calls.' : 'At most 20 model submissions. A call limit is not a dollar estimate.'}</p>
-        {job && <section aria-label="Decomposition job"><div className="decomp-row"><h3>Phase {job.phase} of 6 — {job.progress || `Phase ${job.phase} of 6`}</h3><span>{job.state.replaceAll('_', ' ')} · {job.callsUsed} calls</span></div>
+        {job && <section aria-label="Decomposition job"><div className="decomp-row"><h3>{job.progress?.startsWith('Phase ') ? job.progress : `Phase ${job.phase} of 6 — ${job.progress || 'Waiting'}`}</h3><span>{job.state.replaceAll('_', ' ')} · {job.callsUsed} calls</span></div>
           {job.error && <p role="alert">{job.error.message}</p>}{job.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
           {['queued', 'running', 'needs_review', 'cancel_requested'].includes(job.state) && <button disabled={busy || job.state === 'cancel_requested'} onClick={() => void run(() => update(() => api.cancel(job.id)))}>Cancel job</button>}
           {job.state === 'failed' && <button disabled={busy} onClick={() => void run(() => update(() => api.retry(job.id, job.revision)))}>Retry failed step</button>}
           {job.state === 'needs_review' && job.candidates?.length && job.sourcePreviewArtifactId && (job.phase === 4 || job.review?.code !== 'REFINEMENT_VISUAL_REVIEW') ? <MaskReview key={`${job.id}-${job.revision}`} job={job} candidates={job.candidates} sourceId={job.sourcePreviewArtifactId} width={job.sourceWidth!} height={job.sourceHeight!} onSubmit={review} busy={busy} /> : null}
-          {job.state === 'needs_review' && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] })}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
+          {job.state === 'needs_review' && (job.review?.code === 'REFINEMENT_VISUAL_REVIEW' || !job.candidates?.length) && <div><p>{job.review?.message}</p><div className="decomp-row">{job.review?.actions.filter((action) => action === 'approve-result').map((action) => <button key={action} disabled={busy} onClick={() => void run(() => review({ expectedRevision: job.revision, action: action as DecompositionReview['action'] }))}>{action.replaceAll('-', ' ')}</button>)}</div></div>}
           <InspectionViewer job={job} />
         </section>}
         <details><summary>Recover jobs ({jobs.length})</summary><p>Opening a job only attaches its viewer. Closing this panel or changing designs does not cancel server work.</p>{jobs.map((saved) => <div className="decomp-row" key={saved.id}><button onClick={() => void run(async () => attach(await api.job(saved.id)))}>{saved.id.slice(0, 8)} · {saved.state} · phase {saved.phase}</button><button onClick={() => void run(async () => { await api.remove(saved.id); setJobs(await api.jobs()); if (job?.id === saved.id) dispatch(decompositionActions.detached()); })}>Delete job and artifacts</button></div>)}</details>

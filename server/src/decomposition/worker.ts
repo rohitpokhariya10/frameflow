@@ -15,6 +15,7 @@ export class DecompositionWorker {
   async tick() {
     this.repository.workerHeartbeat(this.id);
     const job = this.repository.claimJob(this.id, this.config.leaseMs, this.config.providerMode); if (!job) return false;
+    console.info(JSON.stringify({ event: 'decomposition_phase_started', jobId: job.id, workerId: this.id, phase: job.phase + 1, revision: job.revision, providerMode: this.config.providerMode }));
     const context = new PipelineContext(job, this.repository, this.store, this.config, this.provider, this.id);
     const heartbeat = setInterval(() => this.repository.heartbeat(job.id, this.id, job.fence, this.config.leaseMs), Math.min(10000, this.config.leaseMs / 3));
     try {
@@ -24,7 +25,10 @@ export class DecompositionWorker {
       } else {
         if (job.data.verificationMode !== this.config.providerMode) throw new DecompositionError('WORKER_MODE_MISMATCH', 'The API and worker use different provider modes. Stop old workers, restart the API and one worker with the same DECOMP_PROVIDER_MODE, then retry this job.', 409);
         if (this.config.providerMode === 'mock') await attachMockProvider(context);
+        context.job.progress = `Phase ${job.phase + 1} of 6 — ${job.phase === 4 ? 'Checking selected masks and refining edges' : 'Processing'}`;
+        context.save();
         await runPhase(context);
+        console.info(JSON.stringify({ event: 'decomposition_phase_checkpoint', jobId: job.id, phaseAttempted: job.phase + 1, phase: context.job.phase, state: context.job.state, revision: context.job.revision, reviewCode: context.job.review?.code }));
       }
     } catch (error) {
       const latest = this.repository.getJob(job.id);

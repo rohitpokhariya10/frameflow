@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { DecompositionJobSummary, DecompositionReview } from '@frameflow/shared';
 import { validDecompositionReview } from '@frameflow/shared';
 import { artifactUrl } from './api';
+import { submitReviewOnce } from './reviewSubmission';
 import { nativePointer } from './geometry';
 
 export type ReviewCandidate = NonNullable<DecompositionJobSummary['candidates']>[number];
 export function MaskReview({ job, candidates, sourceId, width, height, onSubmit, busy }: {
   job: DecompositionJobSummary; candidates: ReviewCandidate[]; sourceId: string; width: number; height: number;
-  onSubmit: (review: DecompositionReview) => void; busy: boolean;
+  onSubmit: (review: DecompositionReview) => void | Promise<void>; busy: boolean;
 }) {
   const [active, setActive] = useState(candidates[0]?.id || '');
   const draftKey = `frameflow:mask-review:${job.id}:${job.revision}`;
@@ -17,7 +18,7 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
       const draft: unknown = JSON.parse(sessionStorage.getItem(draftKey) || 'null');
       if (validDecompositionReview(draft, width, height) && draft.expectedRevision === job.revision) saved = draft;
     } catch { /* Browser storage is optional; server-accepted corrections still recover. */ }
-    return candidates.map(c => ({ id: c.id, candidateId: c.id, label: c.label, selected: c.selected ?? true, points: [], strokes: [], completeHidden: false, ...saved?.objects?.find(object => object.id === c.id && (object.candidateId ?? object.id) === c.id) }));
+    return candidates.map(c => ({ id: c.id, candidateId: c.id, label: c.label, selected: false, points: [], strokes: [], completeHidden: false, ...saved?.objects?.find(object => object.id === c.id && (object.candidateId ?? object.id) === c.id) }));
   });
   useEffect(() => {
     try { sessionStorage.setItem(draftKey, JSON.stringify({ expectedRevision: job.revision, action: 'accept-masks', objects })); } catch { /* Keep editing in memory when storage is unavailable. */ }
@@ -28,10 +29,19 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
   const selected = objects.find((object) => object.id === active);
   const candidate = candidates.find((object) => object.id === active);
   const update = (change: Partial<(typeof objects)[number]>) => setObjects((all) => all.map((object) => object.id === active ? { ...object, ...change } : object));
-  const send = (action: DecompositionReview['action']) => onSubmit({ expectedRevision: job.revision, action, objects });
+  const submissionLock = useRef(false);
+  const [submission, setSubmission] = useState({ pending: false, error: '' });
+  const send = (action: DecompositionReview['action']) => {
+    if (busy) return;
+    void submitReviewOnce(submissionLock, { expectedRevision: job.revision, action, objects }, onSubmit, setSubmission);
+  };
+  const submitting = busy || submission.pending;
   return <section aria-label="Mask review">
     <h3>Review masks</h3><p>{job.review?.message}</p>
     <p>Check each object, especially fingers and faces near a board. Paint only pixels visible in the source. Labels and points guide one further segmentation attempt.</p>
+    <p><strong>Included ({objects.filter(o => o.selected).length}):</strong> {objects.filter(o => o.selected).map(o => `${o.label} (${o.candidateId})`).join(', ') || 'None — choose the intended object below.'}</p>
+    <p>Viewing a candidate does not change which objects are included. For one portrait, use only the full-person candidate; its nested fragments must stay excluded.</p>
+    <button disabled={submitting || !active} onClick={() => setObjects(all => all.map(object => ({ ...object, selected: object.id === active })))}>Use only this candidate</button>
     <div className="decomp-row"><label>Object <select value={active} onChange={(e) => setActive(e.target.value)}>{candidates.map((c) => <option key={c.id} value={c.id}>{c.label} — {c.id} ({((c.statistics?.areaFraction ?? 0) * 100).toFixed(1)}% of image)</option>)}</select></label>
       {selected && <><label>Name <input maxLength={100} value={selected.label} onChange={(e) => update({ label: e.target.value })} /></label><label><input type="checkbox" checked={selected.selected !== false} onChange={(e) => update({ selected: e.target.checked })} /> Include this object</label></>}
     </div>
@@ -63,6 +73,7 @@ export function MaskReview({ job, candidates, sourceId, width, height, onSubmit,
     {candidate && <><p><strong>{candidate.id}</strong> · {job.artifacts.find(a => a.artifactId === candidate.overlayArtifactId)?.relativePath || 'Saved candidate'}<br />Cyan is selected ownership; the remaining source is context only. Renaming does not expand a mask.</p><a href={artifactUrl(candidate.maskArtifactId)} target="_blank" rel="noreferrer">Inspect actual black/white mask</a></>}
     <p>Saved on this object: {selected?.points?.filter(p => p.label === 1).length ?? 0} positive / {selected?.points?.filter(p => p.label === 0).length ?? 0} negative points. {selected?.selected === false ? 'Excluded: these corrections will not be used. Include this object to refine it.' : 'Included in refinement.'}</p>
     {candidate?.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
-    <div className="decomp-row"><button disabled={busy || !objects.some((o) => o.selected)} onClick={() => send('accept-masks')}>Confirm visible masks</button><button disabled={busy || selected?.selected === false || !selected?.points?.length} onClick={() => send('guided-refine')}>Refine with guidance</button></div>
+    {submission.error && <p role="alert">{submission.error}</p>}
+    <div className="decomp-row"><button disabled={submitting || !objects.some((o) => o.selected)} onClick={() => send('accept-masks')}>{submission.pending ? 'Submitting review…' : 'Confirm visible masks'}</button><button disabled={submitting || selected?.selected === false || !selected?.points?.length} onClick={() => send('guided-refine')}>Refine with guidance</button></div>
   </section>;
 }

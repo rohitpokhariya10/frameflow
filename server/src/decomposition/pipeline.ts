@@ -95,7 +95,7 @@ export async function runPhase(context: PipelineContext) {
       const native = mapMaskToNative(candidate.mask, transform);
       const nativeRecord = await context.put('review-mask', await encodeMask(native), `04-sam2/${candidateName}-native.png`);
       const overlay = await context.put('candidate-overlay', await overlayMasks(analysis, [{ mask: candidate.mask }]), `04-sam2/${candidateName}-overlay.png`);
-      saved.push({ id: candidate.id, label: candidate.label, labelSource: candidate.labelSource, maskArtifactId: nativeRecord.artifactId, analysisMaskArtifactId: mask.artifactId, overlayArtifactId: overlay.artifactId, selected: result.selectedIds.includes(candidate.id), warnings: candidate.warnings, statistics: candidate.statistics, proposalMatches: candidate.proposalMatches });
+      saved.push({ id: candidate.id, label: candidate.label, labelSource: candidate.labelSource, maskArtifactId: nativeRecord.artifactId, analysisMaskArtifactId: mask.artifactId, overlayArtifactId: overlay.artifactId, selected: false, warnings: candidate.warnings, statistics: candidate.statistics, proposalMatches: candidate.proposalMatches });
       overlays.push({ mask: candidate.mask });
     }
     context.job.data.candidates = saved;
@@ -140,7 +140,7 @@ export async function runPhase(context: PipelineContext) {
     for (const neighbor of nativeObjects) if (neighbor.id !== object.id) excluded = unionMasks(excluded, neighbor.mask);
     // Ownership conflicts must be corrected explicitly. Do not invent a front/back order.
     if (overlapMasks(object.mask, excluded).intersection) {
-      context.review('OVERLAPPING_VISIBLE_OWNERSHIP', 'Selected masks share visible pixels. Subtract neighboring face, fingers or background pixels before confirming.', ['accept-masks', 'guided-refine']);
+      context.review('OVERLAPPING_VISIBLE_OWNERSHIP', `${object.id} overlaps another included candidate. Included: ${nativeObjects.map(item => item.id).join(', ')}. Use only the full-object candidate or exclude overlapping fragments; viewing a dropdown option does not exclude others. No provider call was made.`, ['accept-masks', 'guided-refine']);
       context.save(); return;
     }
     object.excludedMask = excluded;

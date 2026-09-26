@@ -77,3 +77,47 @@ regression preserves exact coverage through SAM3/BiRefNet mocks; wrong patch pau
 calls. No paid calls, DB edits, or historical artifact rewrites. Live/browser visual quality remains
 unverified for this fix. Restart API/worker and reload client to use it; inspect actual mask support
 before selecting the full person. Phase 7+ remains out of scope.
+
+## 2026-09-26 — Confirm visible masks transition
+
+Exact persisted diagnosis: job e7fb976c-50ae-4e84-9335-b927a68f8ac0 submitted all six
+candidates as selected. Three review_saved events queued revisions 9/11/13; the worker
+returned OVERLAPPING_VISIBLE_OWNERSHIP at revisions 10/12/14. Last return took 544 ms.
+The phase-5 handler was reached, but stopped before paid inference; phase stores the last
+completed phase (4). Provider mode remained live and the review lease was released.
+No request/worker mode failure. Original job remains unchanged at needs_review/4/revision14.
+
+Fix: live review candidates require explicit inclusion; show the entire included set and
+provide Use only this candidate. Preserve saved labels, IDs, selection and corrections.
+Confirm uses a synchronous in-flight guard, submitting label and local error display;
+API response still drives Redux/polling. Overlap review names the included IDs. Worker
+logs phase start/checkpoint and persists active phase wording before processing. Provider
+mode isolation, overlap validation and phase numbering are unchanged.
+
+Verification: typecheck and root build passed. 12 focused review/candidate tests passed;
+8 repository tests passed on rerun (one initial run hit the existing 1 ms lease test race).
+Focused ESLint and diff checks passed. Built-client browser smoke passed with mocked HTTP:
+candidate-6/34.5%, per-object positive/negative points, single request for rapid clicks,
+visible 409, disabled submitting state and running Phase 5 response. Command:
+`node tests/decomposition-review-smoke.mjs` (local built API on localhost:3001; no inference).
+No changes to Phase 1–3 provider logic or Phase 7+; unrelated work remains uncommitted.
+
+Live check: rebuilt/restarted API and exactly one live worker. Created one fresh job
+9d5e91d1-41ac-436f-8fc8-9c40a53a6ed8 from the existing validated portrait, maxCalls=4.
+Live result pending below; do not confuse mocked browser verification with paid inference.
+
+Live result: PASS transition, Phase 5 reached. Visually inspected candidate-6 overlay:
+full person, 34.516% analysis coverage. Actual browser clicked Confirm once with only
+candidate-6 selected, label person, no user correction points. POST review returned 200:
+needs_review/4/revision12 → queued/4/revision13. Worker f1f6c728-265e-4fa2-bb37-345bedf4c38b
+logged phase 5 start; browser observed running Phase 5. Final DB state needs_review/5/
+revision18, leaseUntil=0, mode=live, REFINEMENT_VISUAL_REVIEW. Candidate-6 refinementAccepted=true;
+input native coverage 542779 pixels. Soft-edge and model-crop-resampling warnings remain honest.
+Exactly four paid calls, no retries: Qwen 01a0dc0f-7a6a-7ff1-8cba-131d2d447fc3 (768×512),
+SAM2 01a0dc12-4af4-7691-9482-7205add58b30 (1024×695), SAM3
+01a0dc13-7cd3-75c0-b61b-e3db84fe2393 and BiRefNet 01a0dc13-edd7-7ae2-8960-0b30de6cae25
+(both 1024×784). Local-only network/status JSON and screenshots:
+artifacts/decomposition/review-transition/. Images/runtime evidence are not committed.
+Final root build passed after removing the duplicate old-phase heading; mocked browser check
+rerun against this final build. No Phase 6 approval or Phase 7+ work performed. API and one live
+worker remain running. Open Recover jobs → 9d5e91d1 to inspect the live Phase-5 result.
