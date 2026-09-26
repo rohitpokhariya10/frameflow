@@ -9,5 +9,6 @@ export default defineConfig({
       output: { codeSplitting: { groups: [{ name: 'canvas', test: /node_modules\/(konva|react-konva|react-reconciler)\// }] } },
     },
   },
-  server: { port: 5173, strictPort: true, proxy: { '/api': 'http://127.0.0.1:3001' } },
+  // Isolated E2E runs override the port and API target; normal development keeps 5173 -> 3001.
+  server: { port: Number(process.env.FRAMEFLOW_CLIENT_PORT ?? 5173), strictPort: true, proxy: { '/api': process.env.FRAMEFLOW_API_URL ?? 'http://127.0.0.1:3001' } },
 });

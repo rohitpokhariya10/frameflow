@@ -19,6 +19,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:decomposition": "playwright test -c playwright.decomposition.config.ts",
     "dev:decomposition": "concurrently -k -n client,server,worker \"npm run dev -w @frameflow/client\" \"npm run dev -w @frameflow/server\" \"npm run worker:dev -w @frameflow/server\"",
     "decomp:setup": "npm run decomp:setup -w @frameflow/server",
     "decomp:verify": "vitest run server/src/decomposition/phases/source.test.ts server/src/decomposition/phases/analysis.test.ts server/src/decomposition/phases/candidates.test.ts server/src/decomposition/providers",
