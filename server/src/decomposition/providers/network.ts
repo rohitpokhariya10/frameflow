@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns/promises';
 import { request } from 'node:https';
 import { isIP } from 'node:net';
-import { ProviderError } from './adapters.js';
+import { ProviderError, type ProviderErrorDetail } from './adapters.js';
 
 export const defaultMediaHosts = ['fal.media', '*.fal.media'] as const;
 const apiHosts = ['queue.fal.run', 'rest.fal.ai', 'fal.run'];
@@ -66,6 +66,31 @@ export function httpProviderError(status: number, retryAfter: string | null = nu
   return new ProviderError('PROVIDER_NETWORK', `Provider returned HTTP ${status}.`, status >= 500, status, retryAfterMs);
 }
 
+const clean = (value: unknown, max: number) => typeof value === 'string'
+  ? Array.from(value.replace(/https?:\/\/\S+/g, '[url]'), ch => { const code = ch.charCodeAt(0); return code < 32 || code === 127 ? ' ' : ch; }).join('').replace(/\s+/g, ' ').trim().slice(0, max) || undefined : undefined;
+/**
+ * fal's own explanation of a failed call, e.g. 422 {"detail":[{"loc":["body","image_url"],"msg":"…","type":"invalid_request","input":{…}}]}.
+ * Keeps only msg/type/loc (never `input`, which echoes the prompt and upload URL), strips URLs and control characters.
+ */
+export async function providerErrorDetail(response: Response): Promise<ProviderErrorDetail> {
+  const detail: ProviderErrorDetail = { status: response.status, messages: [] };
+  const units = response.headers.get('x-fal-billable-units'), id = response.headers.get('x-fal-request-id');
+  if (units && /^\d+(\.\d+)?$/.test(units)) detail.billableUnits = units;
+  if (id && /^[a-zA-Z0-9_-]{1,200}$/.test(id)) detail.requestId = id;
+  try {
+    const body = JSON.parse(await response.text()) as { detail?: unknown; message?: unknown; error?: unknown };
+    const items = Array.isArray(body.detail) ? body.detail : [body.detail ?? body.message ?? body.error];
+    for (const item of items.slice(0, 5)) {
+      const record: Record<string, unknown> = item && typeof item === 'object' ? item as Record<string, unknown> : { msg: item };
+      const msg = clean(record.msg ?? record.message, 500);
+      if (!msg) continue;
+      const type = clean(record.type, 100), loc = Array.isArray(record.loc) ? clean(record.loc.map(String).join('.'), 100) : undefined;
+      detail.messages.push({ msg, ...(type ? { type } : {}), ...(loc ? { loc } : {}) });
+    }
+  } catch { /* Not JSON: the status alone is still reported. */ }
+  return detail;
+}
+
 /** HTTPS connects to the already-validated address while verifying TLS against the original hostname. */
 async function pinnedRequest(raw: string, init: RequestInit, policy: NetworkPolicy, hosts: readonly string[]): Promise<Response> {
   const timeoutMs = policy.timeoutMs ?? 30_000;
@@ -121,7 +146,11 @@ export function createBoundedSdkFetch(policy: NetworkPolicy = {}, requestImpl = 
     const raw = input instanceof Request ? input.url : String(input);
     try {
       const response = await requestImpl(raw, init, policy, [...apiHosts, ...(policy.mediaHosts ?? defaultMediaHosts)]);
-      if (!response.ok) throw httpProviderError(response.status, response.headers.get('retry-after'));
+      if (!response.ok) {
+        const error = httpProviderError(response.status, response.headers.get('retry-after'));
+        error.providerDetail = await providerErrorDetail(response);
+        throw error;
+      }
       return response;
     } catch (error) {
       if (error instanceof ProviderError) throw error;

@@ -23,6 +23,22 @@ describe('bounded provider networking', () => {
     await expect(consumeBounded(chunks(), 200, '120')).rejects.toThrow(/incomplete/);
   });
 
+  it('keeps fal\'s own 422 message, status and billing header, but never the echoed input', async () => {
+    const body = { detail: [{ loc: ['body', 'image_url'], msg: 'The provided image could not be processed for layer decomposition. Try a different image.', type: 'invalid_request',
+      url: 'https://docs.fal.ai/errors#invalid_request', input: { prompt: 'SECRET PROMPT TEXT', image_url: 'https://v3b.fal.media/files/private.png' } }] };
+    const request = vi.fn(async () => new Response(JSON.stringify(body), { status: 422, headers: { 'content-type': 'application/json', 'x-fal-billable-units': '0', 'x-fal-request-id': 'req-422' } }));
+    const client = createFalClient({ credentials: 'offline-test-placeholder', fetch: createBoundedSdkFetch({}, request), retry: { maxRetries: 0 } });
+    const error = await client.queue.result('bytedance/seedream/v5/pro/layerize', { requestId: 'req-422' }).catch((e: unknown) => e) as ProviderError;
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({ code: 'PROVIDER_REJECTED', status: 422 });
+    expect(error.providerDetail).toEqual({ status: 422, billableUnits: '0', requestId: 'req-422',
+      messages: [{ msg: 'The provided image could not be processed for layer decomposition. Try a different image.', type: 'invalid_request', loc: 'body.image_url' }] });
+    expect(JSON.stringify(error.providerDetail)).not.toMatch(/SECRET|private\.png|https?:/);
+    // A non-JSON error body still reports the status.
+    const plain = createFalClient({ credentials: 'offline-test-placeholder', fetch: createBoundedSdkFetch({}, async () => new Response('bad gateway', { status: 400 })), retry: { maxRetries: 0 } });
+    expect((await plain.queue.result('bytedance/seedream/v5/pro/layerize', { requestId: 'x' }).catch((e: unknown) => e) as ProviderError).providerDetail).toEqual({ status: 400, messages: [] });
+  });
+
   it('prevents SDK internal hidden submission retries even on 500 and network failures', async () => {
     for (const failure of [new Response('{}', { status: 500 }), new Error('raw connection secret-bearing URL')]) {
       const request = vi.fn(async () => { if (failure instanceof Error) throw failure; return failure; });

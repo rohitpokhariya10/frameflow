@@ -32,7 +32,11 @@ export type NormalizedProviderOutput = {
   boxes?: [number, number, number, number][];
 };
 
+/** What the provider itself said about a failed HTTP call: sanitized messages only, never the echoed input. */
+export type ProviderErrorDetail = { status: number; messages: { msg: string; type?: string; loc?: string }[]; billableUnits?: string; requestId?: string };
 export class ProviderError extends Error {
+  /** Set by the fal transport on non-OK API responses; the message and code above stay our normalized ones. */
+  providerDetail?: ProviderErrorDetail;
   constructor(public readonly code: string, message: string, public readonly retryable = false, public readonly status?: number, public readonly retryAfterMs?: number) {
     super(message);
     this.name = 'ProviderError';

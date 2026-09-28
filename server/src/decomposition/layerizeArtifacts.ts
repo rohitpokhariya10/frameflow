@@ -3,12 +3,15 @@
  * The coordinate system is the decoded base layer (z_index 0). A layer is placed only when its geometry is resolved:
  * full-canvas, a crop matching its bbox, or a crop uniformly scaled to its bbox (bboxScaleFit). Anything else stays
  * unresolved and is flagged, never stretched. Raw returned PNGs are kept as downloaded.
+ * For framed layouts, the outer background layer is rebuilt locally as a clean full-canvas asset (outerBackground.ts);
+ * its layer entry then points at outer-background.png and keeps the raw provider file in `rawFile`.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp, { type OverlayOptions } from 'sharp';
 import { normalizeProviderOutput, type ProviderLayerMetadata } from './providers/adapters.js';
 import { bboxScaleFit } from './phases/discovery.js';
+import { rebuildOuterBackground } from './outerBackground.js';
 
 export type PlacementKind = 'base' | 'full-canvas' | 'bbox-crop' | 'bbox-scaled' | 'unresolved';
 /** x/y/width/height are base-canvas pixels. For unresolved layers they are the layer's natural size at 0,0 (not placed). */
@@ -17,6 +20,9 @@ export type LayerInfo = {
   index: number; file: string; zIndex: number; name?: string; description?: string;
   bboxAbsolute?: [number, number, number, number]; bboxNormalized?: [number, number, number, number];
   pixelWidth: number; pixelHeight: number; opaquePercent: number; placement: Placement;
+  /** Set when this layer was rebuilt locally: `file` is the rebuilt asset, `rawFile` the untouched provider layer. */
+  rawFile?: string; rebuilt?: { method: 'local-background-fill'; from: string[]; foreground: string[]; holePercent: number; texture: string; contaminationPercent: number; residualPercent: number;
+    source?: 'original' | 'base'; enclosedPercent?: number };
 };
 export type Canvas = { width: number; height: number };
 const SIZE_TOLERANCE = 2;
@@ -74,30 +80,46 @@ export async function writeContactSheet(file: string, tiles: { png: Buffer; titl
   await sharp({ create: { width: cols * cell, height: rows * (cell + label), channels: 4, background: '#f7f6f2' } }).composite(overlays).png().toFile(file);
 }
 
+/** A resolved layer as a canvas overlay (resized when its placement is scaled, clipped to the canvas); undefined if unresolved or off-canvas. */
+export async function placedOverlay(png: Buffer, p: Placement, canvas: Canvas): Promise<OverlayOptions | undefined> {
+  if (p.kind === 'unresolved') return undefined;
+  const needsResize = p.kind === 'bbox-scaled' || p.kind === 'base';
+  let input = needsResize ? await sharp(png).resize(p.width, p.height, { fit: 'fill' }).png().toBuffer() : png;
+  // Clip to the canvas: sharp rejects overlays that extend beyond it.
+  const left = Math.max(0, p.x), top = Math.max(0, p.y);
+  const meta = await sharp(input).metadata();
+  const width = Math.min(meta.width! - (left - p.x), canvas.width - left), height = Math.min(meta.height! - (top - p.y), canvas.height - top);
+  if (width < 1 || height < 1) return undefined;
+  if (width !== meta.width || height !== meta.height) input = await sharp(input).extract({ left: left - p.x, top: top - p.y, width, height }).png().toBuffer();
+  return { input, left, top };
+}
+
 /** Back-to-front composite of resolved layers only, on transparency. The original image is never placed underneath. */
 export async function composeLayers(file: string, canvas: Canvas, items: { png: Buffer; zIndex: number; placement: Placement }[]) {
   const stack: OverlayOptions[] = [];
   for (const item of [...items].sort((a, b) => a.zIndex - b.zIndex)) {
-    const p = item.placement;
-    if (p.kind === 'unresolved') continue;
-    const needsResize = p.kind === 'bbox-scaled' || p.kind === 'base';
-    let png = needsResize ? await sharp(item.png).resize(p.width, p.height, { fit: 'fill' }).png().toBuffer() : item.png;
-    // Clip to the canvas: sharp rejects overlays that extend beyond it.
-    const left = Math.max(0, p.x), top = Math.max(0, p.y);
-    const meta = await sharp(png).metadata();
-    const width = Math.min(meta.width! - (left - p.x), canvas.width - left), height = Math.min(meta.height! - (top - p.y), canvas.height - top);
-    if (width < 1 || height < 1) continue;
-    if (width !== meta.width || height !== meta.height) png = await sharp(png).extract({ left: left - p.x, top: top - p.y, width, height }).png().toBuffer();
-    stack.push({ input: png, left, top });
+    const overlay = await placedOverlay(item.png, item.placement, canvas);
+    if (overlay) stack.push(overlay);
   }
   await sharp({ create: { width: canvas.width, height: canvas.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite(stack).png().toFile(file);
+}
+
+/** Background role from the provider's layer name (the Template A prompt asks for role-based names). */
+export function backgroundRole(name?: string): 'outer' | 'inner' | 'border' | undefined {
+  if (!name) return undefined;
+  if (/\bouter\b/i.test(name)) return 'outer';
+  if (/backdrop|\binner\b/i.test(name)) return 'inner';
+  if (/border|frame/i.test(name)) return 'border';
+  return undefined;
 }
 
 /**
  * Rebuilds all local outputs from a saved raw fal response. Layer files already on disk are reused, so re-rendering
  * never downloads twice and never calls the model. Writes layer-NN.png, layers.json, contact-sheet.png, reconstructed.png.
+ * `sourceImage`: the uploaded image, the preferred source of real outer-background pixels. `rebuildOuterBackground`
+ * (default true): the framed-layout outer-background rebuild; templates whose backgrounds it does not fit turn it off.
  */
-export async function renderLayerizeOutputs(dir: string, raw: unknown, download: (url: string) => Promise<Buffer>): Promise<{ canvas: Canvas; layers: LayerInfo[]; warnings: string[] }> {
+export async function renderLayerizeOutputs(dir: string, raw: unknown, download: (url: string) => Promise<Buffer>, options: { sourceImage?: Buffer; rebuildOuterBackground?: boolean } = {}): Promise<{ canvas: Canvas; layers: LayerInfo[]; warnings: string[] }> {
   const output = normalizeProviderOutput('seedream', raw);
   const decoded: { png: Buffer; file: string; width: number; height: number; opaque: number; meta: ProviderLayerMetadata }[] = [];
   for (const [i, image] of output.images.entries()) {
@@ -111,9 +133,40 @@ export async function renderLayerizeOutputs(dir: string, raw: unknown, download:
   const { canvas, placements, warnings } = placeLayers(decoded);
   const layers: LayerInfo[] = decoded.map((d, i) => ({ index: i, file: d.file, zIndex: d.meta.zIndex, name: d.meta.name, description: d.meta.description, bboxAbsolute: d.meta.bboxAbsolute, bboxNormalized: d.meta.bboxNormalized,
     pixelWidth: d.width, pixelHeight: d.height, opaquePercent: Math.round(d.opaque * 1000) / 10, placement: placements[i] }));
+  // Framed layouts: replace the provider's outer background (a placeholder so far) with a clean full-canvas rebuild from
+  // the base, filled under the inner backdrop and border. Needs the base and at least one resolved inner backdrop.
+  const pngs = decoded.map(d => d.png);
+  const baseAt = placements.findIndex(p => p.kind === 'base');
+  const roles = decoded.map((d, i) => (i === baseAt || placements[i].kind === 'unresolved' ? undefined : backgroundRole(d.meta.name)));
+  const holeAt = roles.flatMap((role, i) => (role === 'inner' || role === 'border' ? [i] : []));
+  // Foreground: every other resolved layer (subject, held objects). The base may still contain them, sometimes past the frame.
+  const foregroundAt = roles.flatMap((role, i) => (i !== baseAt && !role && placements[i].kind !== 'unresolved' ? [i] : []));
+  const overlays = async (at: number[]) => (await Promise.all(at.map(i => placedOverlay(pngs[i], placements[i], canvas)))).filter((o): o is OverlayOptions => !!o);
+  const rebuilt = options.rebuildOuterBackground !== false && baseAt >= 0 && roles.includes('inner')
+    ? await rebuildOuterBackground(pngs[baseAt], canvas, await overlays(holeAt), await overlays(foregroundAt), { source: options.sourceImage })
+    : undefined;
+  if (options.rebuildOuterBackground !== false && baseAt >= 0 && roles.includes('inner') && !rebuilt) {
+    warnings.push('OUTER_BACKGROUND_NOT_REBUILT: less than 1% of the canvas is visible outer background, so the provider layer is kept as returned.');
+  }
+  if (rebuilt && rebuilt.residualPercent > 0.2) warnings.push(`OUTER_BACKGROUND_RESIDUAL: ${rebuilt.residualPercent}% of the rebuilt outer background still stands out from its surroundings.`);
+  if (rebuilt) {
+    writeFileSync(join(dir, 'outer-background.png'), rebuilt.png);
+    const outerAt = roles.indexOf('outer');
+    const info = { rebuilt: { method: 'local-background-fill' as const, from: [rebuilt.source === 'original' ? 'original image' : decoded[baseAt].file, ...holeAt.map(i => decoded[i].file)], foreground: foregroundAt.map(i => decoded[i].file),
+      holePercent: rebuilt.holePercent, texture: rebuilt.texture, contaminationPercent: rebuilt.contaminationPercent, residualPercent: rebuilt.residualPercent, source: rebuilt.source, enclosedPercent: rebuilt.enclosedPercent },
+      file: 'outer-background.png', pixelWidth: canvas.width, pixelHeight: canvas.height, opaquePercent: 100, placement: { kind: 'full-canvas' as const, x: 0, y: 0, width: canvas.width, height: canvas.height } };
+    if (outerAt >= 0) {
+      Object.assign(layers[outerAt], { rawFile: layers[outerAt].file, ...info });
+      pngs[outerAt] = rebuilt.png;
+    } else {
+      // No outer layer returned: add the rebuilt one just above the base.
+      layers.push({ index: layers.length, zIndex: decoded[baseAt].meta.zIndex + 0.5, name: 'Outer background (rebuilt)', ...info });
+      pngs.push(rebuilt.png);
+    }
+  }
   writeFileSync(join(dir, 'layers.json'), JSON.stringify({ canvas, warnings, layers }, null, 2));
-  await writeContactSheet(join(dir, 'contact-sheet.png'), decoded.map((d, i) => ({ png: d.png,
-    title: `${d.meta.zIndex}. ${d.meta.name ?? (placements[i].kind === 'base' ? '(base image)' : 'layer')}`, sub: `${placements[i].kind} · ${d.width}×${d.height} · ${layers[i].opaquePercent}% opaque` })));
-  await composeLayers(join(dir, 'reconstructed.png'), canvas, decoded.map((d, i) => ({ png: d.png, zIndex: d.meta.zIndex, placement: placements[i] })));
+  await writeContactSheet(join(dir, 'contact-sheet.png'), layers.map((l, i) => ({ png: pngs[i],
+    title: `${l.zIndex}. ${l.name ?? (l.placement.kind === 'base' ? '(base image)' : 'layer')}`, sub: `${l.placement.kind}${l.rebuilt ? ' · rebuilt locally' : ''} · ${l.pixelWidth}×${l.pixelHeight} · ${l.opaquePercent}% opaque` })));
+  await composeLayers(join(dir, 'reconstructed.png'), canvas, layers.map((l, i) => ({ png: pngs[i], zIndex: l.zIndex, placement: l.placement })));
   return { canvas, layers, warnings };
 }
