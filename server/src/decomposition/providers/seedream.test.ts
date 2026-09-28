@@ -23,7 +23,10 @@ describe('seedream layerize contract', () => {
   it('builds the documented wire input without a seed or local dimensions', () => {
     expect(buildProviderInput('seedream', { imageUrl, width: 1024, height: 768, seed: 5 })).toEqual({ image_url: imageUrl, image_size: 'auto', enhance_prompt_mode: 'standard', enable_safety_checker: true, sync_mode: false });
     expect(buildProviderInput('seedream', { imageUrl, prompt: '  separate the text  ' })).toMatchObject({ prompt: 'separate the text' });
-    expect(() => buildProviderInput('seedream', { imageUrl, width: 400, height: 800 })).toThrow(/width/);
+    // Limits are total pixel area: 400×800 is above 512×512, 400×600 is below it.
+    expect(buildProviderInput('seedream', { imageUrl, width: 400, height: 800 })).toMatchObject({ image_url: imageUrl });
+    expect(() => buildProviderInput('seedream', { imageUrl, width: 400, height: 600 })).toThrow(/width/);
+    expect(() => buildProviderInput('seedream', { imageUrl, width: 6001, height: 6000 })).toThrow(/total pixels/);
     expect(() => buildProviderInput('seedream', { imageUrl, width: 512, height: 5999 * 2 })).toThrow();
     expect(() => buildProviderInput('seedream', { imageUrl, imageSize: 'auto_4K' as never })).toThrow(/size/);
   });

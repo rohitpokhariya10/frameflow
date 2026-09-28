@@ -1,0 +1,22 @@
+Separate the image into clean semantic layers.
+
+Required layers:
+1. Outer background.
+2. Decorative frame or boundary element, if present.
+3. Inner/background area inside the frame, if present.
+4. Main person as a separate layer.
+5. Any object held, worn, or carried by the person as a separate object layer.
+6. Any other visually distinct foreground props or accessories as separate layers when clearly identifiable.
+
+Important instructions:
+- Detect the main held object as an independent semantic object.
+- Do not merge the held object with the person layer.
+- Keep the person's body, arms, hands, and fingers in the person layer.
+- Preserve the held object's visible shape, boundaries, and details in its own layer.
+- If fingers overlap the object, keep the fingers in the person layer and isolate the object separately as accurately as possible.
+- Keep the frame separate from both the person and the background whenever a frame exists.
+- Preserve transparent backgrounds around each extracted layer.
+- Reconstruct occluded or hidden background areas behind separated foreground layers when possible.
+- Use clean, accurate alpha masks and natural object boundaries.
+- Avoid unnecessary fragmentation; each meaningful element should remain a coherent semantic layer.
+- Preserve original image quality and resolution.

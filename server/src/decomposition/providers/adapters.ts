@@ -90,9 +90,11 @@ export function buildProviderInput(model: Model, options: ProviderInputOptions):
   if (options.seed !== undefined && ['qwen', 'finegrain', 'flux'].includes(model)) input.seed = integer(options.seed, 0, 2147483647, 'seed');
   switch (model) {
     case 'seedream': {
-      // Discovery only: the endpoint documents no seed, so it is never sent. Inputs must be 512–6000 px with aspect 1/16–16.
+      // The endpoint documents no seed, so it is never sent. fal documents inputs "between 512x512 and 6000x6000 total
+      // pixels" (an area, not per-side limits) with aspect 1/16–16 (verified 2026-09-28).
       if (options.width !== undefined || options.height !== undefined) {
-        const width = integer(options.width, 512, 6000, 'width'), height = integer(options.height, 512, 6000, 'height');
+        const width = integer(options.width, 1, 96000, 'width'), height = integer(options.height, 1, 96000, 'height');
+        if (width * height < 512 * 512 || width * height > 6000 * 6000) throw new ProviderError('INVALID_PROVIDER_INPUT', `Seedream layerize requires width × height between 512×512 and 6000×6000 total pixels (got ${width}×${height}).`);
         if (width / height > 16 || height / width > 16) throw new ProviderError('INVALID_PROVIDER_INPUT', 'Seedream layerize requires an aspect ratio between 1/16 and 16.');
       }
       const instructions = options.prompt ?? '';
