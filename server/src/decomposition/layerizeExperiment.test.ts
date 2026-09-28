@@ -13,7 +13,7 @@ const url = (name: string) => `https://v3b.fal.media/files/test/${name}.png`;
 
 function fakeTransport(files: Record<string, Buffer>, raw: unknown) {
   return {
-    upload: vi.fn(async () => url('input')), submit: vi.fn(async () => ({ requestId: 'req-123' })),
+    upload: vi.fn(async () => url('input')), submit: vi.fn<FalTransport['submit']>(async () => ({ requestId: 'req-123' })),
     status: vi.fn(async () => 'COMPLETED' as const), result: vi.fn(async () => raw), cancel: vi.fn(),
     download: vi.fn(async (u: string) => files[u]),
   } satisfies FalTransport;

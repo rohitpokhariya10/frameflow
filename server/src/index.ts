@@ -2,11 +2,13 @@ import express from 'express';
 import { createApp, readConfig } from './app.js';
 import { createDecompositionRouter } from './decomposition/router.js';
 import { readDecompositionConfig } from './decomposition/config.js';
+import { createLayerizeRouter, layerizeExperimentEnabled } from './decomposition/layerizeRouter.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-const app = createApp(readConfig(), undefined, console.info, undefined, createDecompositionRouter(readDecompositionConfig()));
+const app = createApp(readConfig(), undefined, console.info, undefined, createDecompositionRouter(readDecompositionConfig()),
+  layerizeExperimentEnabled() ? createLayerizeRouter() : undefined);
 
 const clientDist = fileURLToPath(new URL('../../client/dist/', import.meta.url));
 if (existsSync(clientDist)) {
