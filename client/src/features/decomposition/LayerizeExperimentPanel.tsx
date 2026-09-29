@@ -5,7 +5,7 @@ import { assets } from '../../lib/assets/runtimeAssets';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { decomposedDesignImported } from '../../store/editorSlice';
 import { variantSelected } from '../../store/uiSlice';
-import { experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, parseTargetLayers, runPrompt, suggestedLayers, targetLayerRange, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
+import { experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, ownsOptions, parseTargetLayers, runPrompt, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
 import './workspace/workspace.css';
 
 const ACTIVE = ['uploaded', 'planning', 'planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading'];
@@ -21,6 +21,9 @@ const sourceLabel = (run: ExperimentRun) => run.promptSource?.mode === 'template
 const isAutomatic = (run: ExperimentRun) => run.promptSource?.mode === 'automatic' || (run.promptSource?.mode === 'retry' && run.promptSource.providerPrompt === 'auto');
 const runTemplateKey = (run: ExperimentRun) => run.templateKey ?? run.layerTarget?.templateKey ?? (run.promptSource?.mode === 'template' ? run.promptSource.templateKey : undefined) ?? 'template-a';
 const heldObjectLabel = (run: ExperimentRun) => run.separateHeldObject === false ? (runTemplateKey(run) === 'template-a' ? 'Combined with subject' : 'Combined with main product') : 'Separate';
+/** A run's own template options (Template B), or undefined for runs that use the held-object checkbox (Template A, older Template B runs). */
+const optionsLabel = (run: ExperimentRun, template?: TemplateEntry) => run.templateOptions && template?.options
+  ? template.options.map(o => `${o.label}: ${run.templateOptions![o.key] ? 'on' : 'off'}`).join(' · ') : undefined;
 
 function LayerTile({ l, f }: { l: ExperimentLayer; f: (file: string) => string }) {
   return <figure style={{ margin: 0 }}>
@@ -50,6 +53,8 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
   const [templateKey, setTemplateKey] = useState('template-a');
   const [mode, setMode] = useState<PromptMode>('generated');
   const [separateHeldObject, setSeparateHeldObject] = useState(true);
+  // Per template, the options the user changed (Template B); unchanged options take the template's default.
+  const [optionChoices, setOptionChoices] = useState<Record<string, Record<string, boolean>>>({});
   const [targetText, setTargetText] = useState('');
   const [retargetText, setRetargetText] = useState('');
   const [notes, setNotes] = useState('');
@@ -75,18 +80,31 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
   };
   const template = templates.find(t => t.key === templateKey);
   const saved = template?.saved;
-  // Automatic templates (Template B) send Seedream no prompt: no OpenAI call, nothing to save or reuse.
+  // Automatic templates send Seedream no prompt: no OpenAI call, nothing to save or reuse.
   const automaticTemplate = template?.providerPrompt === 'automatic';
-  const reuse = mode === 'template' && !automaticTemplate;
+  // Image-specific prompts (Template B) name one image's layers: always generated, never saved or reused.
+  const imageSpecific = !!template?.imageSpecificPrompt;
+  const reuse = mode === 'template' && !automaticTemplate && !imageSpecific;
+  const templateOptions = templateOptionValues(template, optionChoices[templateKey]);
   const suggested = suggestedLayers(template, separateHeldObject), targetRange = targetLayerRange(template, separateHeldObject);
   // Empty means the suggested count; out-of-range values are blocked (never changed for the user).
   const target = parseTargetLayers(targetText, template, separateHeldObject);
   const start = () => file && act(async () => {
     if (target.error) throw new Error(target.error);
-    const next = await experimentApi.start(file, reuse ? 'template' : 'generated', templateKey, separateHeldObject, target.targetLayers);
+    const next = await experimentApi.start(file, reuse ? 'template' : 'generated', templateKey, separateHeldObject, target.targetLayers, templateOptions);
     setRun(next); setRuns(r => [next, ...r]);
   });
   const resume = () => run && act(async () => { await experimentApi.resume(run.id); setRun(await experimentApi.get(run.id)); });
+  // After the template fit check stopped a run: a NEW run of the same uploaded image, with the template that fits, or
+  // with the same template anyway (no check). Explicit and confirmed: it makes OpenAI calls and one paid Seedream call.
+  const rerun = (key: string, skipFitCheck: boolean) => run && window.confirm(`Start a NEW run of this image with ${templates.find(t => t.key === key)?.name ?? key}${skipFitCheck ? ', without the template fit check' : ''}? This makes OpenAI calls and one paid Seedream call.`) && act(async () => {
+    const response = await fetch(experimentFileUrl(run.id, run.original.file));
+    if (!response.ok) throw new Error('The original image could not be loaded.');
+    const blob = await response.blob();
+    const image = new File([blob], run.original.file, { type: blob.type || 'image/png' });
+    const next = await experimentApi.start(image, 'generated', key, run.separateHeldObject !== false, undefined, templateOptionValues(templates.find(t => t.key === key), optionChoices[key]), skipFitCheck);
+    setTemplateKey(key); setRun(next); setRuns(r => [next, ...r]);
+  });
   // Explicit, confirmed user action only: one new paid Seedream call. Nothing is ever retried automatically.
   const retry = (providerPrompt: 'current' | 'auto') => run && window.confirm(providerPrompt === 'auto'
     ? 'Retry as a NEW run with an EMPTY prompt (Seedream picks the major elements itself; roles are classified locally)? This is one new paid Seedream call (OpenAI is not called).'
@@ -130,23 +148,27 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
           <label>Template: <select value={templateKey} onChange={e => setTemplateKey(e.target.value)}>
             {(templates.length ? templates : [{ key: 'template-a', name: 'Template A' }]).map(t => <option key={t.key} value={t.key}>{t.name}</option>)}
           </select></label>
-          {automaticTemplate ? <span>Prompt: <strong>none</strong>. Seedream picks the major elements itself (automatic mode); roles are classified locally. OpenAI is not called.</span> : <>
+          {automaticTemplate ? <span>Prompt: <strong>none</strong>. Seedream picks the major elements itself (automatic mode); roles are classified locally. OpenAI is not called.</span>
+            : imageSpecific ? <span>Prompt: <strong>generated for this image</strong>. OpenAI applies {template?.name}'s rules and options and names this image's layers; that list is sent to Seedream as is. It is never saved or reused.</span> : <>
           <span>Prompt mode:</span>
           <label><input type="radio" name="lx-mode" checked={!reuse} onChange={() => setMode('generated')} /> Generate new prompt (OpenAI)</label>
           <label style={{ opacity: saved ? 1 : 0.5 }}><input type="radio" name="lx-mode" checked={reuse} disabled={!saved} onChange={() => setMode('template')} /> Reuse saved {template?.name ?? 'template'} prompt</label>
           </>}
         </div>
-        <label><input type="checkbox" checked={separateHeldObject} onChange={e => setSeparateHeldObject(e.target.checked)} /> {grouping.label}
-          <span style={{ color: 'var(--color-muted)' }}> — {separateHeldObject ? grouping.checked : grouping.unchecked}</span></label>
+        {ownsOptions(template) ? template!.options!.map(o => <label key={o.key}><input type="checkbox" checked={templateOptions![o.key]}
+            onChange={e => setOptionChoices(c => ({ ...c, [templateKey]: { ...c[templateKey], [o.key]: e.target.checked } }))} /> {o.label}
+          <span style={{ color: 'var(--color-muted)' }}> — {o.help}</span></label>)
+          : <label><input type="checkbox" checked={separateHeldObject} onChange={e => setSeparateHeldObject(e.target.checked)} /> {grouping.label}
+          <span style={{ color: 'var(--color-muted)' }}> — {separateHeldObject ? grouping.checked : grouping.unchecked}</span></label>}
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>Suggested layers: <strong>{suggested ?? (template?.dynamicLayerCount ? 'after decomposition' : '—')}</strong></span>
           <label>Target layers: <input type="number" min={targetRange?.min} max={targetRange?.max} step={1} value={targetText} placeholder={suggested !== undefined ? String(suggested) : template?.dynamicLayerCount ? 'natural' : ''} onChange={e => setTargetText(e.target.value)} style={{ width: 80 }} /></label>
           {targetRange && <span style={{ color: 'var(--color-muted)' }}>allowed {targetRange.min}–{targetRange.max}</span>}
         </div>
-        <div style={{ color: 'var(--color-muted)' }}>Suggested is the natural semantic layer count{template?.dynamicLayerCount ? `; for ${template.name} it is found in the decomposition` : ''}. Choose how many final output layers you want (empty = {template?.dynamicLayerCount ? 'the natural layers as returned' : 'suggested'}). Layer count includes the base layer. Seedream always returns its natural layers; the exact count is made locally by merging layers.{separateHeldObject && targetRange ? ` Separate mode needs at least ${targetRange.min} (${grouping.minReason}).` : ''}</div>
+        <div style={{ color: 'var(--color-muted)' }}>Suggested is the natural semantic layer count{template?.dynamicLayerCount ? `; for ${template.name} it is found in the decomposition` : ''}. Choose how many final output layers you want (empty = {template?.dynamicLayerCount ? 'the natural layers as returned' : 'suggested'}). Layer count includes the base layer. Seedream always returns its natural layers; the exact count is made locally by merging layers.{separateHeldObject && targetRange && !ownsOptions(template) ? ` Separate mode needs at least ${targetRange.min} (${grouping.minReason}).` : ''}</div>
         {target.error && <div role="alert" style={{ color: 'var(--color-error)' }}>{target.error}</div>}
         {template && <div style={{ color: 'var(--color-muted)' }}>{template.name}: {template.description}</div>}
-        {!automaticTemplate && <div style={{ border: `2px solid ${saved ? TEMPLATE : 'var(--color-line)'}`, borderRadius: 8, padding: 10 }}>
+        {!automaticTemplate && !imageSpecific && <div style={{ border: `2px solid ${saved ? TEMPLATE : 'var(--color-line)'}`, borderRadius: 8, padding: 10 }}>
           {saved ? <>
             <strong>Saved {saved.templateName} prompt</strong> ({saved.prompt.length} chars) · from run <code>{saved.sourceRunId}</code> ({saved.sourceImage.file}, {saved.sourceImage.width}×{saved.sourceImage.height}) · saved {when(saved.savedAt)} · {saved.plannerModel}
             {saved.notes && <div>Notes: {saved.notes}</div>}
@@ -157,10 +179,10 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setFile(e.target.files?.[0] ?? null)} />
           <button className="ws-btn ws-btn-primary" disabled={!file || busy || polling || (reuse && !saved) || !!target.error} onClick={start}>
-            {automaticTemplate ? 'Run: Seedream automatic major elements (no OpenAI, 1 paid Seedream call)' : reuse ? `Run with saved ${template?.name} prompt (no OpenAI, 1 paid Seedream call)` : 'Run: generate prompt (1 OpenAI + 1 paid Seedream call)'}
+            {automaticTemplate ? 'Run: Seedream automatic major elements (1 OpenAI fit check, 1 paid Seedream call)' : reuse ? `Run with saved ${template?.name} prompt (1 OpenAI fit check, 1 paid Seedream call)` : 'Run: check fit, generate prompt (2 OpenAI + 1 paid Seedream call)'}
           </button>
           {runs.length > 0 && <select value={run?.id ?? ''} onChange={e => void act(async () => setRun(await experimentApi.get(e.target.value)))}>
-            {runs.map(r => <option key={r.id} value={r.id}>{r.id} — {templates.find(t => t.key === runTemplateKey(r))?.name ?? runTemplateKey(r)} — {r.stage} — {sourceLabel(r)} — {heldObjectLabel(r)}</option>)}
+            {runs.map(r => <option key={r.id} value={r.id}>{r.id} — {templates.find(t => t.key === runTemplateKey(r))?.name ?? runTemplateKey(r)} — {r.stage} — {sourceLabel(r)} — {optionsLabel(r, templates.find(t => t.key === runTemplateKey(r))) ?? heldObjectLabel(r)}</option>)}
           </select>}
         </div>
       </section>
@@ -176,19 +198,25 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
             <strong>fal response:</strong> HTTP {run.error.provider.status} · {run.error.provider.code}
             {run.error.provider.billableUnits !== undefined && <> · billable units {run.error.provider.billableUnits}</>}
             {run.error.provider.requestId && <> · request <code>{run.error.provider.requestId}</code></>}
-            {run.error.provider.messages.map((m, i) => <div key={i}>“{m.msg}”{m.type && <> · type <code>{m.type}</code></>}{m.loc && <> · field <code>{m.loc}</code></>}</div>)}
+            {run.error.provider.messages.map((m, i) => <div key={i}>“{m.msg}”{m.type && <> · type <code>{m.type}</code></>}{m.loc && <> · field <code>{m.loc}</code></>}{m.reason && <> · reason <code>{m.reason}</code></>}</div>)}
             {!run.error.provider.messages.length && <div>fal returned no message body.</div>}
+            {run.error.provider.bodyFile && <div><a href={f(run.error.provider.bodyFile)} target="_blank" rel="noreferrer">Full fal error response</a> (status, headers and body, including the input fal echoed)</div>}
             {run.error.code === 'PROVIDER_SAFETY_REJECTED'
               ? <div style={{ color: 'var(--color-muted)' }}>fal's safety checker flagged this request, so the result was withheld. This is not a decomposition failure: the prompt and layer count are not the cause. The safety checker stays enabled and this is not retried; try a different image.</div>
               : run.error.code === 'PROVIDER_DECOMPOSITION_REJECTED'
               ? <div style={{ color: 'var(--color-muted)' }}>Seedream completed inference but did not produce a valid decomposition for this image/prompt combination. This can be transient. Its stored result is final (Resume only re-reads it) and nothing was retried. The layer count is applied locally and never sent to Seedream.</div>
               : (run.error.provider.status === 400 || run.error.provider.status === 422) && <div style={{ color: 'var(--color-muted)' }}>Provider rejected this image/prompt combination. This can be transient. Adjust the request or explicitly run again.</div>}
           </div>}
+          {run.error?.code === 'TEMPLATE_NOT_SUITABLE' && <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {run.templateFit?.bestTemplate && run.templateFit.bestTemplate !== runTemplateKey(run) && <button className="ws-btn ws-btn-primary" disabled={busy || polling} onClick={() => rerun(run.templateFit!.bestTemplate!, false)}>
+              Run with {templates.find(t => t.key === run.templateFit!.bestTemplate)?.name ?? run.templateFit.bestTemplate}</button>}
+            <button className="ws-btn" disabled={busy || polling} onClick={() => rerun(runTemplateKey(run), true)}>Run with {runTemplate?.name ?? runTemplateKey(run)} anyway</button>
+          </div>}
           {run.warnings.map(w => <div key={w} style={{ color: '#8a5a00' }}>{w}</div>)}
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             {run.stage === 'failed' && run.seedream.requestId && <button className="ws-btn" disabled={busy} onClick={resume}>Resume from saved request (no new charge)</button>}
             {run.stage === 'failed' && run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' && runTemplate?.providerPrompt !== 'automatic' && <button className="ws-btn" disabled={busy || polling} onClick={() => retry('current')}>
-              Retry with {runTemplateKey(run) === 'template-b' ? 'minimal Template B' : 'current'} provider prompt (1 new paid Seedream call)</button>}
+              Retry with current provider prompt (1 new paid Seedream call)</button>}
             {run.stage === 'failed' && run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' && runTemplateKey(run) === 'template-b' && <button className="ws-btn" disabled={busy || polling} onClick={() => retry('auto')}>
               Retry with Seedream automatic major elements, empty prompt (1 new paid Seedream call)</button>}
             {run.stage === 'done' && <button className="ws-btn ws-btn-primary" disabled={busy} onClick={open}>Open in editor</button>}
@@ -206,7 +234,9 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
               ? <div><span style={badge(TEMPLATE)}>Prompt source: retry of run {run.promptSource.fromRunId}</span> {run.promptSource.providerPrompt === 'auto'
                 ? 'Empty prompt: Seedream automatic major elements; roles are classified locally.' : 'Same base prompt, current provider rules.'} OpenAI was not called.</div>
               : <div><span style={badge(GENERATED)}>Prompt source: OpenAI generated</span> Generated from this run's image.</div>}
-          <div style={{ marginTop: 6 }}><strong>Template: {runTemplate?.name ?? runTemplateKey(run)} · {runGrouping.modeName}: {heldObjectLabel(run)}</strong></div>
+          <div style={{ marginTop: 6 }}><strong>Template: {runTemplate?.name ?? runTemplateKey(run)} · {optionsLabel(run, runTemplate) ?? <>{runGrouping.modeName}: {heldObjectLabel(run)}</>}</strong></div>
+          {run.templateFit && <div>Template fit: <strong>{run.templateFit.fits ? 'fits' : 'does not fit'}</strong> ({run.templateFit.reason})</div>}
+          {run.skipFitCheck && <div>Template fit: not checked (run anyway)</div>}
           <div><strong>Layer count:</strong> {run.layerCount
             ? `Suggested ${run.layerCount.suggestedLayers ?? '—'} · Target ${run.layerCount.targetLayers ?? '— (none)'} · Provider returned ${run.layerCount.providerReturnedLayers} · Final output ${run.layerCount.finalOutputLayers}`
             : run.layerTarget ? `Suggested ${run.layerTarget.suggestedLayers} · Target ${run.layerTarget.targetLayers ?? (run.layerTarget.minLayers !== undefined || run.layerTarget.maxLayers !== undefined ? `older min/max run (${run.layerTarget.minLayers ?? '—'}–${run.layerTarget.maxLayers ?? '—'})` : '—')}` : 'not recorded (older run)'}</div>
@@ -221,7 +251,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
             {run.finalPrompt !== undefined && run.finalPrompt !== prompt.prompt && <details><summary>Provider prompt adapted from the saved/base prompt (held-object grouping, current provider layer rules); base prompt ({prompt.prompt.length} chars)</summary><pre style={pre}>{prompt.prompt}</pre></details>}
             <PlanDetails layers={prompt.planned_layers} warnings={prompt.warnings} />
           </> : <p>No prompt yet.</p>}
-          {generated && template && <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+          {generated && template && !runTemplate?.imageSpecificPrompt && <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
             {runTemplateKey(run) !== template.key ? <span>This prompt was generated for {runTemplate?.name ?? runTemplateKey(run)}; select that template to save it.</span>
               : saved?.sourceRunId === run.id ? <span>✓ This is the current saved {template.name} prompt.</span> : <>
               <input placeholder="Notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} style={{ minWidth: 260 }} />

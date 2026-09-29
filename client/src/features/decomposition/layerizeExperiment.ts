@@ -25,9 +25,22 @@ export type SavedTemplatePrompt = {
 export type LayerRole = { name: string; heldObject?: boolean; foreground?: boolean };
 /** Server TemplateDefinition (layerizeTemplates.ts): roles, the grouping checkbox texts, and whether the natural count is dynamic. */
 export type TemplateGrouping = { label: string; checked: string; unchecked: string; minReason: string; modeName: string };
+/** A template's own checkbox (server TemplateOption), e.g. Template B's "Separate touching / overlapping independent objects". */
+export type TemplateOption = { key: string; label: string; help: string; default: boolean };
 export type TemplateEntry = { key: string; name: string; description: string; layerRoles?: LayerRole[]; dynamicLayerCount?: boolean; grouping?: TemplateGrouping; saved?: SavedTemplatePrompt;
-  /** 'automatic': Seedream gets no prompt (Template B); OpenAI is not called and there is no prompt to save or reuse. */
-  providerPrompt?: 'planned' | 'automatic' };
+  /** 'automatic': Seedream gets no prompt; OpenAI is not called and there is no prompt to save or reuse. */
+  providerPrompt?: 'planned' | 'automatic';
+  /** The template's own options (Template B). A template with options does not use the held-object checkbox. */
+  options?: TemplateOption[];
+  /** The prompt names one image's own layers (Template B): never saved or reused. */
+  imageSpecificPrompt?: boolean;
+  /** A rejected run can be retried with an empty prompt (Template B). */
+  emptyPromptRetry?: boolean };
+/** Templates that declare their own options (Template B) own their controls; the others (Template A) use the held-object checkbox. */
+export const ownsOptions = (template?: Pick<TemplateEntry, 'options'>) => !!template?.options?.length;
+/** Every declared option of the template with its value (the default unless chosen), or undefined for templates without options. */
+export const templateOptionValues = (template: Pick<TemplateEntry, 'options'> | undefined, chosen: Record<string, boolean> = {}) =>
+  ownsOptions(template) ? Object.fromEntries(template!.options!.map(option => [option.key, chosen[option.key] ?? option.default])) : undefined;
 /** Seedream layerize returns a base image plus at most 16 layers. */
 export const MAX_OUTPUT_LAYERS = 17;
 /** Template A's texts, for older servers or runs without template metadata. */
@@ -41,23 +54,26 @@ export type LayerTarget = { templateKey: string; suggestedLayers: number; target
 export const suggestedLayers = (template: Pick<TemplateEntry, 'layerRoles' | 'dynamicLayerCount'> | undefined, separateHeldObject: boolean) =>
   template?.dynamicLayerCount ? undefined : template?.layerRoles?.filter(role => separateHeldObject || !role.heldObject).length;
 /** Same rule as the server's targetLayerRange (natural: a decomposition's natural count, for dynamic templates). */
-export function targetLayerRange(template: Pick<TemplateEntry, 'layerRoles' | 'dynamicLayerCount'> | undefined, separateHeldObject: boolean, natural?: number): { min: number; max: number } | undefined {
-  const roles = template?.layerRoles?.filter(role => separateHeldObject || !role.heldObject);
+export function targetLayerRange(template: Pick<TemplateEntry, 'layerRoles' | 'dynamicLayerCount' | 'options'> | undefined, separateHeldObject: boolean, natural?: number): { min: number; max: number } | undefined {
+  // Templates with their own options (Template B) have no held-object separate mode.
+  const separate = !ownsOptions(template) && separateHeldObject;
+  const roles = template?.layerRoles?.filter(role => separate || !role.heldObject);
   if (!roles?.length) return undefined;
-  const min = separateHeldObject ? 1 + roles.filter(role => role.foreground).length : 1;
+  const min = separate ? 1 + roles.filter(role => role.foreground).length : 1;
   return { min, max: template?.dynamicLayerCount ? Math.max(min, natural ?? MAX_OUTPUT_LAYERS) : roles.length };
 }
 /**
  * Parses the Target layers input, with the same messages as the server's targetLayersProblem. Empty means the suggested
  * count, or no target (the natural layers as returned) for dynamic templates.
  */
-export function parseTargetLayers(text: string, template: Pick<TemplateEntry, 'name' | 'layerRoles' | 'dynamicLayerCount' | 'grouping'> | undefined, separateHeldObject: boolean, natural?: number): { targetLayers?: number; error?: string } {
+export function parseTargetLayers(text: string, template: Pick<TemplateEntry, 'name' | 'layerRoles' | 'dynamicLayerCount' | 'grouping' | 'options'> | undefined, separateHeldObject: boolean, natural?: number): { targetLayers?: number; error?: string } {
   const range = targetLayerRange(template, separateHeldObject, natural);
   if (!range || !template) return {};
   if (!text.trim()) return template.dynamicLayerCount ? {} : { targetLayers: range.max };
   const value = Number(text), grouping = groupingOf(template);
   if (!/^\d+$/.test(text.trim()) || value < range.min || value > range.max) {
     const why = template.dynamicLayerCount ? (natural !== undefined ? `${range.max} is this decomposition's natural semantic layer count` : `${range.max} is Seedream's layer limit; the natural count is known after decomposition`) : `${range.max} is the natural semantic layer count`;
+    if (ownsOptions(template)) return { error: `Target layers must be a whole number from ${range.min} to ${range.max} for ${template.name} (${why}).` };
     return { error: separateHeldObject && /^\d+$/.test(text.trim()) && value >= 1 && value < range.min
       ? `Target layers ${value} is too low for separate mode: ${grouping.minReason} need at least ${range.min} layers. Choose ${range.min}–${range.max}, or uncheck "${grouping.label}" to allow fewer.`
       : `Target layers must be a whole number from ${range.min} to ${range.max} for ${template.name} in ${separateHeldObject ? 'separate' : 'combined'} mode (${why}).` };
@@ -65,8 +81,11 @@ export function parseTargetLayers(text: string, template: Pick<TemplateEntry, 'n
   return { targetLayers: value };
 }
 export type PromptMode = 'generated' | 'template';
-/** fal's own status and messages for a failed provider call (server: ProviderFailure in layerizeExperiment.ts). */
-export type ProviderFailure = { code: string; status: number; messages: { msg: string; type?: string; loc?: string }[]; billableUnits?: string; requestId?: string };
+/**
+ * fal's own status and messages for a failed provider call (server: ProviderFailure in layerizeExperiment.ts). `reason` is
+ * fal's ctx.extra_info.reason; `bodyFile` is the run file with fal's complete error response.
+ */
+export type ProviderFailure = { code: string; status: number; messages: { msg: string; type?: string; loc?: string; reason?: string }[]; billableUnits?: string; requestId?: string; bodyFile?: string };
 export type ExperimentRun = {
   id: string; stage: string; active?: boolean; createdAt: string;
   /** Which template the run belongs to; absent on older runs (Template A). */
@@ -75,8 +94,14 @@ export type ExperimentRun = {
   promptSource?: { mode: 'generated' } | ({ mode: 'template' } & SavedTemplatePrompt)
     | { mode: 'retry'; fromRunId: string; providerPrompt?: 'current' | 'auto'; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
     | { mode: 'automatic'; retryOf?: string };
-  /** "Separate held object from subject"; absent on older runs, which all separated it. */
+  /** "Separate held object from subject" (Template A); absent on older runs, which all separated it, and on Template B runs. */
   separateHeldObject?: boolean;
+  /** The template's own options (Template B: separateTouchingIndependentObjects); absent for Template A. */
+  templateOptions?: Record<string, boolean>;
+  /** The template fit check before planning (server layerizeTemplateFit.ts); absent when none ran. */
+  templateFit?: { fits: boolean; bestTemplate: string | null; reason: string; model: string; durationMs: number };
+  /** The user ran it anyway, without the fit check. */
+  skipFitCheck?: boolean;
   /** The exact prompt sent to Seedream after held-object grouping; absent on older runs. */
   finalPrompt?: string;
   /** Suggested and target output layer count; absent on older runs. */
@@ -107,12 +132,16 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 export const experimentApi = {
   list: () => call<{ active: string | null; runs: ExperimentRun[] }>('/runs'),
   get: (id: string) => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}`),
-  start: (file: File, mode: PromptMode = 'generated', templateKey?: string, separateHeldObject = true, targetLayers?: number) => {
+  /** templateOptions: the selected template's own options (Template B); omitted for templates without them. */
+  /** skipFitCheck: "Run anyway" past the template fit check (only sent when true). */
+  start: (file: File, mode: PromptMode = 'generated', templateKey?: string, separateHeldObject = true, targetLayers?: number, templateOptions?: Record<string, boolean>, skipFitCheck = false) => {
     const form = new FormData();
     form.append('promptMode', mode);
     form.append('separateHeldObject', String(separateHeldObject));
     if (targetLayers !== undefined) form.append('targetLayers', String(targetLayers));
     if (templateKey) form.append('templateKey', templateKey);
+    if (templateOptions) form.append('templateOptions', JSON.stringify(templateOptions));
+    if (skipFitCheck) form.append('skipFitCheck', 'true');
     form.append('image', file);
     return call<ExperimentRun>('/runs', { method: 'POST', body: form });
   },

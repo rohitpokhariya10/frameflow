@@ -3,9 +3,12 @@
  * production, and only answers loopback clients (the Vite proxy or a local browser): it spends paid API credit and
  * has no authentication. One active run at a time; runs execute in-process, no worker.
  * Runs take optional promptMode (generated | template), templateKey (default template-a; also sets the suggested layer
- * count), separateHeldObject (true | false, default true) and targetLayers (exact output layer count including the base,
- * applied locally after Seedream) form fields. Resume takes an optional targetLayers to re-render a finished run at
- * another count from its saved result. Templates are listed and saved under /templates.
+ * count), separateHeldObject (true | false, default true; Template A's checkbox, ignored by templates without it),
+ * templateOptions (JSON object of the selected template's own options, e.g. Template B's
+ * {"separateTouchingIndependentObjects":true}; rejected for a template that does not declare them), skipFitCheck (true |
+ * false, default false: "Run anyway" past the template fit check) and targetLayers
+ * (exact output layer count including the base, applied locally after Seedream) form fields. Resume takes an optional
+ * targetLayers to re-render a finished run at another count from its saved result. Templates are listed and saved under /templates.
  */
 import express, { type Request, type Router } from 'express';
 import busboy from 'busboy';
@@ -23,11 +26,15 @@ export function layerizeExperimentEnabled(env = process.env) { return env.LAYERI
 function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<string, string> }> {
   return new Promise((resolve, reject) => {
     let parser: ReturnType<typeof busboy>;
-    try { parser = busboy({ headers: req.headers, limits: { files: 1, fields: 6, parts: 7, fieldSize: 200, fileSize: MAX_UPLOAD_BYTES } }); }
+    try { parser = busboy({ headers: req.headers, limits: { files: 1, fields: 8, parts: 9, fieldSize: 200, fileSize: MAX_UPLOAD_BYTES } }); }
     catch { reject(new RunError('INVALID_UPLOAD', 'Upload one image as multipart form data.')); return; }
-    let file: Buffer | undefined, truncated = false;
+    let file: Buffer | undefined, truncated = false, optionsTruncated = false;
     const fields: Record<string, string> = {};
-    parser.on('field', (name, value) => { if (['promptMode', 'templateKey', 'separateHeldObject', 'targetLayers', 'minLayers', 'maxLayers'].includes(name)) fields[name] = value; });
+    parser.on('field', (name, value, info) => {
+      // A cut-off templateOptions value would silently lose an option; refuse instead.
+      if (info.valueTruncated && name === 'templateOptions') { optionsTruncated = true; return; }
+      if (['promptMode', 'templateKey', 'separateHeldObject', 'templateOptions', 'skipFitCheck', 'targetLayers', 'minLayers', 'maxLayers'].includes(name)) fields[name] = value;
+    });
     parser.on('file', (_name, stream) => {
       const chunks: Buffer[] = [];
       stream.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -35,7 +42,7 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
       stream.on('end', () => { file = Buffer.concat(chunks); });
     });
     parser.on('error', () => reject(new RunError('INVALID_UPLOAD', 'The upload could not be read.')));
-    parser.on('close', () => truncated ? reject(new RunError('UPLOAD_TOO_LARGE', `Images must be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`)) : file?.length ? resolve({ bytes: file, fields }) : reject(new RunError('INVALID_UPLOAD', 'Choose an image to upload.')));
+    parser.on('close', () => optionsTruncated ? reject(new RunError('INVALID_TEMPLATE_OPTIONS', 'templateOptions is too long.')) : truncated ? reject(new RunError('UPLOAD_TOO_LARGE', `Images must be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`)) : file?.length ? resolve({ bytes: file, fields }) : reject(new RunError('INVALID_UPLOAD', 'Choose an image to upload.')));
     req.pipe(parser);
   });
 }
@@ -69,7 +76,14 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
       // Empty means no target (the semantic layers as returned); createRun validates it before anything is sent.
       const count = (value?: string) => value === undefined || value.trim() === '' ? undefined : Number(value);
       const layerTarget = { templateKey, suggestedLayers: suggestedLayerCount(templateKey, separateHeldObject), targetLayers: count(fields.targetLayers), minLayers: count(fields.minLayers), maxLayers: count(fields.maxLayers) };
-      const { dir, run } = await createRun(runsDir, bytes, source, { separateHeldObject, layerTarget, templateKey });
+      let templateOptions: unknown;
+      if (fields.templateOptions !== undefined) {
+        try { templateOptions = JSON.parse(fields.templateOptions); } catch { throw new RunError('INVALID_TEMPLATE_OPTIONS', 'templateOptions must be a JSON object of true/false values.'); }
+      }
+      // "Run anyway": the user overrides the template fit check for this run.
+      const skip = fields.skipFitCheck ?? 'false';
+      if (skip !== 'true' && skip !== 'false') throw new RunError('INVALID_FIT_CHECK', 'skipFitCheck must be "true" or "false".');
+      const { dir, run } = await createRun(runsDir, bytes, source, { separateHeldObject, layerTarget, templateKey, templateOptions, skipFitCheck: skip === 'true' });
       background(run.id, () => executeRun(dir, deps()));
       res.status(202).json(run);
     } catch (error) { next(error); }

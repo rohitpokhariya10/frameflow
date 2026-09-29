@@ -13,7 +13,9 @@
  *   npm run decomp:layerize-experiment -w @frameflow/server -- --save-template template-a --run <run id> [--notes "..."]
  *
  * Add --combine-held-object to keep the held object in the subject layer (default: separate layers), and
- * --target-layers N for an exact output layer count (including the base), applied locally after Seedream.
+ * --target-layers N for an exact output layer count (including the base), applied locally after Seedream. Template B
+ * (--template-key template-b) takes its own options instead: --template-options '{"separateTouchingIndependentObjects":true}'.
+ * Every new run first checks that the image fits the template (one OpenAI call); --skip-fit-check runs it anyway.
  *
  * Prompt modes: "generated" (OpenAI writes the prompt from this image) or "template" (a saved template prompt is sent
  * verbatim and OpenAI is not called). The template prompt is snapshotted into run.json when the run is created.
@@ -29,7 +31,8 @@ import { createFalTransport } from './providers/falClient.js';
 import { renderLayerizeOutputs, type Canvas, type LayerInfo } from './layerizeArtifacts.js';
 import { normalizeLayerCount, type LayerCount, type OutputLayer } from './layerCount.js';
 import { createOpenAIPlanner, PlannerError, promptProfile, validatePlan, type LayerizePlan, type Planner, type PlannerUsage } from './layerizePlanner.js';
-import { getTemplatePrompt, requireTemplate, saveTemplatePrompt, suggestedLayerCount, targetLayerRange, targetLayersProblem, type SavedTemplatePrompt } from './layerizeTemplates.js';
+import { createOpenAIFitChecker, type FitChecker } from './layerizeTemplateFit.js';
+import { getTemplatePrompt, requireTemplate, saveTemplatePrompt, suggestedLayerCount, targetLayerRange, targetLayersProblem, templateOptionsFor, type SavedTemplatePrompt, type TemplateOptions } from './layerizeTemplates.js';
 
 export const SEEDREAM_ENDPOINT = endpointRegistry.seedream.endpoint;
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -59,9 +62,13 @@ export type RunRecord = {
   promptSource?: PromptSource;
   /** Which template this run belongs to (its prompts, grouping and post-processing). Absent on older runs: Template A. */
   templateKey?: string;
-  /** The template's grouping checkbox for this run ("Separate held object from subject" / "Separate secondary object
-   * from main product"). Absent on older runs, which all separated it. */
+  /** Template A's held-object checkbox ("Separate held object from subject"). Absent on older runs, which all separated
+   * it, and on runs of templates without that checkbox (Template B), which read as true. Template B runs made before
+   * Template B had its own option stored its old "Separate secondary object from main product" checkbox here; a
+   * re-render still honors that (local secondary-object grouping, layerCount.ts), and nothing else reads it for Template B. */
   separateHeldObject?: boolean;
+  /** The template's own options (Template B: separateTouchingIndependentObjects), every declared option present. Absent for Template A. */
+  templateOptions?: TemplateOptions;
   /** The exact prompt sent to Seedream: the generated or saved prompt after held-object grouping. Absent on older runs. */
   finalPrompt?: string;
   /** Suggested and exact target output layer count for this run. Absent on older runs. */
@@ -76,9 +83,16 @@ export type RunRecord = {
   /** layers: the semantic layers (Seedream's, with the rebuilt outer background). outputLayers: the final layers at the
    * target count (the same list when no target). layerCount: suggested / target / returned / final, and what was merged. */
   canvas?: Canvas; layers?: LayerInfo[]; outputLayers?: OutputLayer[]; layerCount?: LayerCount; warnings: string[];
+  /** The template fit check (layerizeTemplateFit.ts): whether the image has the selected template's composition. Absent
+   * when no check ran (older runs, retries, runs without a checker, or skipped by the user). */
+  templateFit?: { fits: boolean; bestTemplate: string | null; reason: string; model: string; responseId?: string; durationMs: number };
+  /** The user chose to run despite the fit check ("Run anyway"): the check is not made. */
+  skipFitCheck?: boolean;
 };
 export type RunnerDeps = {
   planner: Planner;
+  /** The template fit check, before planning. Optional: without it no check is made. */
+  fitCheck?: FitChecker;
   /** Lazily created so a missing FAL_KEY fails at submission time, after the plan is saved. */
   transport: () => FalTransport;
   sleep?: (ms: number) => Promise<void>;
@@ -101,14 +115,23 @@ export function readRun(dir: string): RunRecord {
   }
   return run;
 }
-/** fal's safety checker (enable_safety_checker) withheld the result: content_policy_violation. */
-export const isSafetyRejection = (detail: ProviderErrorDetail | undefined) =>
-  !!detail?.messages.some(m => m.type === 'content_policy_violation' || /content checker|content polic|safety checker|flagged/i.test(m.msg));
+/**
+ * fal's ctx.extra_info.reason on a content_policy_violation that is the provider's own post-inference validation, not a
+ * verdict on the image: in the 2026-09-29 smoke tests the same image passed and failed with identical requests minutes
+ * apart, and the same prompt produced this and the invalid_request "could not be processed" 422 interchangeably.
+ */
+export const PARTNER_VALIDATION_FAILED = 'partner_validation_failed';
+export const isPartnerValidationFailure = (detail: ProviderErrorDetail | undefined) => !!detail?.messages.some(m => m.reason === PARTNER_VALIDATION_FAILED);
+/** fal's safety checker (enable_safety_checker) withheld the result: content_policy_violation, except partner validation. */
+export const isSafetyRejection = (detail: ProviderErrorDetail | undefined) => !isPartnerValidationFailure(detail)
+  && !!detail?.messages.some(m => m.type === 'content_policy_violation' || /content checker|content polic|safety checker|flagged/i.test(m.msg));
 const safetyExplanation = (requestId: string) => `fal's safety checker flagged this request (content_policy_violation), so Seedream's result was withheld. This is a safety-checker rejection, not a decomposition failure: the prompt and the output layer count are not the cause. The safety checker stays enabled. This stored result is final for request ${requestId}, so Resume returns the same error. Nothing was retried. Safety checkers can flag ordinary product images; try a different image.`;
 /** The run's template: recorded on newer runs, else from its layer target or reused prompt, else Template A. */
 export const templateKeyOf = (run: RunRecord) => run.templateKey ?? run.layerTarget?.templateKey ?? (run.promptSource?.mode === 'template' ? run.promptSource.templateKey : undefined) ?? 'template-a';
 /** The generated or saved prompt before held-object grouping (what a template save stores). */
 export const basePromptOf = (run: RunRecord) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource.prompt : run.planner?.prompt;
+/** The planned layers behind that prompt (a retry keeps its original run's), or undefined when none were planned. */
+export const plannedLayersOf = (run: RunRecord) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource.planned_layers : run.planner?.planned_layers;
 /** The prompt that was (or will be) sent to Seedream. */
 export const promptOf = (run: RunRecord) => run.finalPrompt ?? basePromptOf(run);
 function save(dir: string, run: RunRecord, deps?: Pick<RunnerDeps, 'onUpdate'>) {
@@ -116,9 +139,12 @@ function save(dir: string, run: RunRecord, deps?: Pick<RunnerDeps, 'onUpdate'>) 
   json(dir, 'run.json', run);
   deps?.onUpdate?.(run);
 }
-export type ProviderFailure = ProviderErrorDetail & { code: string };
+/** `bodyFile`: the run file holding fal's complete error response (PROVIDER_ERROR_FILE), when the transport captured it. */
+export type ProviderFailure = ProviderErrorDetail & { code: string; bodyFile?: string };
 const providerFailure = (error: unknown): ProviderFailure | undefined =>
   error instanceof ProviderError && error.providerDetail ? { code: error.code, ...error.providerDetail } : undefined;
+/** fal's complete error response for a failed run (status, headers, full body with its echoed input). Local only. */
+export const PROVIDER_ERROR_FILE = 'provider-error.json';
 /** Our message, led by what fal itself said when the transport captured it. */
 function describe(error: unknown): string {
   const ours = error instanceof Error ? error.message : String(error), detail = providerFailure(error);
@@ -128,6 +154,10 @@ function describe(error: unknown): string {
 }
 function fail(dir: string, run: RunRecord, code: string, message: string, deps?: Pick<RunnerDeps, 'onUpdate'>, cause?: unknown) {
   const provider = providerFailure(cause);
+  if (provider && cause instanceof ProviderError && cause.providerBody) {
+    json(dir, PROVIDER_ERROR_FILE, { stage: run.stage, requestId: run.seedream.requestId ?? provider.requestId, capturedAt: new Date().toISOString(), ...cause.providerBody });
+    provider.bodyFile = PROVIDER_ERROR_FILE;
+  }
   run.error = { code, message, stage: run.stage, ...(provider ? { provider } : {}) };
   run.stage = 'failed';
   save(dir, run, deps);
@@ -163,15 +193,18 @@ export function retargetLayers(run: RunRecord, targetLayers: number): LayerTarge
  * Saves the original upload untouched and prepares the one image both providers receive: EXIF orientation applied
  * (as PNG) only when needed, otherwise the original bytes. Rejects sizes Seedream cannot accept before any call.
  */
-export async function createRun(runsDir: string, bytes: Buffer, promptSource: PromptSource = { mode: 'generated' }, options: { separateHeldObject?: boolean; layerTarget?: RunRecord['layerTarget']; templateKey?: string } = {}): Promise<{ dir: string; run: RunRecord }> {
+export async function createRun(runsDir: string, bytes: Buffer, promptSource: PromptSource = { mode: 'generated' }, options: { separateHeldObject?: boolean; layerTarget?: RunRecord['layerTarget']; templateKey?: string; templateOptions?: unknown; skipFitCheck?: boolean } = {}): Promise<{ dir: string; run: RunRecord }> {
   const templateKey = options.templateKey ?? options.layerTarget?.templateKey ?? (promptSource.mode === 'template' ? promptSource.templateKey : undefined) ?? 'template-a';
   const template = requireTemplate(templateKey);
-  // Automatic templates (Template B) send Seedream no prompt: a generate request runs automatic, a saved prompt is refused.
+  // Automatic templates send Seedream no prompt: a generate request runs automatic, a saved prompt is refused.
   if (template.providerPrompt === 'automatic') {
     if (promptSource.mode === 'template') throw new RunError('PROMPT_NOT_USED', `${template.name} sends Seedream no prompt (automatic major elements), so there is no saved prompt to reuse.`);
     if (promptSource.mode === 'generated') promptSource = { mode: 'automatic' };
   }
+  if (template.imageSpecificPrompt && promptSource.mode === 'template') throw new RunError('PROMPT_NOT_REUSABLE', `${template.name}'s prompt names one image's own layers, so no saved prompt is reused; generate one for this image.`);
   if (promptSource.mode === 'template' && promptSource.templateKey !== templateKey) throw new RunError('TEMPLATE_MISMATCH', `The reused prompt belongs to ${promptSource.templateName}, not the selected template.`);
+  // The template's own options (Template B's), validated against what it declares; none for Template A.
+  const templateOptions = templateOptionsFor(templateKey, options.templateOptions);
   validateLayerTarget(options.layerTarget, options.separateHeldObject ?? true);
   if (bytes.length > MAX_UPLOAD_BYTES) throw new RunError('UPLOAD_TOO_LARGE', `Images must be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`);
   let meta: Awaited<ReturnType<ReturnType<typeof sharp>['metadata']>>;
@@ -191,7 +224,9 @@ export async function createRun(runsDir: string, bytes: Buffer, promptSource: Pr
   const inputFile = rotate ? 'input.png' : `original.${ext}`;
   if (rotate) writeFileSync(join(dir, inputFile), input);
   const now = new Date().toISOString();
-  const run: RunRecord = { id, createdAt: now, updatedAt: now, stage: 'uploaded', promptSource, templateKey, separateHeldObject: options.separateHeldObject ?? true,
+  // Template A's held-object checkbox is only recorded for templates that have it; Template B records its own options.
+  const run: RunRecord = { id, createdAt: now, updatedAt: now, stage: 'uploaded', promptSource, templateKey, ...(template.grouping ? { separateHeldObject: options.separateHeldObject ?? true } : {}),
+    ...(templateOptions ? { templateOptions } : {}), ...(options.skipFitCheck ? { skipFitCheck: true } : {}),
     ...(options.layerTarget ? { layerTarget: options.layerTarget } : {}),
     original: { file: `original.${ext}`, mime, width: meta.width, height: meta.height, bytes: bytes.length },
     input: { file: inputFile, mime: rotate ? 'image/png' : mime, width: inputMeta.width!, height: inputMeta.height!, orientationNormalized: rotate },
@@ -207,6 +242,26 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
   const started = Date.now();
   const image = readFileSync(join(dir, run.input.file));
   run.stage = 'planning'; save(dir, run, deps);
+  // A new image/template pairing is checked first: a template run on an image without its composition asks Seedream for
+  // layers that do not exist, which Seedream rejects after full inference. Retries were checked (or run) before.
+  const origin = run.promptSource ?? { mode: 'generated' as const };
+  const newPairing = origin.mode === 'generated' || origin.mode === 'template' || (origin.mode === 'automatic' && !origin.retryOf);
+  if (deps.fitCheck && !run.skipFitCheck && newPairing) {
+    const template = requireTemplate(templateKeyOf(run)), t = Date.now();
+    let fit: Awaited<ReturnType<FitChecker>>;
+    try { fit = await deps.fitCheck(image, run.input.mime, template.key); }
+    catch (error) { return fail(dir, run, 'FIT_CHECK_FAILED', `${error instanceof Error ? error.message : String(error)}. Nothing was sent to Seedream.`, deps); }
+    // A contradictory answer ("does not fit", yet the selected template is the best match) never blocks the run.
+    const fits = fit.fits || fit.bestTemplate === template.key;
+    run.templateFit = { fits, bestTemplate: fit.bestTemplate, reason: fit.reason, model: fit.model, responseId: fit.responseId, durationMs: Date.now() - t };
+    run.timings.fitCheckMs = run.templateFit.durationMs;
+    json(dir, 'template-fit.json', { request: fit.request, response: fit.raw });
+    save(dir, run, deps);
+    if (!fits) {
+      const best = fit.bestTemplate ? requireTemplate(fit.bestTemplate).name : undefined, reason = /[.!?]$/.test(fit.reason) ? fit.reason : `${fit.reason}.`;
+      return fail(dir, run, 'TEMPLATE_NOT_SUITABLE', `This image does not fit ${template.name}: ${reason}${best ? ` It fits ${best}: run it with ${best}.` : ' No template fits it clearly.'} ${template.name} would ask Seedream for layers this image does not have, which Seedream rejects. Nothing was sent to Seedream (no charge). If the check is wrong, run it anyway.`, deps);
+    }
+  }
   if (run.promptSource?.mode === 'automatic') {
     // No prompt: Seedream picks the major elements itself. OpenAI is not called; roles are classified locally.
     const retryOf = run.promptSource.retryOf;
@@ -224,7 +279,8 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
   } else {
     try {
       const t = Date.now();
-      const result = await deps.planner(image, run.input.mime, { separateHeldObject: run.separateHeldObject !== false, ...(templateKeyOf(run) !== 'template-a' ? { templateKey: templateKeyOf(run) } : {}) });
+      const result = await deps.planner(image, run.input.mime, { separateHeldObject: run.separateHeldObject !== false, ...(templateKeyOf(run) !== 'template-a' ? { templateKey: templateKeyOf(run) } : {}),
+        ...(run.templateOptions ? { templateOptions: run.templateOptions } : {}) });
       run.planner = { model: result.model, responseId: result.responseId, usage: result.usage, durationMs: Date.now() - t, ...result.plan };
       run.timings.plannerMs = run.planner.durationMs;
       json(dir, 'openai-request.json', result.request);
@@ -240,7 +296,7 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
   // Run-level held-object grouping, with the current fixed rules. The output layer count is applied after Seedream.
   // An automatic-major-elements retry sends no prompt at all (the adapter omits an empty one).
   const automatic = run.promptSource?.mode === 'automatic' || (run.promptSource?.mode === 'retry' && run.promptSource.providerPrompt === 'auto');
-  try { run.finalPrompt = automatic ? '' : promptProfile(templateKeyOf(run)).adapt(basePromptOf(run)!, run.separateHeldObject !== false); }
+  try { run.finalPrompt = automatic ? '' : promptProfile(templateKeyOf(run)).adapt(basePromptOf(run)!, run.separateHeldObject !== false, run.templateOptions); }
   catch (error) { return fail(dir, run, error instanceof PlannerError ? error.code : 'GROUPING_FAILED', error instanceof Error ? error.message : String(error), deps); }
   writeFileSync(join(dir, 'prompt.txt'), run.finalPrompt);
   save(dir, run, deps);
@@ -308,7 +364,8 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps): Promise<R
       if (final && isSafetyRejection(providerFailure(error))) return fail(dir, run, 'PROVIDER_SAFETY_REJECTED', `${describe(error)}. ${safetyExplanation(requestId)}`, deps, error);
       // 422 after a completed request: the model ran and rejected the decomposition. Nothing is retried automatically.
       if (error instanceof ProviderError && error.status === 422) {
-        return fail(dir, run, 'PROVIDER_DECOMPOSITION_REJECTED', `${describe(error)}. Seedream completed inference but did not produce a valid decomposition for this image/prompt combination. This can be transient. fal rejected the decomposition; this stored result is final for request ${requestId}, so Resume returns the same error. The output layer count is never sent to Seedream, so it is not the cause. Nothing was retried automatically; an explicit retry is one new paid Seedream call.`, deps, error);
+        const partner = isPartnerValidationFailure(providerFailure(error)) ? ` fal labels this content_policy_violation, but its reason is ${PARTNER_VALIDATION_FAILED}: the provider's own validation rejected the decomposition after inference. It is not a safety flag on the image (the same request on the same image has both passed and failed).` : '';
+        return fail(dir, run, 'PROVIDER_DECOMPOSITION_REJECTED', `${describe(error)}.${partner} Seedream completed inference but did not produce a valid decomposition for this image/prompt combination. This can be transient. fal rejected the decomposition; this stored result is final for request ${requestId}, so Resume returns the same error. The output layer count is never sent to Seedream, so it is not the cause. Nothing was retried automatically; an explicit retry is one new paid Seedream call.`, deps, error);
       }
       return fail(dir, run, 'FAL_RESULT_FAILED', `${describe(error)}. Request ${requestId} is saved; ${final ? 'this result is final, so Resume would return the same error' : 'use Resume'}.`, deps, error);
     }
@@ -325,7 +382,9 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps): Promise<R
     const rendered = await renderLayerizeOutputs(dir, raw, url => transport.download(url), { sourceImage, rebuildOuterBackground: template.outerBackgroundRebuild });
     run.timings.renderMs = Date.now() - t;
     // Exact output layer count: local and deterministic, from the semantic layers; no provider call.
-    const normalized = await normalizeLayerCount(dir, rendered.canvas, rendered.layers, run.layerTarget, { strategy: template.normalization, separate: run.separateHeldObject !== false });
+    // Template B finds its main product through the planner's hero (its first planned layer); Template A's merge ignores it.
+    const plannedLayers = template.normalization === 'template-b' ? plannedLayersOf(run) : undefined;
+    const normalized = await normalizeLayerCount(dir, rendered.canvas, rendered.layers, run.layerTarget, { strategy: template.normalization, separate: run.separateHeldObject !== false, ...(plannedLayers ? { plannedLayers } : {}) });
     Object.assign(run, { canvas: rendered.canvas, layers: rendered.layers, outputLayers: normalized.outputLayers, layerCount: normalized.layerCount,
       warnings: [...new Set([...run.warnings.filter(w => !/^(UNRESOLVED_PLACEMENT|NO_BASE|NO_Z0|BASE_ASPECT|FEWER_LAYERS_THAN_TARGET|UNPLACED_LAYERS_EXCLUDED)/.test(w)), ...rendered.warnings, ...normalized.layerCount.warnings])] });
     const inAspect = run.input.width / run.input.height, outAspect = rendered.canvas.width / rendered.canvas.height;
@@ -368,9 +427,10 @@ export async function createRetryRun(runsDir: string, failedDir: string, provide
   if (failed.stage !== 'failed' || failed.error?.code !== 'PROVIDER_DECOMPOSITION_REJECTED') throw new RunError('NOT_RETRYABLE', 'Only a run Seedream rejected (PROVIDER_DECOMPOSITION_REJECTED) can be retried this way.');
   if (providerPrompt !== 'current' && providerPrompt !== 'auto') throw new RunError('INVALID_RETRY', 'providerPrompt must be "current" or "auto".');
   const template = requireTemplate(templateKeyOf(failed));
-  if (providerPrompt === 'auto' && template.providerPrompt !== 'automatic') throw new RunError('NOT_RETRYABLE', 'The automatic major-elements retry (empty prompt) is only available for Template B.');
+  if (providerPrompt === 'auto' && !template.emptyPromptRetry) throw new RunError('NOT_RETRYABLE', 'The automatic major-elements retry (empty prompt) is only available for Template B.');
   if (providerPrompt === 'current' && template.providerPrompt === 'automatic') throw new RunError('NOT_RETRYABLE', `${template.name} sends Seedream no prompt; retry with the automatic major-elements mode instead.`);
-  const options = { templateKey: template.key, separateHeldObject: failed.separateHeldObject !== false, ...(failed.layerTarget ? { layerTarget: { ...failed.layerTarget } } : {}) };
+  const options = { templateKey: template.key, separateHeldObject: failed.separateHeldObject !== false, ...(failed.layerTarget ? { layerTarget: { ...failed.layerTarget } } : {}),
+    ...(failed.templateOptions ? { templateOptions: { ...failed.templateOptions } } : {}) };
   const image = readFileSync(join(failedDir, failed.original.file));
   if (providerPrompt === 'auto') return createRun(runsDir, image, { mode: 'automatic', retryOf: failed.id }, options);
   if (!prompt) throw new RunError('NOT_RETRYABLE', 'The rejected run has no prompt to retry with.');
@@ -384,7 +444,8 @@ export function listRuns(runsDir: string): RunRecord[] {
 }
 
 export function liveDeps(env = process.env): RunnerDeps {
-  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_DECOMPOSITION_MODEL }), transport: () => createFalTransport(env.FAL_KEY ?? '') };
+  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_DECOMPOSITION_MODEL }), fitCheck: createOpenAIFitChecker({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_DECOMPOSITION_MODEL }),
+    transport: () => createFalTransport(env.FAL_KEY ?? '') };
 }
 
 async function main() {
@@ -408,14 +469,19 @@ async function main() {
     // --template <key> reuses that template's saved prompt; --template-key <key> generates a prompt for that template.
     const templateKey = template ?? arg('template-key') ?? 'template-a';
     const layerTarget = { templateKey, suggestedLayers: suggestedLayerCount(templateKey, separateHeldObject), ...(targetLayers !== undefined ? { targetLayers } : {}) };
-    ({ dir } = await createRun(runsDir, readFileSync(resolve(image)), template ? { mode: 'template', ...getTemplatePrompt(runsDir, template) } : { mode: 'generated' }, { separateHeldObject, layerTarget, templateKey }));
+    // --template-options '{"separateTouchingIndependentObjects":true}': the template's own options (Template B).
+    const templateOptions = arg('template-options') === undefined ? undefined : JSON.parse(arg('template-options')!) as unknown;
+    ({ dir } = await createRun(runsDir, readFileSync(resolve(image)), template ? { mode: 'template', ...getTemplatePrompt(runsDir, template) } : { mode: 'generated' }, { separateHeldObject, layerTarget, templateKey, templateOptions, skipFitCheck: process.argv.includes('--skip-fit-check') }));
     run = await executeRun(dir, deps);
   }
   console.info(`\nRun folder: ${dir}`);
+  if (run.templateFit) console.info(`Template fit: ${run.templateFit.fits ? 'fits' : 'does not fit'} (${run.templateFit.reason})`);
+  else if (run.skipFitCheck) console.info('Template fit: not checked (--skip-fit-check)');
   if (run.promptSource?.mode === 'template') console.info(`Prompt source: ${run.promptSource.templateName} saved prompt (from run ${run.promptSource.sourceRunId}, saved ${run.promptSource.savedAt}); OpenAI not called.`);
   else if (run.promptSource?.mode === 'automatic') console.info(`Prompt source: none. Seedream automatic major elements (empty prompt); OpenAI not called.${run.promptSource.retryOf ? ` Explicit retry of run ${run.promptSource.retryOf}.` : ''}`);
   else if (run.planner) console.info(`Prompt source: OpenAI generated. Planner ${run.planner.model} (${run.planner.responseId}), usage ${JSON.stringify(run.planner.usage)}`);
-  console.info(`Held object mode: ${run.separateHeldObject === false ? 'combined with subject' : 'separate'}`);
+  if (run.templateOptions) console.info(`Template options: ${JSON.stringify(run.templateOptions)}`);
+  else console.info(`Held object mode: ${run.separateHeldObject === false ? 'combined with subject' : 'separate'}`);
   const count = run.layerCount;
   if (count) console.info(`Layers: suggested ${count.suggestedLayers ?? '-'} · target ${count.targetLayers ?? '-'} · provider returned ${count.providerReturnedLayers} · final output ${count.finalOutputLayers}${count.normalized ? `\n  ${count.groups.map(g => `${g.name} [${g.sourceLayers.join(' + ')}]`).join('\n  ')}` : ''}`);
   const prompt = promptOf(run);

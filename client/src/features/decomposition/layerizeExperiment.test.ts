@@ -1,6 +1,8 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { isDesignVariant } from '../../lib/persistence/schema';
-import { experimentToVariant, groupingOf, parseTargetLayers, suggestedLayers, targetLayerRange, type ExperimentLayer } from './layerizeExperiment';
+import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer } from './layerizeExperiment';
+
+afterEach(() => { vi.unstubAllGlobals(); });
 
 it('opens a run as a valid transparent version: base at the bottom, placed layers, unresolved layers hidden and unstretched', async () => {
   const layer = (zIndex: number, placement: ExperimentLayer['placement'], name?: string): ExperimentLayer => ({ index: zIndex, file: `layer-0${zIndex}.png`, zIndex, name, pixelWidth: placement.width, pixelHeight: placement.height, opaquePercent: 50, placement });
@@ -67,4 +69,39 @@ it('Template B: suggested is found in the decomposition, targets 3+ separate / 1
   expect(parseTargetLayers('8', templateB, false, 7).error).toBe("Target layers must be a whole number from 1 to 7 for Template B in combined mode (7 is this decomposition's natural semantic layer count).");
   expect(groupingOf(templateB).label).toBe('Separate secondary object from main product');
   expect(groupingOf(undefined).label).toBe('Separate held object from subject');
+});
+
+/** Template B as the server lists it now: its own option, no held-object checkbox. */
+const templateBOwnOptions = { name: 'Template B', dynamicLayerCount: true, layerRoles: [{ name: 'Base' }, { name: 'Main product', foreground: true }, { name: 'Secondary object', foreground: true }],
+  options: [{ key: 'separateTouchingIndependentObjects', label: 'Separate touching / overlapping independent objects', help: 'h', default: false }] };
+
+it('Template B owns its option: defaults, no held-object separate mode, and its own target message', () => {
+  expect(ownsOptions(templateBOwnOptions)).toBe(true);
+  expect(ownsOptions({ ...templateA, options: undefined })).toBe(false);
+  expect(templateOptionValues(templateBOwnOptions)).toEqual({ separateTouchingIndependentObjects: false });
+  expect(templateOptionValues(templateBOwnOptions, { separateTouchingIndependentObjects: true })).toEqual({ separateTouchingIndependentObjects: true });
+  expect(templateOptionValues({ ...templateA, options: undefined }, { separateTouchingIndependentObjects: true })).toBeUndefined();
+  // The held-object checkbox value never changes Template B's range.
+  for (const separate of [true, false]) expect(targetLayerRange(templateBOwnOptions, separate)).toEqual({ min: 1, max: 17 });
+  expect(parseTargetLayers('1', templateBOwnOptions, true)).toEqual({ targetLayers: 1 });
+  expect(parseTargetLayers('8', templateBOwnOptions, true, 7).error).toBe("Target layers must be a whole number from 1 to 7 for Template B (7 is this decomposition's natural semantic layer count).");
+  // Template A's rules are unchanged.
+  expect(targetLayerRange(templateA, true)).toEqual({ min: 3, max: 6 });
+});
+
+it('sends Template B\'s option as templateOptions, and Template A\'s request without it', async () => {
+  const bodies: FormData[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => { bodies.push(init.body as FormData); return new Response(JSON.stringify({ id: 'r' }), { status: 202 }); }));
+  const file = new File(['x'], 'x.png', { type: 'image/png' });
+  await experimentApi.start(file, 'generated', 'template-b', true, undefined, { separateTouchingIndependentObjects: true });
+  await experimentApi.start(file, 'generated', 'template-a', false, 5);
+  expect(JSON.parse(bodies[0].get('templateOptions') as string)).toEqual({ separateTouchingIndependentObjects: true });
+  expect(bodies[0].get('templateKey')).toBe('template-b');
+  // Template A: exactly the fields it sent before.
+  expect([...bodies[1].keys()]).toEqual(['promptMode', 'separateHeldObject', 'targetLayers', 'templateKey', 'image']);
+  expect(bodies[1].get('separateHeldObject')).toBe('false');
+  // "Run anyway" past the template fit check adds only skipFitCheck.
+  await experimentApi.start(file, 'generated', 'template-a', false, undefined, undefined, true);
+  expect([...bodies[2].keys()]).toEqual(['promptMode', 'separateHeldObject', 'templateKey', 'skipFitCheck', 'image']);
+  expect(bodies[2].get('skipFitCheck')).toBe('true');
 });

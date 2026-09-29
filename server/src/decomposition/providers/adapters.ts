@@ -32,11 +32,21 @@ export type NormalizedProviderOutput = {
   boxes?: [number, number, number, number][];
 };
 
-/** What the provider itself said about a failed HTTP call: sanitized messages only, never the echoed input. */
-export type ProviderErrorDetail = { status: number; messages: { msg: string; type?: string; loc?: string }[]; billableUnits?: string; requestId?: string };
+/**
+ * What the provider itself said about a failed HTTP call: sanitized messages only, never the echoed input. `reason` is
+ * fal's machine-readable ctx.extra_info.reason (e.g. partner_validation_failed) when it sends one.
+ */
+export type ProviderErrorDetail = { status: number; messages: { msg: string; type?: string; loc?: string; reason?: string }[]; billableUnits?: string; requestId?: string };
+/** The provider's complete error response (status, non-credential headers, full body including any echoed input), for local debugging files only. */
+export type ProviderErrorBody = { status: number; headers: Record<string, string>; body: unknown };
 export class ProviderError extends Error {
   /** Set by the fal transport on non-OK API responses; the message and code above stay our normalized ones. */
   providerDetail?: ProviderErrorDetail;
+  /**
+   * Set (non-enumerable) by the fal transport next to providerDetail. Unsanitized: it can echo the prompt and upload URL,
+   * so it is only ever written to a local run file, never logged or returned inline.
+   */
+  declare providerBody?: ProviderErrorBody;
   constructor(public readonly code: string, message: string, public readonly retryable = false, public readonly status?: number, public readonly retryAfterMs?: number) {
     super(message);
     this.name = 'ProviderError';

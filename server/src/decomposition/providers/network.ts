@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns/promises';
 import { request } from 'node:https';
 import { isIP } from 'node:net';
-import { ProviderError, type ProviderErrorDetail } from './adapters.js';
+import { ProviderError, type ProviderErrorBody, type ProviderErrorDetail } from './adapters.js';
 
 export const defaultMediaHosts = ['fal.media', '*.fal.media'] as const;
 const apiHosts = ['queue.fal.run', 'rest.fal.ai', 'fal.run'];
@@ -70,7 +70,8 @@ const clean = (value: unknown, max: number) => typeof value === 'string'
   ? Array.from(value.replace(/https?:\/\/\S+/g, '[url]'), ch => { const code = ch.charCodeAt(0); return code < 32 || code === 127 ? ' ' : ch; }).join('').replace(/\s+/g, ' ').trim().slice(0, max) || undefined : undefined;
 /**
  * fal's own explanation of a failed call, e.g. 422 {"detail":[{"loc":["body","image_url"],"msg":"…","type":"invalid_request","input":{…}}]}.
- * Keeps only msg/type/loc (never `input`, which echoes the prompt and upload URL), strips URLs and control characters.
+ * Keeps only msg/type/loc and ctx.extra_info.reason (never `input`, which echoes the prompt and upload URL), strips URLs
+ * and control characters.
  */
 export async function providerErrorDetail(response: Response): Promise<ProviderErrorDetail> {
   const detail: ProviderErrorDetail = { status: response.status, messages: [] };
@@ -85,10 +86,26 @@ export async function providerErrorDetail(response: Response): Promise<ProviderE
       const msg = clean(record.msg ?? record.message, 500);
       if (!msg) continue;
       const type = clean(record.type, 100), loc = Array.isArray(record.loc) ? clean(record.loc.map(String).join('.'), 100) : undefined;
-      detail.messages.push({ msg, ...(type ? { type } : {}), ...(loc ? { loc } : {}) });
+      const ctx = record.ctx && typeof record.ctx === 'object' ? record.ctx as { extra_info?: { reason?: unknown } } : undefined;
+      const reason = clean(ctx?.extra_info?.reason, 100);
+      detail.messages.push({ msg, ...(type ? { type } : {}), ...(loc ? { loc } : {}), ...(reason ? { reason } : {}) });
     }
   } catch { /* Not JSON: the status alone is still reported. */ }
   return detail;
+}
+
+const MAX_ERROR_BODY_CHARS = 64 * 1024;
+/**
+ * The complete error response for a local debugging file: status, headers other than cookies, and the full body (JSON when
+ * it parses, else bounded text). Unlike providerErrorDetail it keeps fal's echoed input; it never contains our key, which
+ * is only in the request headers.
+ */
+export async function providerErrorBody(response: Response): Promise<ProviderErrorBody> {
+  const headers = Object.fromEntries([...response.headers].filter(([name]) => !/cookie|authorization/i.test(name)));
+  const text = (await response.text()).slice(0, MAX_ERROR_BODY_CHARS);
+  let body: unknown = text;
+  try { body = JSON.parse(text); } catch { /* Not JSON (or truncated): kept as text. */ }
+  return { status: response.status, headers, body };
 }
 
 /** HTTPS connects to the already-validated address while verifying TLS against the original hostname. */
@@ -148,7 +165,10 @@ export function createBoundedSdkFetch(policy: NetworkPolicy = {}, requestImpl = 
       const response = await requestImpl(raw, init, policy, [...apiHosts, ...(policy.mediaHosts ?? defaultMediaHosts)]);
       if (!response.ok) {
         const error = httpProviderError(response.status, response.headers.get('retry-after'));
+        const body = await providerErrorBody(response.clone());
         error.providerDetail = await providerErrorDetail(response);
+        // Non-enumerable: never serialized or logged with the error by accident.
+        Object.defineProperty(error, 'providerBody', { value: body, enumerable: false });
         throw error;
       }
       return response;

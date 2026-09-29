@@ -10,9 +10,9 @@ import { ProviderError } from './providers/adapters.js';
 import { createLayerizeRouter } from './layerizeRouter.js';
 import { backgroundRole, placeLayers, renderLayerizeOutputs } from './layerizeArtifacts.js';
 import { backgroundResidualPercent } from './outerBackground.js';
-import { createRun, executeRun, readRun, resumeRun, type RunnerDeps } from './layerizeExperiment.js';
+import { createRetryRun, createRun, executeRun, isSafetyRejection, readRun, resumeRun, type RunnerDeps } from './layerizeExperiment.js';
 import { getTemplatePrompt, listTemplates, saveTemplatePrompt, targetLayerRange } from './layerizeTemplates.js';
-import { applyHeldObjectGrouping, PROVIDER_LAYER_RULES, composeSeedreamPrompt, createOpenAIPlanner, HELD_OBJECT_COMBINED, HELD_OBJECT_SEPARATE, MAX_PLANNER_PROMPT, PLANNER_INSTRUCTION, PlannerError, RUN_LEVEL_RESERVE, separatesHeldObject, type Planner } from './layerizePlanner.js';
+import { applyHeldObjectGrouping, PROVIDER_LAYER_RULES, PROVIDER_LAYER_RULES_COMBINED, composeSeedreamPrompt, createOpenAIPlanner, HELD_OBJECT_COMBINED, HELD_OBJECT_SEPARATE, MAX_PLANNER_PROMPT, PLANNER_INSTRUCTION, PlannerError, RUN_LEVEL_RESERVE, separatesHeldObject, type Planner } from './layerizePlanner.js';
 import { groupLayers, normalizeLayerCount } from './layerCount.js';
 
 const png = (width: number, height: number, alpha = 255) => sharp({ create: { width, height, channels: 4, background: { r: 200, g: 40, b: 40, alpha } } }).png().toBuffer();
@@ -119,6 +119,55 @@ describe('OpenAI → Seedream layerize experiment', () => {
     } finally { server.close(); }
   });
 
+  it('saves fal\'s complete error response to provider-error.json and links it from run.json', async () => {
+    const transport = fakeTransport({}, {});
+    const body = { detail: [{ loc: ['body', 'image'], msg: 'flagged', type: 'content_policy_violation', ctx: { extra_info: { reason: 'partner_validation_failed' } }, input: { prompt: 'p', image_url: 'https://v3b.fal.media/files/x.png' } }] };
+    const rejected = Object.assign(new ProviderError('PROVIDER_REJECTED', 'rejected', false, 422), {
+      providerDetail: { status: 422, billableUnits: '0', requestId: 'req-123', messages: [{ msg: 'flagged', type: 'content_policy_violation', loc: 'body.image', reason: 'partner_validation_failed' }] } });
+    Object.defineProperty(rejected, 'providerBody', { value: { status: 422, headers: { 'x-fal-request-id': 'req-123' }, body }, enumerable: false });
+    transport.result.mockRejectedValue(rejected);
+    const runsDir = mkdtempSync(join(tmpdir(), 'layerize-'));
+    const { dir, run: created } = await createRun(runsDir, await png(800, 600));
+    const run = await executeRun(dir, { planner: plan, transport: () => transport, sleep: async () => undefined });
+    expect(run.error!.provider).toMatchObject({ bodyFile: 'provider-error.json', messages: [{ reason: 'partner_validation_failed' }] });
+    expect(JSON.parse(readFileSync(join(dir, 'provider-error.json'), 'utf8'))).toMatchObject({ stage: 'queued', requestId: 'req-123', status: 422, headers: { 'x-fal-request-id': 'req-123' }, body });
+    // run.json carries only the sanitized summary and the file name, never the echoed input.
+    expect(readFileSync(join(dir, 'run.json'), 'utf8')).not.toMatch(/v3b\.fal\.media\/files\/x\.png/);
+    const server = express().use('/x', createLayerizeRouter({ runsDir })).listen(0, '127.0.0.1');
+    await new Promise(done => server.once('listening', done));
+    try {
+      const { port } = server.address() as AddressInfo;
+      expect((await (await fetch(`http://127.0.0.1:${port}/x/runs/${created.id}/files/provider-error.json`)).json()).body).toEqual(body);
+    } finally { server.close(); }
+    // An error without a captured body writes no file.
+    const plain = fakeTransport({}, {});
+    plain.result.mockRejectedValue(Object.assign(new ProviderError('PROVIDER_REJECTED', 'rejected', false, 422), { providerDetail: { status: 422, messages: [] } }));
+    const other = await createRun(runsDir, await png(800, 600));
+    expect((await executeRun(other.dir, { planner: plan, transport: () => plain, sleep: async () => undefined })).error!.provider).not.toHaveProperty('bodyFile');
+    expect(existsSync(join(other.dir, 'provider-error.json'))).toBe(false);
+  });
+
+  it('treats partner_validation_failed as a retryable decomposition rejection, not a safety rejection', async () => {
+    // Shape of the real 422 (e.g. request 01a0ebf6-a725-7ae0-a231-96138ad0fc9d), whose identical request passed minutes earlier.
+    const partner = () => Object.assign(new ProviderError('PROVIDER_REJECTED', 'rejected', false, 422), { providerDetail: { status: 422, billableUnits: '0', requestId: 'req-123',
+      messages: [{ msg: 'The content could not be processed because it contained material flagged by a content checker.', type: 'content_policy_violation', loc: 'body.image', reason: 'partner_validation_failed' }] } });
+    const transport = fakeTransport({}, {});
+    transport.result.mockRejectedValue(partner());
+    const runsDir = mkdtempSync(join(tmpdir(), 'layerize-'));
+    const { dir } = await createRun(runsDir, await png(800, 600));
+    const run = await executeRun(dir, { planner: plan, transport: () => transport, sleep: async () => undefined });
+    expect(run.error).toMatchObject({ code: 'PROVIDER_DECOMPOSITION_REJECTED', provider: { messages: [{ type: 'content_policy_violation', reason: 'partner_validation_failed' }] } });
+    expect(run.error!.message).toMatch(/its reason is partner_validation_failed: the provider's own validation rejected the decomposition after inference\. It is not a safety flag on the image/);
+    expect(run.error!.message).not.toMatch(/try a different image\.$/);
+    expect(readRun(dir).error!.code).toBe('PROVIDER_DECOMPOSITION_REJECTED');
+    // An explicit retry is allowed (a new run; the retry itself submits nothing).
+    expect((await createRetryRun(runsDir, dir)).run).toMatchObject({ stage: 'uploaded', promptSource: { mode: 'retry', fromRunId: run.id } });
+    expect(transport.submit).toHaveBeenCalledTimes(1);
+    // Without that reason, a content_policy_violation is still the safety checker.
+    expect(isSafetyRejection({ status: 422, messages: [{ msg: 'flagged by a content checker', type: 'content_policy_violation', loc: 'body.image' }] })).toBe(true);
+    expect(isSafetyRejection(partner().providerDetail)).toBe(false);
+  });
+
   it('submits once, and recovery uses the saved request ID without resubmitting', async () => {
     const raw = { layers: [{ image: { url: url('base') }, z_index: 0 }, { image: { url: url('phone') }, z_index: 1, name: 'Phone', bounding_box: { absolute: [100, 50, 300, 250] } }] };
     const files = { [url('base')]: await png(800, 600), [url('phone')]: await png(200, 200) };
@@ -188,18 +237,23 @@ describe('OpenAI → Seedream layerize experiment', () => {
 
     it('unchecked keeps subject and object together, with no conflicting instruction and unchanged background rules', () => {
       const combined = applyHeldObjectGrouping(saved, false);
-      expect(combined).toBe(`Keep the main subject as one layer, including body, hair or fur, clothing, accessories, and every hand, finger or paw. Include only visible foreground content, without completing hidden anatomy or object parts.\n\n${HELD_OBJECT_COMBINED}\n\n${layersRule}\n\n${avoidRule.replace(' or inside the subject layer', '')}`);
+      const subjectRule = 'Keep the subject whole with its hands, fingers or paws, hair or fur, clothing and accessories.';
+      expect(PROVIDER_LAYER_RULES_COMBINED).toBe(`${layersRule.replace(subjectRule, 'Keep the subject whole in one layer with its hands, fingers or paws, hair or fur, clothing, accessories and every object it holds.')}\n\n${avoidRule.replace(' or inside the subject layer', '')}`);
+      expect(combined).toBe(`Keep the main subject as one layer, including body, hair or fur, clothing, accessories, and every hand, finger or paw. Include only visible foreground content, without completing hidden anatomy or object parts.\n\n${HELD_OBJECT_COMBINED}\n\n${PROVIDER_LAYER_RULES_COMBINED}`);
       expect(outside(combined).filter(separatesHeldObject)).toEqual([]);
       expect(combined).not.toMatch(/inside the subject layer|held-object layer/);
+      // The subject layer is never defined without the held object (Seedream rejected that with fal 422).
+      expect(layersRule).toContain(subjectRule);
+      expect(combined).not.toContain(subjectRule);
       // The semantic layer list and the background part of "Avoid:" are byte-identical.
-      expect(combined).toContain(layersRule);
+      for (const part of layersRule.split(subjectRule)) expect(combined).toContain(part);
       expect(combined).toContain('Avoid: foreground pieces left in background layers; objects duplicated into the background; merging the subject into the background;');
       expect(combined).toContain('re-rendering or relighting held objects');
       expect(combined.length).toBeLessThanOrEqual(2000);
     });
 
     it('sends the current fixed rules for prompts saved with earlier ones, and refuses over-long or contradictory results before Seedream', () => {
-      const combinedRules = PROVIDER_LAYER_RULES.replace(' or inside the subject layer', '');
+      const combinedRules = PROVIDER_LAYER_RULES_COMBINED;
       for (const earlierRules of ['Background layers, including the base image and every background, backdrop and frame layer, must be clean.\n\nAvoid: the held object duplicated inside the subject layer.',
         'Layers: a base image of the clean scene without the subject or held objects; the outer background outside the frame.\n\nAvoid: objects duplicated into the background or inside the subject layer.',
         // V3, the rules in the currently saved Template A: replaced by the stable provider rules at send time.

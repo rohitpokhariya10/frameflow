@@ -97,17 +97,41 @@ function nameHint(name: string): Hint {
   if (PART.test(h)) return 'part';
   return 'unknown';
 }
+/** The clauses of a description that say what is in the layer: never those that exclude or only preserve something. */
+const positiveClauses = (description: string) => description.split(/[.;:,]|\bbut\b/i).filter(c => !/\b(?:no|not|exclud\w*|without|except|avoid\w*|never|other than|keep out|preserve|keep its)\b/i.test(c));
 /**
  * Descriptions say what to keep and what to leave out ("exclude the lamp", "preserve its shape and lines"), so only
  * their positive clauses count, and only for unambiguous roles; shape and effect words there are never a role.
  */
 function descriptionHint(description: string): Hint {
-  const clauses = description.split(/[.;:,]|\bbut\b/i).filter(c => !/\b(?:no|not|exclud\w*|without|except|avoid\w*|never|other than|keep out|preserve|keep its)\b/i.test(c));
+  const clauses = positiveClauses(description);
   for (const clause of clauses) {
     const h = head(clause);
     for (const [re, hint] of [[PRODUCT, 'product'], [BACKGROUND, 'background'], [BACKDROP, 'backdrop'], [SUPPORT, 'support'], [CONTAINER, 'container'], [/\b(?:decorative|ornament\w*)\b/i, 'decor']] as const) if (re.test(h)) return hint;
   }
   return 'unknown';
+}
+/** A layer the Template B planner asked Seedream for; the first is the hero (layerizeTemplateB.ts asks for the hero first). */
+export type PlannedPosterLayer = { name: string; description: string };
+/** Words that say how to extract or group rather than what is in a layer. */
+const FILLER = new Set(['the', 'and', 'with', 'its', 'their', 'this', 'that', 'for', 'from', 'into', 'onto', 'one', 'layer', 'layers', 'extract', 'separate', 'separately', 'include', 'includes',
+  'including', 'all', 'any', 'other', 'object', 'objects', 'only', 'each', 'keep', 'are', 'together', 'group', 'groups', 'grouped', 'whole', 'complete', 'entire', 'visible', 'original']);
+const layerWords = (name?: string, description?: string) =>
+  new Set(([name ?? '', ...positiveClauses(description ?? '')].join(' ').toLowerCase().match(/\p{L}+/gu) ?? []).filter(word => word.length >= 3 && !FILLER.has(word)));
+const similarity = (a: Set<string>, b: Set<string>) => { let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, a.size + b.size - shared); };
+/**
+ * The layer that is the planner's hero: its name and positive description share the most words with the first planned
+ * layer, that planned layer is also its own best match, and enough words are shared. Seedream names layers freely, so a
+ * hero combined with decoration it touches can carry a decoration word ("Group 1: Phone and specified spheres"); the
+ * planner, which reasoned about the image, says which layer is the hero. Undefined when nothing matches clearly.
+ */
+function plannedHero<T extends { l: LayerInfo }>(items: T[], planned: PlannedPosterLayer[] | undefined): T | undefined {
+  if (!planned?.length) return undefined;
+  const plans = planned.map(p => layerWords(p.name, p.description));
+  const scored = items.map(it => { const words = layerWords(it.l.name, it.l.description); return { it, scores: plans.map(plan => similarity(words, plan)) }; });
+  if (!scored.length) return undefined;
+  const best = scored.reduce((a, b) => (b.scores[0] > a.scores[0] ? b : a));
+  return best.scores[0] >= 0.2 && best.scores[0] >= Math.max(...best.scores) ? best.it : undefined;
 }
 const HINT_ROLE: Record<Hint, PosterRole> = { base: 'base', background: 'background', backdrop: 'backdrop', border: 'border', support: 'support', decor: 'decor', text: 'text', product: 'product', secondary: 'secondary', unknown: 'unknown', effect: 'unknown', part: 'unknown', container: 'unknown' };
 /** Template B role from placement and the provider's layer name alone (no geometry). classifyPosterLayers decides for real. */
@@ -148,7 +172,8 @@ const centerIn = (inner: Box, outer: Box) => { const cx = (inner.x0 + inner.x1) 
  * Template B roles for a decomposition (see PosterLayerRole). In order:
  * 1. Name first (only the head, before "on/with/…"), else the positive clauses of the description.
  * 2. Geometry corrects names: a "frame" that is not canvas-sized is decoration; a full-canvas backdrop is the background.
- * 3. Main product: the largest product-named layer, else the largest central unnamed foreground layer.
+ * 3. Main product: the layer matching the planner's hero (`planned`, first entry), whatever its name says; else the
+ *    largest product-named layer, else the largest central unnamed foreground layer.
  * 4. Attached to the product: other product-named pieces; parts (cable, stem, shade, camera, button, case…) touching it;
  *    a dish/plate overlapping it; unnamed pieces or "supports" at least 60% inside its box; small unnamed pieces (up to
  *    a quarter of its area) touching it; text 90% inside it; highlights/reflections/shadows mostly over it. "Touching"
@@ -159,7 +184,7 @@ const centerIn = (inner: Box, outer: Box) => { const cx = (inner.x0 + inner.x1) 
  * 6. A large solid decorative shape behind the product is a backdrop/panel. Decoration is never attached to the product
  *    and never a secondary object, however much it overlaps.
  */
-export function classifyPosterLayers(layers: LayerInfo[], canvas: Canvas, measured?: Map<string, LayerGeometry>): PosterLayerRole[] {
+export function classifyPosterLayers(layers: LayerInfo[], canvas: Canvas, measured?: Map<string, LayerGeometry>, planned?: PlannedPosterLayer[]): PosterLayerRole[] {
   const W = canvas.width, H = canvas.height, canvasArea = W * H;
   const items = [...layers].sort(byZ).map(l => {
     const g = measured?.get(l.file) ?? placementGeometry(l);
@@ -177,14 +202,16 @@ export function classifyPosterLayers(layers: LayerInfo[], canvas: Canvas, measur
     if (it.hint === 'backdrop' && full(it.g.box) && it.g.fill >= 0.6) { it.hint = 'background'; it.source += ', full-canvas so the background'; }
   }
   const open = items.filter(it => !it.role);
-  // 3. The main product.
+  // 3. The main product: the planner's hero when one layer clearly matches it.
+  const hero = plannedHero(open, planned);
+  if (hero) { hero.hint = 'product'; hero.source = `the planner's hero layer "${planned![0].name}"${hero.l.name ? `, named "${hero.l.name}"` : ''}`; }
   const named = open.filter(it => it.hint === 'product');
   const score = (it: typeof items[number]) => {
     const cx = (it.g.box.x0 + it.g.box.x1) / 2 - W / 2, cy = (it.g.box.y0 + it.g.box.y1) / 2 - H / 2;
     return it.g.area * (1 - 0.5 * Math.min(1, Math.hypot(cx, cy) / Math.hypot(W / 2, H / 2)));
   };
   const candidates = named.length ? named : open.filter(it => ['unknown', 'container', 'part'].includes(it.hint) && !(full(it.g.box) && it.g.fill >= 0.6));
-  const main = candidates.length ? candidates.reduce((best, it) => ((named.length ? it.g.area > best.g.area : score(it) > score(best)) ? it : best)) : undefined;
+  const main = hero ?? (candidates.length ? candidates.reduce((best, it) => ((named.length ? it.g.area > best.g.area : score(it) > score(best)) ? it : best)) : undefined);
   if (main) { main.role = 'product'; main.reason = named.length ? `main product (${main.source})` : `main product: largest central foreground layer (${main.source})`; }
   // 4. What belongs to the main product. Repeated until stable, so a cable touching a cap that touches the shade joins
   // too; attached pieces extend where the product is, never what the product box is measured against (`main.g.box`).
@@ -252,9 +279,9 @@ type Buckets = Record<PosterRole, LayerInfo[][]>;
  * everything at target 1. Decoration and backgrounds never merge into the product except at target 1.
  * `natural` is the consolidated count (Template B's suggested layer count).
  */
-export function groupPosterLayers(layers: LayerInfo[], target: number, separate: boolean, canvas: Canvas, measured?: Map<string, LayerGeometry>): { groups: LayerInfo[][]; natural: number; notes: string[]; roles: PosterLayerRole[] } {
+export function groupPosterLayers(layers: LayerInfo[], target: number, separate: boolean, canvas: Canvas, measured?: Map<string, LayerGeometry>, planned?: PlannedPosterLayer[]): { groups: LayerInfo[][]; natural: number; notes: string[]; roles: PosterLayerRole[] } {
   const notes: string[] = [];
-  const roles = classifyPosterLayers(layers, canvas, measured), byFile = new Map(layers.map(l => [l.file, l]));
+  const roles = classifyPosterLayers(layers, canvas, measured, planned), byFile = new Map(layers.map(l => [l.file, l]));
   const b: Buckets = { base: [], background: [], backdrop: [], border: [], decor: [], support: [], text: [], product: [], secondary: [], unknown: [] };
   const folded: LayerInfo[] = [], attached: LayerInfo[] = [];
   for (const r of roles) {
@@ -325,8 +352,11 @@ async function composite(dir: string, group: LayerInfo[], canvas: Canvas): Promi
  * layers are left out (they cannot be composited) and the rest are grouped to the target; a single-layer group is the
  * semantic layer itself (same file and placement), a merged group becomes output-NN.png on the full canvas.
  */
-/** `strategy`: the template's merge order (default Template A); `separate`: its grouping checkbox (Template B needs it). */
-export type NormalizeOptions = { strategy?: 'template-a' | 'template-b'; separate?: boolean };
+/**
+ * `strategy`: the template's merge order (default Template A); `separate`: its grouping checkbox (Template B needs it);
+ * `plannedLayers`: Template B's planned layers, hero first, used to find the main product (ignored by Template A).
+ */
+export type NormalizeOptions = { strategy?: 'template-a' | 'template-b'; separate?: boolean; plannedLayers?: PlannedPosterLayer[] };
 
 export async function normalizeLayerCount(dir: string, canvas: Canvas, layers: LayerInfo[], target?: { suggestedLayers?: number; targetLayers?: number }, options: NormalizeOptions = {}): Promise<{ outputLayers: OutputLayer[]; layerCount: LayerCount }> {
   const poster = options.strategy === 'template-b', separate = options.separate !== false;
@@ -334,7 +364,7 @@ export async function normalizeLayerCount(dir: string, canvas: Canvas, layers: L
   const placeable = layers.filter(l => l.placement.kind !== 'unresolved'), unplaced = layers.filter(l => l.placement.kind === 'unresolved');
   // Template B: roles from exact opaque geometry; its suggested count is the natural semantic count of this decomposition.
   const measured = poster ? await measureLayers(dir, placeable) : undefined;
-  const natural = poster ? groupPosterLayers(placeable, Infinity, separate, canvas, measured) : undefined;
+  const natural = poster ? groupPosterLayers(placeable, Infinity, separate, canvas, measured, options.plannedLayers) : undefined;
   const roleByFile = new Map(natural?.roles.map(r => [r.file, r.role]));
   const suggestedLayers = natural ? natural.natural : target?.suggestedLayers;
   const base = { suggestedLayers, targetLayers: target?.targetLayers, providerReturnedLayers, semanticLayers: layers.length, ...(natural ? { roles: natural.roles } : {}) };
@@ -345,7 +375,7 @@ export async function normalizeLayerCount(dir: string, canvas: Canvas, layers: L
   }
   const warnings: string[] = [];
   if (unplaced.length) warnings.push(`UNPLACED_LAYERS_EXCLUDED: ${unplaced.map(l => l.file).join(', ')} could not be placed, so they are not part of the ${target.targetLayers}-layer output (raw files kept).`);
-  const posterGroups = poster ? groupPosterLayers(placeable, target.targetLayers, separate, canvas, measured) : undefined;
+  const posterGroups = poster ? groupPosterLayers(placeable, target.targetLayers, separate, canvas, measured, options.plannedLayers) : undefined;
   if (posterGroups) warnings.push(...posterGroups.notes);
   const groups = (posterGroups ? posterGroups.groups : groupLayers(placeable, target.targetLayers)).sort((a, b) => Math.min(...a.map(l => l.zIndex)) - Math.min(...b.map(l => l.zIndex)));
   if (groups.length < target.targetLayers) warnings.push(`FEWER_LAYERS_THAN_TARGET: Seedream returned ${placeable.length} placeable layers, so ${groups.length} are output instead of ${target.targetLayers} (layers are only merged, never split).`);

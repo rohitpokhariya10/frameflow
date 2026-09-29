@@ -39,6 +39,23 @@ describe('bounded provider networking', () => {
     expect((await plain.queue.result('bytedance/seedream/v5/pro/layerize', { requestId: 'x' }).catch((e: unknown) => e) as ProviderError).providerDetail).toEqual({ status: 400, messages: [] });
   });
 
+  it('keeps fal\'s reason code in the summary and its complete error response only on a non-enumerable field', async () => {
+    // Shape of a real content_policy_violation (request 01a0ebf6-a725-7ae0-a231-96138ad0fc9d).
+    const body = { detail: [{ loc: ['body', 'image'], msg: 'The content could not be processed because it contained material flagged by a content checker.', type: 'content_policy_violation',
+      url: 'https://docs.fal.ai/errors#content_policy_violation', ctx: { extra_info: { reason: 'partner_validation_failed' } }, input: { prompt: 'SECRET PROMPT TEXT', image_url: 'https://v3b.fal.media/files/private.png' } }] };
+    const request = vi.fn(async () => new Response(JSON.stringify(body), { status: 422, headers: { 'content-type': 'application/json', 'x-fal-billable-units': '0', 'x-fal-request-id': 'req-cp', 'set-cookie': 'session=abc' } }));
+    const client = createFalClient({ credentials: 'offline-test-placeholder', fetch: createBoundedSdkFetch({}, request), retry: { maxRetries: 0 } });
+    const error = await client.queue.result('bytedance/seedream/v5/pro/layerize', { requestId: 'req-cp' }).catch((e: unknown) => e) as ProviderError;
+    expect(error.providerDetail).toEqual({ status: 422, billableUnits: '0', requestId: 'req-cp',
+      messages: [{ msg: 'The content could not be processed because it contained material flagged by a content checker.', type: 'content_policy_violation', loc: 'body.image', reason: 'partner_validation_failed' }] });
+    expect(JSON.stringify(error.providerDetail)).not.toMatch(/SECRET|private\.png|https?:/);
+    // The complete response, echoed input included, for a local run file; cookies are dropped.
+    expect(error.providerBody).toEqual({ status: 422, headers: { 'content-type': 'application/json', 'x-fal-billable-units': '0', 'x-fal-request-id': 'req-cp' }, body });
+    // Never serialized or enumerated with the error.
+    expect(Object.keys(error)).not.toContain('providerBody');
+    expect(JSON.stringify(error)).not.toMatch(/SECRET|private\.png/);
+  });
+
   it('prevents SDK internal hidden submission retries even on 500 and network failures', async () => {
     for (const failure of [new Response('{}', { status: 500 }), new Error('raw connection secret-bearing URL')]) {
       const request = vi.fn(async () => { if (failure instanceof Error) throw failure; return failure; });
