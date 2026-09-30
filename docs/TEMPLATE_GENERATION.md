@@ -1,8 +1,8 @@
 # Template test generators: one creative, three aspect ratios (Templates A, B and C)
 
 A test/admin harness inside the **OpenAI + Seedream test** panel: **Create Template A**, **Create Template B**,
-**Create Template C**. It is served only by the local layerize experiment router (`LAYERIZE_EXPERIMENT=1`, never in
-production).
+**Create Template C**. It is served only by the layerize experiment router, which is mounted only when
+`LAYERIZE_EXPERIMENT=1` (see "Access" below).
 
 For each template, a creative is defined once and generated as a **group** of aspect-ratio variants. Each variant can
 then be sent, on its own, into the decomposition of **the same template**.
@@ -318,6 +318,20 @@ The same set under `/api/layerize-experiment/template-a`, `/template-b` and `/te
 | `POST /groups/:id/variants/:variant/decompose` | A run of that image with the group's own template (body: see Isolation) |
 
 Variants are generated one at a time, in the order asked for, across all three templates.
+
+## Access
+
+`/api/layerize-experiment` is mounted only when `LAYERIZE_EXPERIMENT=1`, in development and in production. It spends
+paid credit and has **no login**, so it only answers its own frontend (`experimentAccess` in `layerizeRouter.ts`):
+
+- **Development:** a direct request on the same machine (the Vite proxy, a local browser), as before.
+- **Behind a proxy (the deployed app), and always when `NODE_ENV=production`:** a request that changes something (every
+  POST) must carry `Origin` equal to `CLIENT_ORIGIN`; a read must be same-origin (`Sec-Fetch-Site: same-origin`, or
+  `none` for an address the user opened themselves). Without `CLIENT_ORIGIN` no POST is accepted.
+
+That keeps other websites and stray clients out. It is not authentication: anyone who can open the deployed app can use
+the panel, and a script can send those headers itself. Leave the flag unset when the review is over. Runs and generated
+creatives are files on the server's disk; on a host with an ephemeral disk they are gone after a restart or deploy.
 
 ## Cost
 
