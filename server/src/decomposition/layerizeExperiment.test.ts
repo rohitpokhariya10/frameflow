@@ -12,6 +12,7 @@ import { backgroundRole, placeLayers, renderLayerizeOutputs } from './layerizeAr
 import { backgroundResidualPercent } from './outerBackground.js';
 import { createRetryRun, createRun, executeRun, isSafetyRejection, readRun, resumeRun, type RunnerDeps } from './layerizeExperiment.js';
 import { getTemplatePrompt, listTemplates, saveTemplatePrompt, targetLayerRange } from './layerizeTemplates.js';
+import { plannerModel } from './aiModels.js';
 import { applyHeldObjectGrouping, PROVIDER_LAYER_RULES, PROVIDER_LAYER_RULES_COMBINED, composeSeedreamPrompt, createOpenAIPlanner, HELD_OBJECT_COMBINED, HELD_OBJECT_SEPARATE, MAX_PLANNER_PROMPT, PLANNER_INSTRUCTION, PlannerError, RUN_LEVEL_RESERVE, separatesHeldObject, type Planner } from './layerizePlanner.js';
 import { groupLayers, normalizeLayerCount } from './layerCount.js';
 
@@ -71,6 +72,19 @@ describe('OpenAI → Seedream layerize experiment', () => {
     const text = (create.mock.calls[0] as unknown as [{ input: { content: { type: string; text?: string }[] }[] }])[0].input[0].content[0].text;
     expect(text).toContain('Run settings, applied to the final prompt by the system: held object separate from subject: no. Keep your prompt reusable: do not mention layer counts or this grouping choice, and describe held objects as separate layers.');
     expect(text).not.toMatch(/layer target|suggested|min |max /i);
+  });
+
+  it('plans with GPT-5 mini unless OPENAI_DECOMPOSITION_MODEL names another model; only the model changes', async () => {
+    const create = vi.fn(async (request: { model: string }) => { void request; return { status: 'completed', output: [], output_text: JSON.stringify({ prompt: 'Separate each held object.', planned_layers: [], warnings: [] }) }; });
+    const client = { responses: { create } } as never;
+    const byDefault = await createOpenAIPlanner({ client })(Buffer.from('x'), 'image/png');
+    const configured = await createOpenAIPlanner({ client, model: plannerModel({ OPENAI_DECOMPOSITION_MODEL: 'gpt-5.4-mini' }) })(Buffer.from('x'), 'image/png');
+    expect([byDefault.model, configured.model]).toEqual(['gpt-5-mini', 'gpt-5.4-mini']);
+    expect(create.mock.calls.map(([request]) => request.model)).toEqual(['gpt-5-mini', 'gpt-5.4-mini']);
+    // Same request either way: instructions, image input and the strict plan schema.
+    const [first, second] = create.mock.calls.map(([request]) => ({ ...request, model: '' }));
+    expect(second).toEqual(first);
+    expect(byDefault.plan).toEqual(configured.plan);
   });
 
   it('provider rules ask only for semantic decomposition: no hidden-background reconstruction, no layer count', () => {

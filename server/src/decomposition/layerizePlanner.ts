@@ -7,7 +7,9 @@
  * model is configurable and never silently substituted.
  */
 import OpenAI from 'openai';
+import { DEFAULT_PLANNER_MODEL } from './aiModels.js';
 import { templateBProfile } from './layerizeTemplateB.js';
+import { templateCProfile } from './layerizeTemplateC.js';
 import type { TemplateOptions } from './layerizeTemplates.js';
 
 export const PLANNER_INSTRUCTION = `Inspect this offer creative and write a concise English prompt for image layerization that can be reused unchanged for other creatives with the same layout. Describe elements by their role and position in the layout (outer background, inner framed backdrop, decorative frame or border, main subject, held or foreground objects), not by details specific to this image such as gender, age, clothing, colors, brands or object type. Refer to held items generically, for example "each object the subject holds (such as a phone, board, sign, ball, dumbbell, product or toy)".
@@ -43,7 +45,6 @@ export const MAX_PLANNER_PROMPT = MAX_LAYERIZE_PROMPT - PROVIDER_LAYER_RULES.len
 const LENGTH_NOTE = `Keep "prompt" under ${MAX_PLANNER_PROMPT - 150} characters.`;
 /** The prompt sent to Seedream: OpenAI's layout description, then the provider layer rules. */
 export const composeSeedreamPrompt = (plannerPrompt: string) => `${plannerPrompt.trim()}\n\n${PROVIDER_LAYER_RULES}`;
-export const DEFAULT_PLANNER_MODEL = 'gpt-6-astra';
 
 /**
  * Run-level held-object grouping ("Separate held object from subject"). A generated or saved prompt is always stored in
@@ -123,6 +124,8 @@ const PROFILES: Record<string, PromptProfile> = {
     contextText: separate => `Run settings, applied to the final prompt by the system: held object separate from subject: ${separate ? 'yes' : 'no'}. Keep your prompt reusable: do not mention layer counts or this grouping choice, and describe held objects as separate layers.` },
   // Template B's rules live in their own module.
   'template-b': templateBProfile,
+  // Template C's rules live in their own module.
+  'template-c': templateCProfile,
 };
 export function promptProfile(templateKey = 'template-a'): PromptProfile {
   const profile = PROFILES[templateKey];

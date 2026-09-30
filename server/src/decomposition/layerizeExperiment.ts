@@ -15,7 +15,7 @@
  * Add --combine-held-object to keep the held object in the subject layer (default: separate layers), and
  * --target-layers N for an exact output layer count (including the base), applied locally after Seedream. Template B
  * (--template-key template-b) takes its own options instead: --template-options '{"separateTouchingIndependentObjects":true}'.
- * Every new run first checks that the image fits the template (one OpenAI call); --skip-fit-check runs it anyway.
+ * The template fit check (one OpenAI call before planning) is off unless LAYERIZE_FIT_CHECK=1; then --skip-fit-check runs anyway.
  *
  * Prompt modes: "generated" (OpenAI writes the prompt from this image) or "template" (a saved template prompt is sent
  * verbatim and OpenAI is not called). The template prompt is snapshotted into run.json when the run is created.
@@ -28,10 +28,12 @@ import sharp from 'sharp';
 import { buildProviderInput, endpointRegistry, ProviderError, type ProviderErrorDetail } from './providers/adapters.js';
 import type { FalTransport } from './providers/falClient.js';
 import { createFalTransport } from './providers/falClient.js';
+import { plannerModel } from './aiModels.js';
 import { renderLayerizeOutputs, type Canvas, type LayerInfo } from './layerizeArtifacts.js';
 import { normalizeLayerCount, type LayerCount, type OutputLayer } from './layerCount.js';
 import { createOpenAIPlanner, PlannerError, promptProfile, validatePlan, type LayerizePlan, type Planner, type PlannerUsage } from './layerizePlanner.js';
 import { createOpenAIFitChecker, type FitChecker } from './layerizeTemplateFit.js';
+import { templateCRoleStrategy, type PlannedCLayer } from './layerizeTemplateC.js';
 import { getTemplatePrompt, requireTemplate, saveTemplatePrompt, suggestedLayerCount, targetLayerRange, targetLayersProblem, templateOptionsFor, type SavedTemplatePrompt, type TemplateOptions } from './layerizeTemplates.js';
 
 export const SEEDREAM_ENDPOINT = endpointRegistry.seedream.endpoint;
@@ -85,9 +87,14 @@ export type RunRecord = {
   canvas?: Canvas; layers?: LayerInfo[]; outputLayers?: OutputLayer[]; layerCount?: LayerCount; warnings: string[];
   /** The template fit check (layerizeTemplateFit.ts): whether the image has the selected template's composition. Absent
    * when no check ran (older runs, retries, runs without a checker, or skipped by the user). */
-  templateFit?: { fits: boolean; bestTemplate: string | null; reason: string; model: string; responseId?: string; durationMs: number };
+  templateFit?: { fits: boolean; bestTemplate: string | null; plausibleTemplates?: string[]; reason: string; model: string; responseId?: string; durationMs: number };
   /** The user chose to run despite the fit check ("Run anyway"): the check is not made. */
   skipFitCheck?: boolean;
+  /**
+   * Where the image came from, when not an upload: a Template A test generation (templateAGeneration.ts). generationId is
+   * the creative's group; variantId and aspectRatio say which of its aspect-ratio variants (absent on runs made before groups).
+   */
+  origin?: { kind: 'template-a-generation'; generationId: string; variantId?: string; aspectRatio?: string };
 };
 export type RunnerDeps = {
   planner: Planner;
@@ -193,7 +200,7 @@ export function retargetLayers(run: RunRecord, targetLayers: number): LayerTarge
  * Saves the original upload untouched and prepares the one image both providers receive: EXIF orientation applied
  * (as PNG) only when needed, otherwise the original bytes. Rejects sizes Seedream cannot accept before any call.
  */
-export async function createRun(runsDir: string, bytes: Buffer, promptSource: PromptSource = { mode: 'generated' }, options: { separateHeldObject?: boolean; layerTarget?: RunRecord['layerTarget']; templateKey?: string; templateOptions?: unknown; skipFitCheck?: boolean } = {}): Promise<{ dir: string; run: RunRecord }> {
+export async function createRun(runsDir: string, bytes: Buffer, promptSource: PromptSource = { mode: 'generated' }, options: { separateHeldObject?: boolean; layerTarget?: RunRecord['layerTarget']; templateKey?: string; templateOptions?: unknown; skipFitCheck?: boolean; origin?: RunRecord['origin'] } = {}): Promise<{ dir: string; run: RunRecord }> {
   const templateKey = options.templateKey ?? options.layerTarget?.templateKey ?? (promptSource.mode === 'template' ? promptSource.templateKey : undefined) ?? 'template-a';
   const template = requireTemplate(templateKey);
   // Automatic templates send Seedream no prompt: a generate request runs automatic, a saved prompt is refused.
@@ -230,7 +237,7 @@ export async function createRun(runsDir: string, bytes: Buffer, promptSource: Pr
     ...(options.layerTarget ? { layerTarget: options.layerTarget } : {}),
     original: { file: `original.${ext}`, mime, width: meta.width, height: meta.height, bytes: bytes.length },
     input: { file: inputFile, mime: rotate ? 'image/png' : mime, width: inputMeta.width!, height: inputMeta.height!, orientationNormalized: rotate },
-    seedream: { endpoint: SEEDREAM_ENDPOINT }, timings: {}, warnings: [] };
+    seedream: { endpoint: SEEDREAM_ENDPOINT }, timings: {}, warnings: [], ...(options.origin ? { origin: options.origin } : {}) };
   save(dir, run);
   return { dir, run };
 }
@@ -251,9 +258,10 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
     let fit: Awaited<ReturnType<FitChecker>>;
     try { fit = await deps.fitCheck(image, run.input.mime, template.key); }
     catch (error) { return fail(dir, run, 'FIT_CHECK_FAILED', `${error instanceof Error ? error.message : String(error)}. Nothing was sent to Seedream.`, deps); }
-    // A contradictory answer ("does not fit", yet the selected template is the best match) never blocks the run.
-    const fits = fit.fits || fit.bestTemplate === template.key;
-    run.templateFit = { fits, bestTemplate: fit.bestTemplate, reason: fit.reason, model: fit.model, responseId: fit.responseId, durationMs: Date.now() - t };
+    // Never blocks a template that plausibly fits: an ambiguous image, or a contradictory answer ("does not fit", yet the
+    // selected template is the best or a plausible match).
+    const fits = fit.fits || fit.bestTemplate === template.key || fit.plausibleTemplates.includes(template.key);
+    run.templateFit = { fits, bestTemplate: fit.bestTemplate, plausibleTemplates: fit.plausibleTemplates, reason: fit.reason, model: fit.model, responseId: fit.responseId, durationMs: Date.now() - t };
     run.timings.fitCheckMs = run.templateFit.durationMs;
     json(dir, 'template-fit.json', { request: fit.request, response: fit.raw });
     save(dir, run, deps);
@@ -384,7 +392,9 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps): Promise<R
     // Exact output layer count: local and deterministic, from the semantic layers; no provider call.
     // Template B finds its main product through the planner's hero (its first planned layer); Template A's merge ignores it.
     const plannedLayers = template.normalization === 'template-b' ? plannedLayersOf(run) : undefined;
-    const normalized = await normalizeLayerCount(dir, rendered.canvas, rendered.layers, run.layerTarget, { strategy: template.normalization, separate: run.separateHeldObject !== false, ...(plannedLayers ? { plannedLayers } : {}) });
+    // Template C classifies with its own roles, from the planned layers its prompt was written from.
+    const roleStrategy = template.normalization === 'template-c' ? templateCRoleStrategy(plannedLayersOf(run) as PlannedCLayer[] | undefined) : undefined;
+    const normalized = await normalizeLayerCount(dir, rendered.canvas, rendered.layers, run.layerTarget, { strategy: template.normalization, separate: run.separateHeldObject !== false, ...(plannedLayers ? { plannedLayers } : {}), ...(roleStrategy ? { roleStrategy } : {}) });
     Object.assign(run, { canvas: rendered.canvas, layers: rendered.layers, outputLayers: normalized.outputLayers, layerCount: normalized.layerCount,
       warnings: [...new Set([...run.warnings.filter(w => !/^(UNRESOLVED_PLACEMENT|NO_BASE|NO_Z0|BASE_ASPECT|FEWER_LAYERS_THAN_TARGET|UNPLACED_LAYERS_EXCLUDED)/.test(w)), ...rendered.warnings, ...normalized.layerCount.warnings])] });
     const inAspect = run.input.width / run.input.height, outAspect = rendered.canvas.width / rendered.canvas.height;
@@ -443,8 +453,14 @@ export function listRuns(runsDir: string): RunRecord[] {
   return readdirSync(runsDir).filter(validRunId).filter(id => existsSync(join(runsDir, id, 'run.json'))).sort().reverse().slice(0, 20).map(id => readRun(join(runsDir, id)));
 }
 
+/**
+ * The template fit check is off in this experiment: the developer picks the template, and it is trusted (no extra
+ * OpenAI call before the planner). LAYERIZE_FIT_CHECK=1 turns it back on; the check itself is unchanged.
+ */
+export const fitCheckEnabled = (env = process.env) => env.LAYERIZE_FIT_CHECK === '1';
 export function liveDeps(env = process.env): RunnerDeps {
-  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_DECOMPOSITION_MODEL }), fitCheck: createOpenAIFitChecker({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_DECOMPOSITION_MODEL }),
+  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: plannerModel(env) }),
+    ...(fitCheckEnabled(env) ? { fitCheck: createOpenAIFitChecker({ apiKey: env.OPENAI_API_KEY, model: plannerModel(env) }) } : {}),
     transport: () => createFalTransport(env.FAL_KEY ?? '') };
 }
 

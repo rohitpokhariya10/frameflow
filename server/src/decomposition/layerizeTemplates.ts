@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import type { LayerizePlan } from './layerizePlanner.js';
 import { readRun, RunError, templateKeyOf, validRunId } from './layerizeExperiment.js';
 import { TEMPLATE_B_OPTIONS } from './layerizeTemplateB.js';
+import { TEMPLATE_C_OPTIONS } from './layerizeTemplateC.js';
 
 /** A template's own boolean option (a checkbox), declared by the template that owns it. */
 export type TemplateOption = { key: string; label: string; help: string; default: boolean };
@@ -34,7 +35,7 @@ export type TemplateDefinition = {
   grouping?: { label: string; checked: string; unchecked: string; minReason: string; modeName: string };
   /** The template's own options (run.templateOptions), e.g. Template B's touching-objects checkbox. */
   options?: TemplateOption[];
-  outerBackgroundRebuild: boolean; normalization: 'template-a' | 'template-b';
+  outerBackgroundRebuild: boolean; normalization: 'template-a' | 'template-b' | 'template-c';
   /** 'planned': OpenAI writes the Seedream prompt. 'automatic': Seedream gets no prompt and picks the major elements
    * itself; OpenAI is not called (no template uses it now; kept for runs and retries made that way). */
   providerPrompt: 'planned' | 'automatic';
@@ -63,7 +64,14 @@ export const TEMPLATES: TemplateDefinition[] = [{ key: 'template-a', name: 'Temp
   dynamicLayerCount: true,
   // Template B's own option; it never uses Template A's held-object checkbox. Its rules: layerizeTemplateB.ts.
   options: TEMPLATE_B_OPTIONS,
-  outerBackgroundRebuild: false, normalization: 'template-b', providerPrompt: 'planned', imageSpecificPrompt: true, emptyPromptRetry: true }];
+  outerBackgroundRebuild: false, normalization: 'template-b', providerPrompt: 'planned', imageSpecificPrompt: true, emptyPromptRetry: true }, { key: 'template-c', name: 'Template C',
+  description: 'Human-centric promotional/editorial/campaign composition: people or human fragments in a designed layout, possibly several people, repeated framed subject panels, product showcase areas, promo cards, structural graphics, logos and decoration.',
+  fit: 'A designed, human-centric promotional, editorial or campaign composition that is more than a simple portrait: several important people; or one person together with a major independent product showcase or promotional module (such as an offer card or a product display); or repeated framed panels showing people or human fragments. Not a simple single portrait in a frame, not a single non-human product, and not a crowd or natural scene without a designed layout.',
+  // Typical roles, informational only: the natural count comes from the decomposition. Its rules: layerizeTemplateC.ts.
+  layerRoles: [{ name: 'Base' }, { name: 'Background graphics' }, { name: 'Structural graphics' }, { name: 'People', foreground: true }, { name: 'Repeated panels' }, { name: 'Product showcase' },
+    { name: 'Promo module' }, { name: 'Logo / badge' }, { name: 'Decoration' }],
+  dynamicLayerCount: true, options: TEMPLATE_C_OPTIONS,
+  outerBackgroundRebuild: false, normalization: 'template-c', providerPrompt: 'planned', imageSpecificPrompt: true }];
 export function requireTemplate(key: string): TemplateDefinition {
   const definition = templateDefinition(key);
   if (!definition) throw new RunError('UNKNOWN_TEMPLATE', `Unknown template "${key}".`);

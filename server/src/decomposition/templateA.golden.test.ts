@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import type { FalTransport } from './providers/falClient.js';
+import { DEFAULT_PLANNER_MODEL } from './aiModels.js';
 import { createRun, executeRun } from './layerizeExperiment.js';
 import { applyHeldObjectGrouping, composeSeedreamPrompt, createOpenAIPlanner, HELD_OBJECT_COMBINED, HELD_OBJECT_SEPARATE, PLANNER_INSTRUCTION, promptProfile, PROVIDER_LAYER_RULES,
   PROVIDER_LAYER_RULES_COMBINED, type Planner } from './layerizePlanner.js';
@@ -15,6 +16,7 @@ import { applyHeldObjectGrouping, composeSeedreamPrompt, createOpenAIPlanner, HE
  * Seedream payload changed. Investigate the change; never update a fingerprint to make a Template B change pass.
  */
 const fingerprint = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16);
+const FINGERPRINTED_WITH_MODEL = 'gpt-6-astra';
 const LAYOUT = 'Keep the main subject as one layer, including body, hair or fur, clothing, accessories, and every hand, finger or paw. Separate each clearly separable held or foreground object into its own layer, keeping its attached components together. Include only visible foreground content, without completing hidden anatomy or object parts.';
 /** A prompt saved with the earlier V2 fixed rules, as older saved Template A prompts are. */
 const V2_SAVED = 'Keep the subject whole. Separate each held object into its own layer.\n\nLayers: a base image of the clean scene without the subject or held objects; the outer background outside the frame.\n\nAvoid: objects duplicated into the background or inside the subject layer.';
@@ -44,8 +46,12 @@ describe('Template A frozen behavior (golden)', () => {
       const create = async (request: typeof requests[number]) => { requests.push(request); return { status: 'completed', output: [], output_text: JSON.stringify({ prompt: 'Separate each held object.', planned_layers: [], warnings: [] }) }; };
       await createOpenAIPlanner({ client: { responses: { create } } as never })(Buffer.from('x'), 'image/png', { separateHeldObject });
     }
-    const shape = (r: typeof requests[number]) => fingerprint(JSON.stringify({ i: r.instructions, t: r.input[0].content[0].text, m: r.model, f: r.text }));
+    // The planner model is configuration (aiModels.ts), not a Template A rule. The fingerprints are the original ones,
+    // taken when the model was gpt-6-astra: with that name in place of the configured model the request is
+    // byte-identical to then, so a model change moves nothing but `model`.
+    const shape = (r: typeof requests[number]) => fingerprint(JSON.stringify({ i: r.instructions, t: r.input[0].content[0].text, m: FINGERPRINTED_WITH_MODEL, f: r.text }));
     expect(requests.map(shape)).toEqual(['cd4ac35296fb3724', '920079a2184ce71b']);
+    expect(requests.map(r => r.model)).toEqual([DEFAULT_PLANNER_MODEL, DEFAULT_PLANNER_MODEL]);
     const a = promptProfile('template-a');
     expect({ maxPlannerPrompt: a.maxPlannerPrompt, lengthNote: a.lengthNote, inputText: fingerprint(a.inputText), checked: fingerprint(a.contextText(true)), unchecked: fingerprint(a.contextText(false)) })
       .toEqual({ maxPlannerPrompt: 1058, lengthNote: 'Keep "prompt" under 908 characters.', inputText: 'a751789867f7b22e', checked: '1071f3ebaee88499', unchecked: '80b27fa8f26a6c6e' });

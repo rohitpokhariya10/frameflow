@@ -122,7 +122,8 @@ describe('Template B (product/editorial posters)', () => {
       for (const source of [getTemplatePrompt(runsDir, 'template-a'), { ...getTemplatePrompt(runsDir, 'template-a'), templateKey: 'template-b', templateName: 'Template B' }]) {
         await expect(createRun(runsDir, input, { mode: 'template', ...source }, { templateKey: 'template-b' })).rejects.toMatchObject({ code: 'PROMPT_NOT_REUSABLE' });
       }
-      expect(listTemplates(runsDir).map(t => [t.key, t.saved?.sourceRunId])).toEqual([['template-a', a.run.id], ['template-b', undefined]]);
+      // Every template has its own slot (Template C was added later and has none either).
+      expect(listTemplates(runsDir).map(t => [t.key, t.saved?.sourceRunId])).toEqual([['template-a', a.run.id], ['template-b', undefined], ['template-c', undefined]]);
       // Template B's option can never reach a Template A run.
       await expect(createRun(runsDir, input, { mode: 'generated' }, { templateKey: 'template-a', templateOptions: { [SEPARATE_TOUCHING]: true } }))
         .rejects.toMatchObject({ code: 'INVALID_TEMPLATE_OPTIONS', message: 'Template A has no option "separateTouchingIndependentObjects".' });

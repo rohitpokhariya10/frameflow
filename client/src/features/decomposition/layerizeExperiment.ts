@@ -10,7 +10,7 @@ export type ExperimentLayer = { index: number; file: string; zIndex: number; nam
 /** Server LayerCount (layerCount.ts): the exact output layer count applied locally after Seedream. */
 export type LayerCount = { suggestedLayers?: number; targetLayers?: number; providerReturnedLayers: number; semanticLayers: number; finalOutputLayers: number; normalized: boolean;
   groups: { name: string; file: string; sourceLayers: string[] }[]; warnings: string[];
-  /** Template B only: each semantic layer's locally classified role and why (attached: part of the main product; folded: into the background). */
+  /** Templates B and C: each semantic layer's locally classified role and why (attached: part of the main product; folded: into the background). */
   roles?: { file: string; name?: string; role: string; reason: string; attached?: boolean; folded?: boolean }[] };
 export type PlannedLayer = { name: string; description: string };
 /** A Seedream prompt saved under a template key (server/src/decomposition/layerizeTemplates.ts). */
@@ -99,9 +99,11 @@ export type ExperimentRun = {
   /** The template's own options (Template B: separateTouchingIndependentObjects); absent for Template A. */
   templateOptions?: Record<string, boolean>;
   /** The template fit check before planning (server layerizeTemplateFit.ts); absent when none ran. */
-  templateFit?: { fits: boolean; bestTemplate: string | null; reason: string; model: string; durationMs: number };
+  templateFit?: { fits: boolean; bestTemplate: string | null; plausibleTemplates?: string[]; reason: string; model: string; durationMs: number };
   /** The user ran it anyway, without the fit check. */
   skipFitCheck?: boolean;
+  /** Where the image came from when not an upload: a Template A test generation (the creative's group) and, since creatives have aspect-ratio variants, which variant. */
+  origin?: { kind: 'template-a-generation'; generationId: string; variantId?: string; aspectRatio?: string };
   /** The exact prompt sent to Seedream after held-object grouping; absent on older runs. */
   finalPrompt?: string;
   /** Suggested and target output layer count; absent on older runs. */
@@ -145,7 +147,8 @@ export const experimentApi = {
     form.append('image', file);
     return call<ExperimentRun>('/runs', { method: 'POST', body: form });
   },
-  templates: () => call<{ templates: TemplateEntry[] }>('/templates'),
+  /** fitCheck: whether new runs are checked against the template first (one extra OpenAI call); off in the test harness by default. */
+  templates: () => call<{ templates: TemplateEntry[]; fitCheck?: boolean }>('/templates'),
   saveTemplate: (key: string, runId: string, notes?: string) => call<SavedTemplatePrompt>(`/templates/${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId, notes }) }),
   /** targetLayers re-renders a finished run at another exact count from its saved result (no provider call). */
   /** Explicit user action: a NEW run (one paid Seedream call) for a run Seedream rejected. 'current' reuses its prompt;

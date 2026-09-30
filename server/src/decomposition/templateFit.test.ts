@@ -23,7 +23,7 @@ function fakeTransport() {
 const A_PROMPT = composeSeedreamPrompt('Keep the main subject whole. Separate each held object into its own layer.');
 const plan: Planner = async () => ({ plan: { prompt: A_PROMPT, planned_layers: [], warnings: [] }, model: 'm', raw: {}, request: {} });
 /** A fake fit check answering as the real one did for these images (24/24 on the twelve test images, 2026-09-29). */
-const answer = (fits: boolean, bestTemplate: string | null, reason: string): FitChecker => vi.fn(async (): Promise<FitResult> => ({ fits, bestTemplate, reason, model: 'fit-model', responseId: 'resp-fit', request: { shown: true }, raw: { ok: true } }));
+const answer = (fits: boolean, bestTemplate: string | null, reason: string, plausibleTemplates: string[] = []): FitChecker => vi.fn(async (): Promise<FitResult> => ({ fits, bestTemplate, plausibleTemplates, reason, model: 'fit-model', responseId: 'resp-fit', request: { shown: true }, raw: { ok: true } }));
 const PRODUCT = 'The image features a single dominant smartphone staged among decorative spheres, not a subject inside a decorative portrait frame.';
 
 describe('template fit check (before planning and before any paid Seedream call)', () => {
@@ -115,7 +115,7 @@ describe('template fit check (before planning and before any paid Seedream call)
     const request = (create.mock.calls[0] as unknown as [{ instructions: string; input: { content: { type: string; text?: string }[] }[]; text: { format: { schema: { properties: { best_template: { enum: string[] } } } } } }])[0];
     expect(request.instructions).toBe(fitInstruction());
     expect(request.input[0].content[0].text).toBe('Selected template: template-a (Template A).');
-    expect(request.text.format.schema.properties.best_template.enum).toEqual(['template-a', 'template-b', 'none']);
+    expect(request.text.format.schema.properties.best_template.enum).toEqual(['template-a', 'template-b', 'template-c', 'none']);
     // The request saved for debugging never embeds the image.
     expect(JSON.stringify(result.request)).not.toMatch(/base64/);
     expect((await createOpenAIFitChecker({ client: { responses: { create: reply({ fits: false, best_template: 'none', reason: 'r' }) } } as never })(Buffer.from('x'), 'image/png', 'template-b')).bestTemplate).toBeNull();

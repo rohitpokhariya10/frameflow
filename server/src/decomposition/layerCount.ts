@@ -24,7 +24,7 @@ export type LayerCount = {
   groups: { name: string; file: string; sourceLayers: string[] }[];
   warnings: string[];
   /** Template B only: each semantic layer's locally classified role and why. */
-  roles?: PosterLayerRole[];
+  roles?: LayerRoleInfo[];
 };
 
 type Role = 'base' | 'outer' | 'inner' | 'border' | 'foreground';
@@ -116,9 +116,9 @@ export type PlannedPosterLayer = { name: string; description: string };
 /** Words that say how to extract or group rather than what is in a layer. */
 const FILLER = new Set(['the', 'and', 'with', 'its', 'their', 'this', 'that', 'for', 'from', 'into', 'onto', 'one', 'layer', 'layers', 'extract', 'separate', 'separately', 'include', 'includes',
   'including', 'all', 'any', 'other', 'object', 'objects', 'only', 'each', 'keep', 'are', 'together', 'group', 'groups', 'grouped', 'whole', 'complete', 'entire', 'visible', 'original']);
-const layerWords = (name?: string, description?: string) =>
+export const layerWords = (name?: string, description?: string) =>
   new Set(([name ?? '', ...positiveClauses(description ?? '')].join(' ').toLowerCase().match(/\p{L}+/gu) ?? []).filter(word => word.length >= 3 && !FILLER.has(word)));
-const similarity = (a: Set<string>, b: Set<string>) => { let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, a.size + b.size - shared); };
+export const similarity = (a: Set<string>, b: Set<string>) => { let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, a.size + b.size - shared); };
 /**
  * The layer that is the planner's hero: its name and positive description share the most words with the first planned
  * layer, that planned layer is also its own best match, and enough words are shared. Seedream names layers freely, so a
@@ -356,26 +356,36 @@ async function composite(dir: string, group: LayerInfo[], canvas: Canvas): Promi
  * `strategy`: the template's merge order (default Template A); `separate`: its grouping checkbox (Template B needs it);
  * `plannedLayers`: Template B's planned layers, hero first, used to find the main product (ignored by Template A).
  */
-export type NormalizeOptions = { strategy?: 'template-a' | 'template-b'; separate?: boolean; plannedLayers?: PlannedPosterLayer[] };
+export type NormalizeOptions = { strategy?: 'template-a' | 'template-b' | 'template-c'; separate?: boolean; plannedLayers?: PlannedPosterLayer[]; roleStrategy?: RoleStrategy };
+/** A layer's locally decided role and why (Template B's are PosterLayerRole; other templates name their own roles). */
+export type LayerRoleInfo = { file: string; name?: string; role: string; reason: string; attached?: boolean; folded?: boolean };
+/**
+ * A template's own local roles and merge order (Template C), used instead of Template A's or B's grouping. `group` returns
+ * exactly `target` groups when the layers allow it, the natural (consolidated) count and each layer's role; `label` names a role.
+ */
+export type RoleStrategy = {
+  group: (layers: LayerInfo[], target: number, canvas: Canvas, measured: Map<string, LayerGeometry>) => { groups: LayerInfo[][]; natural: number; notes: string[]; roles: LayerRoleInfo[] };
+  label: (role: string) => string | undefined;
+};
 
 export async function normalizeLayerCount(dir: string, canvas: Canvas, layers: LayerInfo[], target?: { suggestedLayers?: number; targetLayers?: number }, options: NormalizeOptions = {}): Promise<{ outputLayers: OutputLayer[]; layerCount: LayerCount }> {
-  const poster = options.strategy === 'template-b', separate = options.separate !== false;
+  const poster = options.strategy === 'template-b', separate = options.separate !== false, custom = options.roleStrategy;
   const providerReturnedLayers = layers.filter(l => !l.rebuilt || l.rawFile).length;
   const placeable = layers.filter(l => l.placement.kind !== 'unresolved'), unplaced = layers.filter(l => l.placement.kind === 'unresolved');
   // Template B: roles from exact opaque geometry; its suggested count is the natural semantic count of this decomposition.
-  const measured = poster ? await measureLayers(dir, placeable) : undefined;
-  const natural = poster ? groupPosterLayers(placeable, Infinity, separate, canvas, measured, options.plannedLayers) : undefined;
+  const measured = poster || custom ? await measureLayers(dir, placeable) : undefined;
+  const natural = custom ? custom.group(placeable, Infinity, canvas, measured!) : poster ? groupPosterLayers(placeable, Infinity, separate, canvas, measured, options.plannedLayers) : undefined;
   const roleByFile = new Map(natural?.roles.map(r => [r.file, r.role]));
   const suggestedLayers = natural ? natural.natural : target?.suggestedLayers;
   const base = { suggestedLayers, targetLayers: target?.targetLayers, providerReturnedLayers, semanticLayers: layers.length, ...(natural ? { roles: natural.roles } : {}) };
-  const label = (l: LayerInfo) => (poster ? POSTER_LABEL[roleByFile.get(l.file) ?? posterRole(l)] : LABEL[roleOf(l)]) ?? l.name ?? 'Layer';
+  const label = (l: LayerInfo) => (custom ? custom.label(roleByFile.get(l.file) ?? 'unknown') : poster ? POSTER_LABEL[(roleByFile.get(l.file) as PosterRole | undefined) ?? posterRole(l)] : LABEL[roleOf(l)]) ?? l.name ?? 'Layer';
   if (target?.targetLayers === undefined) {
     const outputLayers = layers.map(l => ({ ...l, sources: [l.file] }));
     return { outputLayers, layerCount: { ...base, finalOutputLayers: layers.length, normalized: false, groups: layers.map(l => ({ name: label(l), file: l.file, sourceLayers: [l.file] })), warnings: [] } };
   }
   const warnings: string[] = [];
   if (unplaced.length) warnings.push(`UNPLACED_LAYERS_EXCLUDED: ${unplaced.map(l => l.file).join(', ')} could not be placed, so they are not part of the ${target.targetLayers}-layer output (raw files kept).`);
-  const posterGroups = poster ? groupPosterLayers(placeable, target.targetLayers, separate, canvas, measured, options.plannedLayers) : undefined;
+  const posterGroups = custom ? custom.group(placeable, target.targetLayers, canvas, measured!) : poster ? groupPosterLayers(placeable, target.targetLayers, separate, canvas, measured, options.plannedLayers) : undefined;
   if (posterGroups) warnings.push(...posterGroups.notes);
   const groups = (posterGroups ? posterGroups.groups : groupLayers(placeable, target.targetLayers)).sort((a, b) => Math.min(...a.map(l => l.zIndex)) - Math.min(...b.map(l => l.zIndex)));
   if (groups.length < target.targetLayers) warnings.push(`FEWER_LAYERS_THAN_TARGET: Seedream returned ${placeable.length} placeable layers, so ${groups.length} are output instead of ${target.targetLayers} (layers are only merged, never split).`);
@@ -388,7 +398,7 @@ export async function normalizeLayerCount(dir: string, canvas: Canvas, layers: L
     writeFileSync(join(dir, file), png);
     const alpha = await sharp(png).extractChannel(3).raw().toBuffer();
     let opaque = 0; for (const a of alpha) if (a > 127) opaque++;
-    outputLayers.push({ index: outputLayers.length, file, zIndex: members[0].zIndex, name: groups.length === 1 ? 'Composite (all layers)' : [...new Set(members.filter(l => !(poster && nearEmpty(l, canvas))).map(label))].join(' + '),
+    outputLayers.push({ index: outputLayers.length, file, zIndex: members[0].zIndex, name: groups.length === 1 ? 'Composite (all layers)' : [...new Set(members.filter(l => !((poster || custom) && nearEmpty(l, canvas))).map(label))].join(' + '),
       pixelWidth: canvas.width, pixelHeight: canvas.height, opaquePercent: Math.round(1000 * opaque / (canvas.width * canvas.height)) / 10,
       placement: { kind: 'full-canvas', x: 0, y: 0, width: canvas.width, height: canvas.height }, sources: members.map(l => l.file) });
   }

@@ -7,6 +7,7 @@ import { decomposedDesignImported } from '../../store/editorSlice';
 import { variantSelected } from '../../store/uiSlice';
 import { experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, ownsOptions, parseTargetLayers, runPrompt, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
 import './workspace/workspace.css';
+import { TemplateAGenerator } from './TemplateAGenerator';
 
 const ACTIVE = ['uploaded', 'planning', 'planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading'];
 const box: React.CSSProperties = { padding: 16, borderTop: '1px solid var(--color-line)' };
@@ -59,12 +60,16 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
   const [retargetText, setRetargetText] = useState('');
   const [notes, setNotes] = useState('');
   const [message, setMessage] = useState('');
+  // Template A test generator (admin harness), shown on demand.
+  const [showGenerator, setShowGenerator] = useState(false);
+  // Whether the server checks the template before planning (off in the test harness: the selected template is trusted).
+  const [fitCheck, setFitCheck] = useState(false);
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     void experimentApi.list().then(v => { if (!mounted.current) return; setRuns(v.runs); if (v.runs[0]) setRun(v.runs[0]); }).catch((e: Error) => mounted.current && setMessage(e.message));
-    void experimentApi.templates().then(v => mounted.current && setTemplates(v.templates)).catch(() => undefined);
+    void experimentApi.templates().then(v => { if (!mounted.current) return; setTemplates(v.templates); setFitCheck(v.fitCheck === true); }).catch(() => undefined);
     return () => { mounted.current = false; };
   }, []);
   const polling = !!run && (run.active || ACTIVE.includes(run.stage));
@@ -126,7 +131,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
     const fetchFile = async (name: string) => { const r = await fetch(experimentFileUrl(run.id, name)); if (!r.ok) throw new Error(`Could not download ${name}.`); return r.blob(); };
     const next = await experimentToVariant(run, fetchFile, assets);
     if (!isDesignVariant(next) || variantCount >= 30) {
-      await Promise.all((next.layers ?? []).map(l => l.type === 'image' ? assets.deleteAsset(l.assetId).catch(() => undefined) : undefined));
+      await Promise.all((next.layers ?? []).map(l => l.type === 'image' && l.assetId ? assets.deleteAsset(l.assetId).catch(() => undefined) : undefined));
       throw new Error(variantCount >= 30 ? 'This design already has 30 versions. Delete one and try again.' : 'The layers could not be opened as a design version.');
     }
     dispatch(decomposedDesignImported({ variant: next, timestamp: new Date().toISOString() }));
@@ -145,6 +150,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
     <div className="ws-body" style={{ fontSize: 13 }}>
       <section style={{ ...box, borderTop: 0, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="ws-btn" onClick={() => setShowGenerator(v => !v)}>{showGenerator ? 'Hide Template A generator' : 'Create Template A'}</button>
           <label>Template: <select value={templateKey} onChange={e => setTemplateKey(e.target.value)}>
             {(templates.length ? templates : [{ key: 'template-a', name: 'Template A' }]).map(t => <option key={t.key} value={t.key}>{t.name}</option>)}
           </select></label>
@@ -179,13 +185,18 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setFile(e.target.files?.[0] ?? null)} />
           <button className="ws-btn ws-btn-primary" disabled={!file || busy || polling || (reuse && !saved) || !!target.error} onClick={start}>
-            {automaticTemplate ? 'Run: Seedream automatic major elements (1 OpenAI fit check, 1 paid Seedream call)' : reuse ? `Run with saved ${template?.name} prompt (1 OpenAI fit check, 1 paid Seedream call)` : 'Run: check fit, generate prompt (2 OpenAI + 1 paid Seedream call)'}
+            {automaticTemplate ? `Run: Seedream automatic major elements (${fitCheck ? '1 OpenAI fit check, ' : 'no OpenAI, '}1 paid Seedream call)` : reuse ? `Run with saved ${template?.name} prompt (${fitCheck ? '1 OpenAI fit check, ' : 'no OpenAI, '}1 paid Seedream call)` : `Run: ${fitCheck ? 'check fit, ' : ''}generate prompt (${fitCheck ? 2 : 1} OpenAI + 1 paid Seedream call)`}
           </button>
           {runs.length > 0 && <select value={run?.id ?? ''} onChange={e => void act(async () => setRun(await experimentApi.get(e.target.value)))}>
             {runs.map(r => <option key={r.id} value={r.id}>{r.id} — {templates.find(t => t.key === runTemplateKey(r))?.name ?? runTemplateKey(r)} — {r.stage} — {sourceLabel(r)} — {optionsLabel(r, templates.find(t => t.key === runTemplateKey(r))) ?? heldObjectLabel(r)}</option>)}
           </select>}
         </div>
       </section>
+      {showGenerator && <TemplateAGenerator templateA={templates.find(t => t.key === 'template-a')} runActive={polling} fitCheck={fitCheck}
+        // A new generation clears the run view, so no earlier decomposition looks like it belongs to it.
+        onGenerated={() => setRun(undefined)}
+        onRunStarted={next => { setTemplateKey('template-a'); setRun(next); setRuns(r => [next, ...r]); }}
+        onOpenRun={id => void act(async () => setRun(await experimentApi.get(id)))} />}
       {message && <p role="alert" style={{ ...box, color: 'var(--color-error)' }}>{message}</p>}
       {run && <>
         <section style={box}>
@@ -237,6 +248,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
           <div style={{ marginTop: 6 }}><strong>Template: {runTemplate?.name ?? runTemplateKey(run)} · {optionsLabel(run, runTemplate) ?? <>{runGrouping.modeName}: {heldObjectLabel(run)}</>}</strong></div>
           {run.templateFit && <div>Template fit: <strong>{run.templateFit.fits ? 'fits' : 'does not fit'}</strong> ({run.templateFit.reason})</div>}
           {run.skipFitCheck && <div>Template fit: not checked (run anyway)</div>}
+          {run.origin && <div>Image: Template A test generation <code>{run.origin.generationId}</code>{run.origin.aspectRatio && <>, its <strong>{run.origin.aspectRatio}</strong> variant</>}</div>}
           <div><strong>Layer count:</strong> {run.layerCount
             ? `Suggested ${run.layerCount.suggestedLayers ?? '—'} · Target ${run.layerCount.targetLayers ?? '— (none)'} · Provider returned ${run.layerCount.providerReturnedLayers} · Final output ${run.layerCount.finalOutputLayers}`
             : run.layerTarget ? `Suggested ${run.layerTarget.suggestedLayers} · Target ${run.layerTarget.targetLayers ?? (run.layerTarget.minLayers !== undefined || run.layerTarget.maxLayers !== undefined ? `older min/max run (${run.layerTarget.minLayers ?? '—'}–${run.layerTarget.maxLayers ?? '—'})` : '—')}` : 'not recorded (older run)'}</div>
@@ -270,7 +282,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginTop: 8 }}>
             {(run.outputLayers ?? run.layers).map(l => <LayerTile key={l.file} l={l} f={f} />)}
           </div>
-          {run.layerCount?.roles && <details style={{ marginTop: 12 }}><summary>Template B roles, classified locally ({run.layerCount.roles.length} semantic layers)</summary>
+          {run.layerCount?.roles && <details style={{ marginTop: 12 }}><summary>{runTemplate?.name ?? runTemplateKey(run)} roles, classified locally ({run.layerCount.roles.length} semantic layers)</summary>
             <ul>{run.layerCount.roles.map(r => <li key={r.file}><code>{r.file}</code> {r.name ?? ''} → <strong>{r.role}</strong>{r.attached ? ' (attached)' : ''}{r.folded ? ' (folded)' : ''}: {r.reason}</li>)}</ul>
           </details>}
           {run.outputLayers && run.layerCount?.normalized && <details style={{ marginTop: 12 }}><summary>Semantic layers from Seedream ({run.layers.length}), before the layer count</summary>
