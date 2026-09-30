@@ -1,28 +1,46 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
+import type { Rect as KonvaRect } from 'konva/lib/shapes/Rect';
 import type { Text as KonvaText } from 'konva/lib/shapes/Text';
 import type { Transformer as KonvaTransformer } from 'konva/lib/shapes/Transformer';
-import { Text, Transformer } from 'react-konva/lib/ReactKonvaCore';
+import { Rect, Text, Transformer } from 'react-konva/lib/ReactKonvaCore';
+import 'konva/lib/shapes/Rect';
 import 'konva/lib/shapes/Text';
 import 'konva/lib/shapes/Transformer';
 import { clamp, recoverablePosition, TEXT_LIMITS, type CanvasSize, type TextElement } from '@frameflow/shared';
 import { useAppDispatch } from '../../store';
 import { textMoved, textWidthResized } from '../../store/editorSlice';
 import { elementSelected } from '../../store/uiSlice';
-import { textNodeStyle } from '../text/textGeometry';
+import { textDisplay } from '../text/textGeometry';
 import { focusCanvas } from '../text/useTextActions';
 
-interface Props { element: TextElement; selected: boolean; canvas: CanvasSize; variantId: string; zoom: number }
+/** A text drawn without interaction (previews, comparisons), by the same display rules as the editable node. */
+export function StaticText({ element, name }: { element: TextElement; name: string }) {
+  const display = useMemo(() => textDisplay(element), [element]);
+  if (element.visible === false) return null;
+  return <>
+    {display.box && <Rect x={element.x} y={element.y} rotation={display.rotation} {...display.box} listening={false} />}
+    <Text name={name} {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY} listening={false} />
+  </>;
+}
 
-export function TextElementNode({ element, selected, canvas, variantId, zoom }: Props) {
+/** raiseHandles: keep the selection handles above later elements, for designs that interleave text and layers. */
+interface Props { element: TextElement; selected: boolean; canvas: CanvasSize; variantId: string; zoom: number; raiseHandles?: boolean }
+
+export function TextElementNode({ element, selected, canvas, variantId, zoom, raiseHandles = false }: Props) {
   const nodeRef = useRef<KonvaText>(null);
+  const boxRef = useRef<KonvaRect>(null);
   const transformerRef = useRef<KonvaTransformer>(null);
   const dispatch = useAppDispatch();
+  // Free text: its own style. A fixed text box: wrapped, shrunk or cut for display by the shared overflow policy.
+  const display = useMemo(() => textDisplay(element), [element]);
   useLayoutEffect(() => {
     if (selected && nodeRef.current && transformerRef.current) {
       transformerRef.current.nodes([nodeRef.current]);
+      if (raiseHandles) transformerRef.current.moveToTop();
       transformerRef.current.forceUpdate();
     }
-  }, [selected, element.width, element.text, element.fontFamily, element.fontSize, element.fontWeight, element.lineHeight]);
+  }, [selected, display, raiseHandles]);
+  if (element.visible === false) return null;
 
   const select = () => { dispatch(elementSelected(element.id)); focusCanvas(); };
   function keepRecoverable(node: KonvaText) {
@@ -34,18 +52,21 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom }: 
     node.width(clamp(node.width() * node.scaleX(), TEXT_LIMITS.minWidth, TEXT_LIMITS.maxWidth));
     node.scale({ x: 1, y: 1 });
   }
+  /** The filled box behind the text follows it while it is dragged or resized. */
+  const followBox = (node: KonvaText) => { boxRef.current?.setAttrs({ x: node.x(), y: node.y(), width: node.width() }); };
   return <>
-    <Text ref={nodeRef} id={element.id} name="editable-text" {...textNodeStyle(element)} x={element.x} y={element.y}
+    {display.box && <Rect ref={boxRef} name="text-box" x={element.x} y={element.y} rotation={display.rotation} {...display.box} listening={false} />}
+    <Text ref={nodeRef} id={element.id} name="editable-text" {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY}
       draggable onMouseDown={select} onTouchStart={select} onClick={select} onTap={select}
       onDragStart={select}
-      onDragMove={(event) => keepRecoverable(event.target as KonvaText)}
+      onDragMove={(event) => { keepRecoverable(event.target as KonvaText); followBox(event.target as KonvaText); }}
       onDragEnd={(event) => {
         const node = event.target as KonvaText;
         keepRecoverable(node);
         // Node position is already in its parent's logical coordinate system, even at a scaled stage.
         dispatch(textMoved({ variantId, id: element.id, ...node.position(), timestamp: new Date().toISOString() }));
       }}
-      onTransform={normalizeWidth}
+      onTransform={() => { normalizeWidth(); if (nodeRef.current) followBox(nodeRef.current); }}
       onTransformEnd={() => {
         const node = nodeRef.current;
         if (!node) return;

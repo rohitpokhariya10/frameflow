@@ -20,7 +20,7 @@ export function LayerThumbnail({ layer }: { layer: DesignLayer }) {
     return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
   }, [assetId]);
   if (layer.type === 'image') return <span className="layer-thumbnail" aria-hidden="true">
-    {image?.id === layer.assetId ? <img src={image.url} alt="" draggable={false} /> : <ImageIcon size={18} />}
+    {image && image.id === layer.assetId ? <img src={image.url} alt="" draggable={false} /> : <ImageIcon size={18} />}
   </span>;
   const fill = shapeFillProps(layer);
   const style = { fill: layer.gradient ? `url(#${gradientId})` : layer.fill, stroke: layer.stroke?.color, strokeWidth: layer.stroke?.width };
@@ -30,7 +30,9 @@ export function LayerThumbnail({ layer }: { layer: DesignLayer }) {
       x2={fill.fillLinearGradientEndPoint?.x} y2={fill.fillLinearGradientEndPoint?.y}>
       <stop offset="0" stopColor={layer.gradient.from} /><stop offset="1" stopColor={layer.gradient.to} />
     </linearGradient></defs>}
-    {layer.shapeType === 'ellipse'
+    {layer.shapeType === 'circle'
+      ? <circle cx={layer.width / 2} cy={layer.height / 2} r={Math.min(layer.width, layer.height) / 2} {...style} />
+      : layer.shapeType === 'ellipse'
       ? <ellipse cx={layer.width / 2} cy={layer.height / 2} rx={layer.width / 2} ry={layer.height / 2} {...style} />
       : <rect width={layer.width} height={layer.height} rx={cornerRadius(layer)} {...style} />}
   </svg></span>;

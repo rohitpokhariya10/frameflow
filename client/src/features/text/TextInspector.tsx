@@ -18,6 +18,8 @@ export function TextInspector({ element }: { element: TextElement }) {
         <textarea id="text-content" aria-label="Text content" value={element.text} maxLength={TEXT_LIMITS.maxCharacters}
           spellCheck={false} placeholder="Write something…" onBlur={() => dispatch(endTextSession())} onChange={(event) => actions.update(element.id, { text: event.target.value })} />
         <div className="content-caption"><span>Line breaks stay exactly as typed.</span><span>{element.text.length}/{TEXT_LIMITS.maxCharacters}</span></div>
+        {/* A text opened from a template keeps its fixed box and overflow rules; they shape how it is drawn, never what is stored. */}
+        {element.height !== undefined && <p className="inspector-hint" data-testid="text-box-rules">Fixed text box{element.maxLines ? `, up to ${element.maxLines} ${element.maxLines === 1 ? 'line' : 'lines'}` : ''}. Text that does not fit is {element.overflow === 'shrink' && element.minFontSize !== undefined ? `drawn smaller, down to ${Math.round(element.minFontSize * 10) / 10} px, then ` : ''}ended with an ellipsis on the canvas. The text here is always kept whole.{element.rotation ? ` Rotated ${element.rotation}°.` : ''}</p>}
       </section>
       <section className="inspector-section">
         <h3>Typography</h3>

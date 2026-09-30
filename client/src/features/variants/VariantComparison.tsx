@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { Layer, Rect, Stage, Text } from 'react-konva/lib/ReactKonvaCore';
+import { Layer, Rect, Stage } from 'react-konva/lib/ReactKonvaCore';
 import type { DesignVariant } from '@frameflow/shared';
 import { BackgroundArtwork } from '../canvas/BackgroundArtwork';
-import { textNodeStyle } from '../text/textGeometry';
+import { StaticText } from '../canvas/TextElementNode';
 import { formatLabel } from './variantLabel';
 
 function VariantCard({ variant, label }: { variant: DesignVariant; label: string }) {
@@ -19,7 +19,7 @@ function VariantCard({ variant, label }: { variant: DesignVariant; label: string
         <Layer listening={false} clipWidth={variant.canvas.width} clipHeight={variant.canvas.height}>
           {!variant.canvas.transparent && <Rect width={variant.canvas.width} height={variant.canvas.height} fill={variant.canvas.backgroundColor} />}
           {variant.background && <BackgroundArtwork background={variant.background} canvas={variant.canvas} onError={setError} />}
-          {variant.elements.map((element) => <Text key={element.id} name="comparison-text" {...textNodeStyle(element)} x={element.x} y={element.y} listening={false} />)}
+          {variant.elements.map((element) => <StaticText key={element.id} name="comparison-text" element={element} />)}
         </Layer>
       </Stage>
     </div></div>

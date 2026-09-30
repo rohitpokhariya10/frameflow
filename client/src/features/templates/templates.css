@@ -1,0 +1,47 @@
+/* Create Own Template: a plain test-harness layout inside the shared workspace dialog. Functional, not polished. */
+.tpl { display: grid; grid-template-columns: 268px minmax(0, 1fr); height: 100%; min-height: 0; font-size: 13px; color: var(--color-ink); }
+.tpl h3 { font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+.tpl h3 span { font-weight: 400; color: var(--color-muted); }
+.tpl input[type=text], .tpl select, .tpl textarea { min-width: 0; height: 30px; border: 1px solid var(--color-line); border-radius: 7px; padding: 0 8px; font: inherit; background: #fff; color: inherit; }
+.tpl textarea { height: auto; padding: 6px 8px; resize: vertical; }
+.tpl input:focus-visible, .tpl select:focus-visible, .tpl textarea:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.tpl .ws-btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
+.tpl-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tpl-check { display: inline-flex; gap: 5px; align-items: center; }
+
+.tpl-sidebar { min-height: 0; overflow: auto; padding: 14px; display: grid; gap: 10px; align-content: start; background: var(--color-panel); border-right: 1px solid var(--color-line); }
+.tpl-card { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--color-line); border-radius: 10px; }
+.tpl-card.is-on { border-color: var(--color-primary); background: var(--color-selected); }
+.tpl-creatives, .tpl-layers { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.tpl-creatives li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.tpl-creatives li > button:first-child, .tpl-layers button { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 5px 8px; border-radius: 6px; text-align: left; }
+.tpl-creatives li > button:first-child:hover, .tpl-layers button:hover { background: var(--color-chrome); }
+.tpl-creatives button.is-on, .tpl-layers button.is-on { background: var(--color-selected); color: var(--color-primary); font-weight: 600; }
+
+.tpl-main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.tpl-toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 14px; background: var(--color-panel); border-bottom: 1px solid var(--color-line); }
+.tpl-work { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
+.tpl-work.is-creative { grid-template-columns: 340px minmax(0, 1fr); }
+.tpl-stage { position: relative; min-width: 0; min-height: 0; background: var(--color-workspace); }
+.tpl-stage:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.tpl-viewport { width: 100%; height: 100%; overflow: hidden; display: grid; place-items: center; }
+.tpl-canvas-frame { line-height: 0; box-shadow: 0 1px 3px rgba(20, 30, 25, .25), 0 8px 24px rgba(20, 30, 25, .08); }
+.tpl-empty { position: absolute; inset: auto 0 18px; text-align: center; color: var(--color-muted); pointer-events: none; }
+
+.tpl-panel { min-height: 0; overflow: auto; padding: 12px 14px; display: grid; gap: 14px; align-content: start; background: var(--color-panel); border-left: 1px solid var(--color-line); }
+.tpl-work.is-creative .tpl-panel { border-left: 0; border-right: 1px solid var(--color-line); }
+.tpl-section { display: grid; gap: 7px; }
+.tpl-field { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; align-items: center; }
+.tpl-field > span:first-child { color: var(--color-muted); }
+.tpl-number, .tpl-color { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.tpl-number input { width: 76px; }
+.tpl-number span { color: var(--color-muted); font-size: 11.5px; }
+.tpl-color input[type=color] { width: 34px; height: 30px; padding: 0; border: 1px solid var(--color-line); border-radius: 7px; background: #fff; }
+.tpl-color input[type=text] { width: 86px; }
+.tpl-fields { display: grid; gap: 7px; margin: 0; padding: 10px; border: 1px solid var(--color-line); border-radius: 10px; }
+.tpl-fields.is-on { border-color: var(--color-primary); }
+.tpl-fields legend { padding: 0 4px; font-weight: 600; }
+.tpl-debug { margin: 0; padding: 8px 10px; border-radius: 7px; background: #f3f4f0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tpl-ratios { width: 100%; margin-top: 6px; border-collapse: collapse; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tpl-ratios th, .tpl-ratios td { padding: 3px 5px; border-bottom: 1px solid var(--color-line); text-align: right; }
+.tpl-ratios th:first-child, .tpl-ratios td:first-child { text-align: left; }

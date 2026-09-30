@@ -1,4 +1,14 @@
-import type { ShapeLayerElement } from '@frameflow/shared';
+import { imageFit, type ImageLayerElement, type ShapeLayerElement } from '@frameflow/shared';
+
+/**
+ * Where a layer's picture is drawn inside its box. Without a fit it is stretched to the box, as layers always were. With
+ * one (an image slot from a template) it is cropped (cover) or letterboxed (contain) around the focal point, never distorted.
+ */
+export function layerImageProps(layer: Pick<ImageLayerElement, 'width' | 'height' | 'fit' | 'focalPoint' | 'radius'>, bitmap: { naturalWidth: number; naturalHeight: number }) {
+  if (!layer.fit) return { width: layer.width, height: layer.height };
+  const { crop, dest } = imageFit({ width: bitmap.naturalWidth, height: bitmap.naturalHeight }, layer, layer.fit, layer.focalPoint?.x, layer.focalPoint?.y);
+  return { ...dest, crop, cornerRadius: Math.min(layer.radius ?? 0, dest.width / 2, dest.height / 2) };
+}
 
 /** Ellipse nodes draw around their center; rectangles and SVG thumbnails use a top-left origin. */
 export function shapeFillProps(layer: Pick<ShapeLayerElement, 'fill' | 'gradient' | 'width' | 'height'>, origin: 'top-left' | 'center' = 'top-left') {

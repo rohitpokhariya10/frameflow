@@ -440,6 +440,7 @@ retain detailed earlier milestone checks.
 - [AI adaptation](docs/AI_ADAPTATION.md) — source reference processing, exact text, variants, and live comparison
 - [Auto Layout](docs/AUTO_LAYOUT.md) — measurement, fitting policy, and invariants
 - [Persistence and history](docs/PERSISTENCE_AND_HISTORY.md) — recovery, snapshots, and IndexedDB lifecycle
+- [Reusable templates](docs/REUSABLE_TEMPLATES.md) — normalized layout, creatives, versions, and the element model shared with the editor
 
 Detailed notes preserve historical milestone decisions and deployment plans. This README describes the current submission and single-service Render deployment.
 

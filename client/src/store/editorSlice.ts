@@ -2,6 +2,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { createTextElement, LAYER_LIMITS, TEXT_LIMITS, validTextChanges, validateCanvasSize, type CanvasSize, type DesignLayer, type DesignVariant, type ProjectDocument, type ShapeLayerElement, type TextElement, type TextKind, type TextChanges } from '@frameflow/shared';
 import type { DesignPreview } from './aiSlice';
 import { isDesignLayer, isProjectDocument, isTextElement } from '../lib/persistence/schema';
+import { followLayerOrder, placeAbove, placeAtBottom, placeOnTop } from './stacking';
 
 interface TextTarget { variantId: string; id: string; timestamp: string; editSession?: string }
 interface LayerTarget { variantId: string; id: string; timestamp: string; editSession?: string }
@@ -69,6 +70,7 @@ export const editorSlice = createSlice({
       const variant = state.document.variants.find((item) => item.id === variantId);
       if (!variant || variant.elements.length >= TEXT_LIMITS.maxElements || variant.elements.some((item) => item.id === id)) return;
       variant.elements.push(createTextElement(kind, variant.canvas, id, variant.elements.length));
+      placeOnTop(variant, variant.elements.at(-1));
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },
@@ -107,6 +109,7 @@ export const editorSlice = createSlice({
       const source = variant?.elements.find((item) => item.id === id);
       if (!variant || !source || !finitePosition({ x, y }) || variant.elements.length >= TEXT_LIMITS.maxElements || variant.elements.some((item) => item.id === newId)) return;
       variant.elements.push({ ...source, id: newId, x, y });
+      placeAbove(variant, variant.elements.at(-1), source.zIndex);
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },
@@ -152,6 +155,7 @@ export const editorSlice = createSlice({
       const copy = { ...source, id: newId, name: `${source.name} copy`.slice(0, 200), x: source.x + 24, y: source.y + 24, locked: false };
       if (!isDesignLayer(copy)) return;
       variant.layers.splice(index + 1, 0, copy);
+      placeAbove(variant, variant.layers[index + 1], source.zIndex);
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },
@@ -163,6 +167,7 @@ export const editorSlice = createSlice({
       if (!variant?.layers || index < 0 || !Number.isInteger(target) || target < 0 || target >= variant.layers.length || target === index) return;
       const [layer] = variant.layers.splice(index, 1);
       variant.layers.splice(target, 0, layer);
+      followLayerOrder(variant);
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },
@@ -180,7 +185,10 @@ export const editorSlice = createSlice({
       const layer = variant?.layers?.find((item) => item.id === id);
       if (!variant || !layer || layer.type !== 'image' || !layer.textSuggestion || variant.elements.length >= TEXT_LIMITS.maxElements
         || variant.elements.some((item) => item.id === element.id) || !isTextElement(element)) return;
-      variant.elements.push(element);
+      // A copy, so the place it is given in the order is written to the document, not to the dispatched action.
+      const placed = { ...element };
+      variant.elements.push(placed);
+      placeAbove(variant, placed, layer.zIndex);
       layer.visible = false;
       variant.revision += 1;
       state.document.updatedAt = timestamp;
@@ -191,7 +199,9 @@ export const editorSlice = createSlice({
       const variant = state.document.variants.find((item) => item.id === variantId);
       const layers = variant?.layers ?? [];
       if (!variant || layers.length >= LAYER_LIMITS.maxLayers || layers.some((item) => item.id === layer.id) || !isDesignLayer(layer)) return;
-      variant.layers = position === 'bottom' ? [layer, ...layers] : [...layers, layer];
+      const placed = { ...layer };
+      variant.layers = position === 'bottom' ? [placed, ...layers] : [...layers, placed];
+      if (position === 'bottom') placeAtBottom(variant, placed); else placeOnTop(variant, placed);
       variant.revision += 1;
       state.document.updatedAt = timestamp;
     },

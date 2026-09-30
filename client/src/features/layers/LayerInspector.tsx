@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Copy, Eye, EyeOff, GripVertical, ImageUp, Lock, Trash2, Type, Unlock } from 'lucide-react';
-import { clamp, TEXT_LIMITS, type DesignLayer, type DesignVariant, type TextElement } from '@frameflow/shared';
+import { clamp, hasExplicitOrder, TEXT_LIMITS, type DesignLayer, type DesignVariant, type TextElement } from '@frameflow/shared';
 import { useAppDispatch } from '../../store';
 import { layerConvertedToText, layerDeleted, layerDuplicated, layerImageReplaced, layerReordered, layerUpdated, type LayerChanges } from '../../store/editorSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
@@ -135,6 +135,6 @@ export function LayerInspector({ variant, layer }: { variant: DesignVariant; lay
       <button className="button" onClick={() => { const newId = `layer-${crypto.randomUUID()}`; dispatch(layerDuplicated({ variantId: variant.id, id: layer.id, newId, timestamp: now() })); dispatch(elementSelected(newId)); }}><Copy size={14} />Duplicate</button>
       <button className="button delete-text" onClick={() => { dispatch(layerDeleted({ variantId: variant.id, id: layer.id, timestamp: now() })); dispatch(elementSelected(null)); }}><Trash2 size={14} />Delete</button>
     </div>
-    <p className="inspector-hint">{layer.locked ? 'Locked on the canvas. Unlock to move, resize or rotate with the handles.' : 'Drag on the canvas to move; use the handles to resize and rotate.'} Text elements always stay above layers.</p>
+    <p className="inspector-hint">{layer.locked ? 'Locked on the canvas. Unlock to move, resize or rotate with the handles.' : 'Drag on the canvas to move; use the handles to resize and rotate.'} {hasExplicitOrder(variant) ? 'Text and layers share one order in this design; Bring forward and Send backward move this layer among the layers.' : 'Text elements always stay above layers.'}</p>
   </div>;
 }

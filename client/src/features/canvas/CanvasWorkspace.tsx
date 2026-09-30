@@ -1,15 +1,15 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { Layer, Rect, Stage, Text } from 'react-konva/lib/ReactKonvaCore';
+import { Layer, Rect, Stage } from 'react-konva/lib/ReactKonvaCore';
 import 'konva/lib/shapes/Rect';
 import { Maximize, Minus, Plus, Sparkles, Type } from 'lucide-react';
 import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store';
 import { fitRequested, tabChanged, zoomChanged, variantSelected } from '../../store/uiSlice';
 import { calculateFitZoom, VIEWPORT } from './viewport';
-import { TextElementNode } from './TextElementNode';
+import { hasExplicitOrder, paintOrder } from '@frameflow/shared';
+import { StaticText, TextElementNode } from './TextElementNode';
 import { DesignLayerNode } from './DesignLayerNode';
 import { focusCanvas, useTextActions } from '../text/useTextActions';
 import { BackgroundArtwork } from './BackgroundArtwork';
-import { textNodeStyle } from '../text/textGeometry';
 
 import { VariantComparison } from '../variants/VariantComparison';
 import { formatLabel, variantLabel } from '../variants/variantLabel';
@@ -26,6 +26,7 @@ export function CanvasWorkspace() {
   const comparing = Boolean(pair);
   const { canvas, elements, id, background, layers } = preview?.variant ?? current;
   const [artworkError, setArtworkError] = useState('');
+  const interleaved = hasExplicitOrder(current);
   const { zoom, fitRequest, selectedElementId } = useAppSelector((state) => state.ui);
   const actions = useTextActions();
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -63,10 +64,18 @@ export function CanvasWorkspace() {
                 <Layer listening={false} clipWidth={canvas.width} clipHeight={canvas.height}>{!canvas.transparent && <Rect width={canvas.width} height={canvas.height} fill={canvas.backgroundColor} />}
                   {background && <BackgroundArtwork background={background} canvas={canvas} onError={setArtworkError} />}
                 </Layer>
-                {!preview && layers?.length ? <Layer clipWidth={canvas.width} clipHeight={canvas.height}>{layers.map((layer) => <DesignLayerNode key={layer.id} layer={layer} selected={selectedElementId === layer.id} variantId={id} />)}</Layer> : null}
-                <Layer>{elements.map((element) => preview
-                  ? <Text key={element.id} name="preview-text" {...textNodeStyle(element)} x={element.x} y={element.y} listening={false} />
-                  : <TextElementNode key={element.id} element={element} selected={selectedElementId === element.id} canvas={canvas} variantId={id} zoom={zoom} />)}</Layer>
+                {!preview && interleaved
+                  // Elements that carry a zIndex (a design opened from a template) are drawn in that one order, text and layers interleaved.
+                  ? <Layer clipWidth={canvas.width} clipHeight={canvas.height}>{paintOrder(current).map((item) => item.kind === 'layer'
+                    ? <DesignLayerNode key={item.layer.id} layer={item.layer} selected={selectedElementId === item.layer.id} variantId={id} raiseHandles />
+                    : <TextElementNode key={item.element.id} element={item.element} selected={selectedElementId === item.element.id} canvas={canvas} variantId={id} zoom={zoom} raiseHandles />)}</Layer>
+                  // Every other design: its layers, then all its text, exactly as before.
+                  : <>
+                    {!preview && layers?.length ? <Layer clipWidth={canvas.width} clipHeight={canvas.height}>{layers.map((layer) => <DesignLayerNode key={layer.id} layer={layer} selected={selectedElementId === layer.id} variantId={id} />)}</Layer> : null}
+                    <Layer>{elements.map((element) => preview
+                      ? <StaticText key={element.id} name="preview-text" element={element} />
+                      : <TextElementNode key={element.id} element={element} selected={selectedElementId === element.id} canvas={canvas} variantId={id} zoom={zoom} />)}</Layer>
+                  </>}
               </Stage>
             </div>
             {showEmptyState && <div className={`canvas-empty ${displayWidth < 310 || displayHeight < 350 ? 'canvas-empty-compact' : ''}`}>
