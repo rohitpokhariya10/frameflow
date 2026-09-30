@@ -148,7 +148,7 @@ test('gradient stops and angle update canvas and thumbnail, undo together and pe
   await page.getByRole('spinbutton', { name: 'Gradient angle' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('spinbutton', { name: 'Gradient angle' })).toBeInViewport();
   await expect(row(page, 'panel')).toBeInViewport();
-  const listBounds = (await rows(page).boundingBox())!, launcher = (await page.getByRole('button', { name: 'Image to layers' }).boundingBox())!;
+  const listBounds = (await rows(page).boundingBox())!, launcher = (await page.locator('.decomp-launch').first().boundingBox())!;
   expect(listBounds.y + listBounds.height).toBeLessThanOrEqual(launcher.y);
   expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('editor-gradient-controls.png'), fullPage: true });

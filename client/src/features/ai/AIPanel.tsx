@@ -13,6 +13,7 @@ import { loadEditorFonts } from '../text/fonts';
 import { abortable, assets, storeGeneratedImage } from '../../lib/assets/runtimeAssets';
 
 import { DecompositionPanel } from '../decomposition/DecompositionPanel';
+import { LEGACY_IMAGE_TO_LAYERS } from '../../lib/featureFlags';
 import { AdaptPanel } from './AdaptPanel';
 
 const themes: StyleBrief[] = [
@@ -22,15 +23,17 @@ const themes: StyleBrief[] = [
   { theme: 'Editorial', palette: ['paper white', 'muted olive'], motifs: ['subtle paper texture'], mood: 'considered, sophisticated' },
   { theme: 'Luxury', palette: ['ivory', 'antique gold'], motifs: ['fine ornamental edges'], mood: 'understated elegance' },
 ];
+/** The AI operations offered. "Decompose" is the earlier generic Image to layers flow, shown only behind its flag. */
+const OPERATIONS = LEGACY_IMAGE_TO_LAYERS ? ['generate', 'adapt', 'decompose'] as const : ['generate', 'adapt'] as const;
 export function AIPanel() {
   const dispatch = useAppDispatch();
   const mode = useAppSelector((state) => state.ui.aiMode), busy = useAppSelector((state) => state.ai.status === 'generating');
   const previewAssetId = useAppSelector((state) => state.ai.preview?.variant.background?.assetId);
-  return <div className="ai-tools"><div className="ai-mode-controls" role="group" aria-label="AI operation">{(['generate', 'adapt', 'decompose'] as const).map((value) => <button key={value} aria-pressed={mode === value} disabled={busy} onClick={() => {
+  return <div className="ai-tools"><div className="ai-mode-controls" role="group" aria-label="AI operation">{OPERATIONS.map((value) => <button key={value} aria-pressed={mode === value} disabled={busy} onClick={() => {
     if (value === mode) return;
     dispatch(generationCleared()); dispatch(aiModeChanged(value));
     if (previewAssetId) void assets.deleteAsset(previewAssetId).catch(() => undefined);
-  }}>{value === 'generate' ? 'Generate' : value === 'adapt' ? 'Adapt format' : 'Decompose'}</button>)}</div>{mode === 'decompose' ? <DecompositionPanel embedded /> : mode === 'adapt' ? <AdaptPanel /> : <GeneratePanel />}</div>;
+  }}>{value === 'generate' ? 'Generate' : value === 'adapt' ? 'Adapt format' : 'Decompose'}</button>)}</div>{mode === 'decompose' && LEGACY_IMAGE_TO_LAYERS ? <DecompositionPanel embedded /> : mode === 'adapt' ? <AdaptPanel /> : <GeneratePanel />}</div>;
 }
 function GeneratePanel() {
   const dispatch = useAppDispatch(); const store = useStore<RootState>();
