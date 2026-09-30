@@ -11,6 +11,10 @@ import { defineConfig } from '@playwright/test';
  * Set DECOMP_E2E_REPLAY_DIR + DECOMP_E2E_REPLAY_JOB to replay a real cached Seedream discovery instead of the
  * synthetic poster. PLAYWRIGHT_PRODUCTION=1 serves the built client/dist from the isolated API instead of Vite;
  * build first. DECOMP_E2E_SHOTS chooses a separate screenshot directory for real-poster evidence.
+ *
+ * This suite is the earlier generic "Image to layers" flow, whose entry points are hidden unless
+ * VITE_LEGACY_IMAGE_TO_LAYERS is on (client/src/lib/featureFlags.ts). The dev client below is started with it on; for
+ * PLAYWRIGHT_PRODUCTION=1, build the client with VITE_LEGACY_IMAGE_TO_LAYERS=1.
  */
 process.env.DECOMP_E2E_DATA ??= mkdtempSync(join(tmpdir(), 'frameflow-decomp-e2e-'));
 const apiPort = 3211, clientPort = 5211;
@@ -22,6 +26,7 @@ const serverEnv = {
   PORT: String(apiPort), CLIENT_ORIGIN: baseURL, FAL_KEY: '', DECOMP_E2E_FAKE_PROVIDER: '1',
 };
 const tsx = 'node --conditions=development --import tsx';
+const legacyFlow = { VITE_LEGACY_IMAGE_TO_LAYERS: '1' };
 
 export default defineConfig({
   testDir: './tests/e2e-decomposition',
@@ -36,6 +41,6 @@ export default defineConfig({
       command: `${tsx} server/src/decomposition/e2eSeed.ts && npx concurrently -k -n api,worker "FAL_KEY=e2e-placeholder-not-a-real-key ${tsx} server/src/index.ts" "FAL_KEY= ${tsx} server/src/decomposition/e2eWorker.ts"`,
       url: `http://127.0.0.1:${apiPort}/api/health`, reuseExistingServer: false, timeout: 120_000, env: serverEnv,
     },
-    ...(!production ? [{ command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: false, timeout: 60_000, env: { FRAMEFLOW_CLIENT_PORT: String(clientPort), FRAMEFLOW_API_URL: `http://127.0.0.1:${apiPort}` } }] : []),
+    ...(!production ? [{ command: 'npm run dev -w @frameflow/client', url: baseURL, reuseExistingServer: false, timeout: 60_000, env: { FRAMEFLOW_CLIENT_PORT: String(clientPort), FRAMEFLOW_API_URL: `http://127.0.0.1:${apiPort}`, ...legacyFlow } }] : []),
   ],
 });
