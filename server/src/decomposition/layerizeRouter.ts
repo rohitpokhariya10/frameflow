@@ -121,18 +121,22 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
     const own = (id: string) => ownGroup(generationsDir, key, id);
     const shown = (group: GenerationGroup) => presentGroup(withStructure(group, handoff), variantId => inProgress.has(`${key}/${group.id}/${variantId}`));
     /** Queues variants behind whatever is already being generated. Each is one paid request; none is ever resent. */
-    const enqueue = (groupId: string, variantIds: string[], config: GenerationConfig) => {
+    const enqueue = (groupId: string, variantIds: string[], config: GenerationConfig, independent = false) => {
       for (const variantId of variantIds) {
         const running = `${key}/${groupId}/${variantId}`;
         queueVariant(generationsDir, groupId, variantId, inProgress.has(running));
         inProgress.add(running);
-        queue = queue.then(() => generateVariant(generationsDir, groupId, variantId, config)).catch(error => console.error('template generation', running, error)).finally(() => inProgress.delete(running));
+        // How the ratios are kept together is the template's: its sentence about a reference image, or none.
+        queue = queue.then(() => generateVariant(generationsDir, groupId, variantId, config, { referenceInstruction: profile.referenceInstruction, independent })).catch(error => console.error('template generation', running, error)).finally(() => inProgress.delete(running));
       }
     };
     router.get(`${at}/generator`, (_req, res, next) => {
       try {
+        const config = generation();
         res.json({ templateKey: key, name: profile.name, version: profile.version, family: profile.family, sameAcrossRatios: profile.sameAcrossRatios, mayDiffer: profile.mayDiffer, skeleton: profile.skeleton, fields: profile.fields, defaults: profile.defaults,
-          aspectRatios: GENERATION_ASPECT_RATIOS, imageSizes: GENERATION_IMAGE_SIZES, consistency: profile.consistency, framing: profile.framing, promptLimits: GENERATION_PROMPT_LIMITS, generator: { provider: 'openai', model: generation().model } });
+          aspectRatios: GENERATION_ASPECT_RATIOS, imageSizes: GENERATION_IMAGE_SIZES, consistency: profile.consistency, framing: profile.framing, promptLimits: GENERATION_PROMPT_LIMITS, generator: { provider: 'openai', model: config.model },
+          // Whether the ratios of a new creative are made from the first finished image (the template's choice, unless switched off).
+          ratioReference: Boolean(profile.referenceInstruction) && config.referenceRatios !== false });
       } catch (error) { next(error); }
     });
     router.get(`${at}/groups`, (_req, res) => res.json({ groups: listGroups(generationsDir).filter(group => group.templateKey === key).map(shown) }));
@@ -158,10 +162,14 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
     });
     // One variant of an existing group, generated now: a failed one again, or one not generated yet. The group's shared
     // definition and its other variants are not touched. A variant that has its image is refused.
-    router.post(`${at}/groups/:id/variants/:variant/generate`, (req, res, next) => {
+    // Body (optional): { independent: true } generates it from its prompt alone, in a group that would make it from a
+    // finished ratio's image.
+    router.post(`${at}/groups/:id/variants/:variant/generate`, express.json({ limit: '1kb' }), (req, res, next) => {
       try {
         own(req.params.id);
-        enqueue(req.params.id, [req.params.variant], generation());
+        const independent = (req.body as { independent?: unknown } | undefined)?.independent;
+        if (independent !== undefined && typeof independent !== 'boolean') throw new RunError('INVALID_REQUEST', 'independent must be true or false.');
+        enqueue(req.params.id, [req.params.variant], generation(), independent === true);
         res.status(202).json(shown(own(req.params.id)));
       } catch (error) { next(error); }
     });

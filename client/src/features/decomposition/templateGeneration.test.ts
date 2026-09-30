@@ -13,20 +13,27 @@ const ENTRIES = { 'template-a': A_ENTRY, 'template-b': B_ENTRY, 'template-c': C_
 const withObject = { structure: { visibleBorder: true, heldObject: true } }, bare = {};
 const labels = (controls: ReturnType<typeof decompositionControlsFor>) => controls.kind === 'held-object' ? [controls.label] : controls.kind === 'options' ? controls.options.map(option => option.label) : [];
 
+// Each template's own field for the setting, and how its prompt words it.
+const SETTING = { 'template-a': ['outerBackground', ''], 'template-b': ['sceneStyle', 'Scene and visual style: plain white seamless backdrop.'], 'template-c': ['background', 'Background: plain white seamless backdrop,'] } as const;
+/** What the user has to type for a complete creative: nothing for a template that fills in a default one, Template B's two required inputs. */
+const TYPED: Record<string, Record<string, string>> = { 'template-a': {}, 'template-b': { mainProduct: 'Lavender smartphone', sceneStyle: 'Premium pastel studio with soft lavender spheres' }, 'template-c': {} };
 describe.each([templateBGenerationProfile, templateCGenerationProfile])('$name generator form (the shared form, this template\'s profile)', (profile) => {
-  const BASE = profile.buildBasePrompt(profile.defaults), reducer = generatorReducerFor(profile), required = profile.fields.find(field => field.required)!;
+  const reducer = generatorReducerFor(profile), required = profile.fields.find(field => field.required)!, [settingKey, settingSentence] = SETTING[profile.templateKey];
+  /** The form once the user has typed a complete creative. */
+  const filled = () => Object.entries(TYPED[profile.templateKey]).reduce((form, [key, value]) => reducer(form, { type: 'field', key, value }), initialFormFor(profile));
+  const VALUES = filled().values, BASE = profile.buildBasePrompt(VALUES);
 
   it('holds this template\'s creative definition and derives every ratio\'s prompt from it', () => {
-    const start = initialFormFor(profile);
-    expect(start).toEqual({ values: profile.defaults, editedPrompt: null, ratios: ['1:1', '16:9', '4:5'] });
+    expect(initialFormFor(profile)).toEqual({ values: profile.defaults, editedPrompt: null, ratios: ['1:1', '16:9', '4:5'] });
+    const start = filled();
     // Only this template's fields: nothing of Template A's form.
     expect(Object.keys(start.values)).toEqual(profile.fields.map(field => field.key));
     for (const foreign of ['subject', 'heldObject', 'frameShape', 'frameBorder', 'innerBackdrop', 'outerBackground']) expect(start.values).not.toHaveProperty(foreign);
     const resolved = resolvedCreativeFor(profile, start);
     expect(resolved).toMatchObject({ builtPrompt: BASE, basePrompt: BASE, promptEdited: false, errors: [] });
     expect(resolved.prompts).toEqual({ '1:1': `${BASE} ${profile.consistency} ${profile.framing['1:1']}`, '16:9': `${BASE} ${profile.consistency} ${profile.framing['16:9']}`, '4:5': `${BASE} ${profile.consistency} ${profile.framing['4:5']}` });
-    const changed = reducer(start, { type: 'field', key: 'background', value: 'plain white seamless backdrop' });
-    expect(Object.values(resolvedCreativeFor(profile, changed).prompts!).every(prompt => prompt.includes('Background: plain white seamless backdrop,') && prompt.includes(profile.consistency))).toBe(true);
+    const changed = reducer(start, { type: 'field', key: settingKey, value: 'plain white seamless backdrop' });
+    expect(Object.values(resolvedCreativeFor(profile, changed).prompts!).every(prompt => prompt.includes(settingSentence) && prompt.includes(profile.consistency))).toBe(true);
     const broken = reducer(start, { type: 'field', key: required.key, value: '' });
     expect(resolvedCreativeFor(profile, broken)).toMatchObject({ errors: [`${required.label} is required: it is part of the ${profile.name} structure.`] });
     expect(resolvedCreativeFor(profile, broken).prompts).toBeUndefined();
@@ -34,11 +41,17 @@ describe.each([templateBGenerationProfile, templateCGenerationProfile])('$name g
     expect(resolvedCreativeFor(profile, reducer(start, { type: 'field', key: 'heldObject', value: 'smartphone' })).errors).toEqual(['Unknown field "heldObject".']);
   });
 
-  it('sends an edited shared prompt only when it differs, and loads an earlier creative of this template back', () => {
-    const edited = reducer(initialFormFor(profile), { type: 'editPrompt', value: `${BASE}\nOvercast daylight.` });
-    expect(creationRequestFor(profile, edited)).toEqual({ fields: profile.defaults, basePrompt: `${BASE} Overcast daylight.`, aspectRatios: ['1:1', '16:9', '4:5'] });
-    expect(creationRequestFor(profile, reducer(initialFormFor(profile), { type: 'editPrompt', value: BASE }))).toEqual({ fields: profile.defaults, aspectRatios: ['1:1', '16:9', '4:5'] });
-    const earlier = { ...profile.defaults, background: 'pale mint wall' };
+  it('sends an edited shared prompt only when it differs, rebuilds from the fields when the edit is discarded, and loads an earlier creative back', () => {
+    const edited = reducer(filled(), { type: 'editPrompt', value: `${BASE}\nOvercast daylight.` });
+    expect(creationRequestFor(profile, edited)).toEqual({ fields: VALUES, basePrompt: `${BASE} Overcast daylight.`, aspectRatios: ['1:1', '16:9', '4:5'] });
+    expect(creationRequestFor(profile, reducer(filled(), { type: 'editPrompt', value: BASE }))).toEqual({ fields: VALUES, aspectRatios: ['1:1', '16:9', '4:5'] });
+    // While it is edited the fields do not change the prompt; discarding the edit builds it from the fields again, the same as before.
+    const thenField = reducer(edited, { type: 'field', key: settingKey, value: 'plain white seamless backdrop' });
+    expect(resolvedCreativeFor(profile, thenField)).toMatchObject({ basePrompt: `${BASE} Overcast daylight.`, promptEdited: true });
+    const discarded = reducer(thenField, { type: 'editPrompt', value: null });
+    expect(resolvedCreativeFor(profile, discarded)).toMatchObject({ promptEdited: false, basePrompt: profile.buildBasePrompt(profile.resolveFields({ ...VALUES, [settingKey]: 'plain white seamless backdrop' }).values) });
+    expect(resolvedCreativeFor(profile, reducer(edited, { type: 'editPrompt', value: null })).basePrompt).toBe(BASE);
+    const earlier = { ...VALUES, [settingKey]: 'pale mint wall' };
     const loaded = reducer(reducer(edited, { type: 'ratio', ratio: '16:9', on: false }), { type: 'load', group: { fields: earlier, basePrompt: 'ignored', promptEdited: false } });
     expect(loaded).toEqual({ values: earlier, editedPrompt: null, ratios: ['1:1', '4:5'] });
   });
@@ -52,17 +65,73 @@ describe.each([templateBGenerationProfile, templateCGenerationProfile])('$name g
     const api = generationApiFor(profile.templateKey), at = `/api/layerize-experiment/${profile.templateKey}`, entry = ENTRIES[profile.templateKey];
     const request = decomposeRequestFor(decompositionControlsFor(profile.templateKey, entry, bare), { [entry.options![0].key]: true })!;
     await api.info(); await api.list(); await api.get('g1');
-    await api.create(creationRequestFor(profile, initialFormFor(profile)));
+    await api.create(creationRequestFor(profile, filled()));
     await api.generateVariant('g1', '16x9');
+    await api.generateVariant('g1', '16x9', { independent: true });
     await api.decompose('g1', '4x5', request);
     expect(requests).toEqual([
       { url: `${at}/generator`, method: undefined }, { url: `${at}/groups`, method: undefined }, { url: `${at}/groups/g1`, method: undefined },
-      { url: `${at}/groups`, method: 'POST', body: { fields: profile.defaults, aspectRatios: ['1:1', '16:9', '4:5'] } },
+      { url: `${at}/groups`, method: 'POST', body: { fields: VALUES, aspectRatios: ['1:1', '16:9', '4:5'] } },
+      // One ratio again: as the creative generates its ratios, or from its prompt alone when asked.
       { url: `${at}/groups/g1/variants/16x9/generate`, method: 'POST' },
+      { url: `${at}/groups/g1/variants/16x9/generate`, method: 'POST', body: { independent: true } },
       { url: `${at}/groups/g1/variants/4x5/decompose`, method: 'POST', body: { templateOptions: { ...Object.fromEntries(entry.options!.map(option => [option.key, false])), [entry.options![0].key]: true } } },
     ]);
     expect(JSON.stringify(requests)).not.toMatch(/"prompt"|separateHeldObject|template-a/);
     expect(variantImageUrlFor(profile.templateKey)('g1', '1x1')).toBe(`${at}/groups/g1/variants/1x1/image`);
+  });
+});
+
+describe('Template B form: three creative inputs, two advanced choices, and creatives of its earlier forms', () => {
+  const b = templateBGenerationProfile, reducer = generatorReducerFor(b);
+  const type = (values: Record<string, string>, form = initialFormFor(b)) => Object.entries(values).reduce((next, [key, value]) => reducer(next, { type: 'field', key, value }), form);
+
+  it('starts empty, with the advanced choices at their automatic values', () => {
+    expect(initialFormFor(b).values).toEqual({ mainProduct: '', sceneStyle: '', extraDetails: '', productAngle: 'auto', imageText: 'avoid' });
+    expect(b.fields.filter(field => !field.advanced).map(field => field.key)).toEqual(['mainProduct', 'sceneStyle', 'extraDetails']);
+    // Nothing can be generated from an empty form: both required inputs are missing, and there is no prompt to send.
+    expect(resolvedCreativeFor(b, initialFormFor(b))).toMatchObject({ errors: ['Main product is required: it is part of the Template B structure.', 'Scene / visual style is required: it is part of the Template B structure.'] });
+    expect(resolvedCreativeFor(b, initialFormFor(b)).prompts).toBeUndefined();
+  });
+
+  it('needs only the main product and the scene; extra details and the advanced choices are optional', () => {
+    const form = type({ mainProduct: 'Lavender smartphone', sceneStyle: 'Premium pastel studio with soft lavender spheres' });
+    const resolved = resolvedCreativeFor(b, form);
+    expect(resolved).toMatchObject({ errors: [], promptEdited: false });
+    expect(resolved.basePrompt).toContain('featuring one Lavender smartphone as the single, clearly dominant hero. Scene and visual style: Premium pastel studio with soft lavender spheres.');
+    // The structure the user did not type is there.
+    for (const rule of ['is a separate element, complete and clearly distinguishable from the hero', 'soft professional advertising lighting', 'no extra copies of the hero']) expect(resolved.basePrompt).toContain(rule);
+    for (const ratio of ['1:1', '16:9', '4:5'] as const) expect(resolved.prompts![ratio]).toBe(`${resolved.basePrompt} ${b.consistency} ${b.framing[ratio]}`);
+    // What is sent is the inputs as typed; the server builds the same prompt from them.
+    expect(creationRequestFor(b, form)).toEqual({ fields: { mainProduct: 'Lavender smartphone', sceneStyle: 'Premium pastel studio with soft lavender spheres', extraDetails: '', productAngle: 'auto', imageText: 'avoid' }, aspectRatios: ['1:1', '16:9', '4:5'] });
+    for (const [key, label] of [['mainProduct', 'Main product'], ['sceneStyle', 'Scene / visual style']]) expect(resolvedCreativeFor(b, type({ [key]: '  ' }, form)).errors).toEqual([`${label} is required: it is part of the Template B structure.`]);
+    // Too long an answer is refused where it is, in words; it is not cut.
+    expect(resolvedCreativeFor(b, type({ extraDetails: 'x'.repeat(301) }, form)).errors).toEqual(['Extra details is 301 characters; at most 300.']);
+    // An advanced choice changes one phrase of the prompt.
+    expect(resolvedCreativeFor(b, type({ productAngle: 'side' }, form)).basePrompt).toContain('large in the frame, seen from the side;');
+  });
+
+  it('loads a creative of an earlier form into today\'s inputs, without changing the stored one', () => {
+    const v1 = { heroProduct: 'ceramic table lamp', heroDescription: 'matte cream body with a linen shade and a brass switch', material: 'glazed ceramic', intrinsicDetails: '', placement: 'upright, centred, three-quarter view', support: 'low round stone pedestal',
+      secondaryObjects: '', decoration: 'two soft arch shapes behind the product', foregroundAccents: '', background: 'soft warm-beige studio backdrop with a gentle gradient', composition: '', lighting: 'soft diffused studio light with a gentle shadow', palette: '', extraNotes: '' };
+    const stored = structuredClone(v1);
+    const loaded = reducer(initialFormFor(b), { type: 'load', group: { fields: v1, basePrompt: 'the stored version 1 prompt', promptEdited: false } });
+    expect(loaded.values).toEqual({ mainProduct: 'ceramic table lamp',
+      sceneStyle: 'soft warm-beige studio backdrop with a gentle gradient; soft diffused studio light with a gentle shadow; low round stone pedestal under the product; two soft arch shapes behind the product',
+      extraDetails: 'matte cream body with a linen shade and a brass switch; glazed ceramic; upright, centred, three-quarter view', productAngle: 'auto', imageText: 'avoid' });
+    expect(v1).toEqual(stored);
+    // It is a valid creative of today's form, ready to generate again.
+    expect(resolvedCreativeFor(b, loaded)).toMatchObject({ errors: [], promptEdited: false });
+    expect(Object.keys(creationRequestFor(b, loaded).fields)).toEqual(['mainProduct', 'sceneStyle', 'extraDetails', 'productAngle', 'imageText']);
+    // The five-field form of version 2 is read the same way.
+    expect(reducer(initialFormFor(b), { type: 'load', group: { fields: { heroProduct: 'Lavender smartphone', productLook: 'Soft lavender matte case', scene: 'Clean soft-gray studio', extras: 'Several lavender spheres', extraInstructions: '' }, basePrompt: '', promptEdited: false } }).values)
+      .toEqual({ mainProduct: 'Lavender smartphone', sceneStyle: 'Clean soft-gray studio; Several lavender spheres', extraDetails: 'Soft lavender matte case', productAngle: 'auto', imageText: 'avoid' });
+    // An earlier creative whose prompt was edited by hand keeps that prompt.
+    expect(reducer(initialFormFor(b), { type: 'load', group: { fields: v1, basePrompt: 'A hand-written description of the creative.', promptEdited: true } }).editedPrompt).toBe('A hand-written description of the creative.');
+    // A creative of today's form is loaded as it is; Templates A and C have no earlier form to read.
+    const today = { ...b.defaults, mainProduct: 'kettle', sceneStyle: 'white studio' };
+    expect(reducer(initialFormFor(b), { type: 'load', group: { fields: today, basePrompt: '', promptEdited: false } }).values).toEqual(today);
+    expect([templateAGenerationProfile.upgradeFields, templateCGenerationProfile.upgradeFields]).toEqual([undefined, undefined]);
   });
 });
 

@@ -10,6 +10,12 @@
  * prompt sent, the request and response, its image or its error, and the decomposition runs made from it. The prompts
  * are built deterministically (no LLM rewrite) and differ between the variants of a group in the framing sentence only.
  *
+ * How the ratios of a creative are kept together is the template's choice (GenerationProfile.referenceInstruction).
+ * Without one, every ratio is generated from its prompt alone (Templates A and C). With one (Template B), the first
+ * ratio is generated from its prompt and each further ratio is made from that image, with OpenAI's image edit request:
+ * the same model, the finished image as input, the variant's own prompt plus the template's sentence about the image.
+ * A group records which way it was made (ratioStrategy) when it is created, so an earlier group keeps its own way.
+ *
  * OpenAI Image 2 generates each variant with its own request, so one failing leaves the others as they are, and a
  * failed or not yet generated variant can be generated later on its own. A finished variant is never generated again
  * (decomposition runs may point at its image); a changed creative is a new group. Decomposing a variant creates an
@@ -23,7 +29,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import sharp from 'sharp';
 import { buildGenerationVariantPrompt, GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, generationVariantId, resolveGenerationBasePrompt,
   type GenerationAspectRatio, type GenerationFieldValues, type GenerationProfile, type GenerationTemplateKey } from '@frameflow/shared';
@@ -39,8 +45,12 @@ const IMAGE_TIMEOUT_MS = 300_000;
 const GROUP_FILE = 'group.json', LEGACY_FILE = 'generation.json';
 
 type ImagesClient = Pick<OpenAI, 'images'>;
-/** client: created per request, so a missing OPENAI_API_KEY is a saved failed variant, not a broken server. */
-export type GenerationConfig = { model: string; client: () => ImagesClient };
+/**
+ * client: created per request, so a missing OPENAI_API_KEY is a saved failed variant, not a broken server.
+ * referenceRatios: false makes new creatives generate every ratio independently even for a template that would keep
+ * them together by image (TEMPLATE_RATIO_REFERENCE=off). It changes nothing for templates that never do.
+ */
+export type GenerationConfig = { model: string; client: () => ImagesClient; referenceRatios?: boolean };
 
 /** pending: not generated yet. queued / generating: on its way. done: has its image. failed: has its error. */
 export type VariantStatus = 'pending' | 'queued' | 'generating' | 'done' | 'failed';
@@ -58,6 +68,11 @@ export type GenerationVariant = {
   /** How often it was sent to the provider, and the files holding the last request and response. */
   attempts: number; requestFile?: string; responseFile?: string; startedAt?: string; finishedAt?: string; durationMs?: number;
   image?: { file: string; mimeType: string; width: number; height: number; bytes: number; sha256?: string };
+  /**
+   * Set when the last attempt made this variant from another variant's image instead of from its prompt alone: which
+   * variant and image, and the sentence added to the prompt. What was sent is `prompt`, a space, then `instruction`.
+   */
+  reference?: { variantId: string; aspectRatio: string; file: string; sha256?: string; instruction: string };
   /** The provider's own status and messages when it failed, and the file with its complete error response. */
   error?: { code: string; message: string; status?: number; messages?: { msg: string; type?: string }[]; bodyFile?: string };
   /** Decomposition runs (of the group's template) made from this variant's image, oldest first. */
@@ -74,6 +89,8 @@ export type GenerationGroup = {
   structure?: Record<string, boolean>;
   /** What the template's profile noted about this creative when it was made. */
   notes?: string[];
+  /** 'reference': after the first finished ratio, the others are made from its image. Absent: every ratio from its prompt alone. */
+  ratioStrategy?: 'reference';
   aspectRatios: string[]; variants: GenerationVariant[];
   /** Read from a record made before groups existed: one image, never regenerated. */
   legacy?: true;
@@ -86,7 +103,7 @@ type LegacyRecord = {
 };
 
 export function liveGenerationConfig(env = process.env): GenerationConfig {
-  return { model: imageModel(env), client: () => {
+  return { model: imageModel(env), referenceRatios: !/^(?:0|off|false|no)$/i.test(env.TEMPLATE_RATIO_REFERENCE?.trim() ?? ''), client: () => {
     if (!env.OPENAI_API_KEY?.trim()) throw new RunError('GENERATOR_NOT_CONFIGURED', 'Set OPENAI_API_KEY in server/.env.');
     return new OpenAI({ apiKey: env.OPENAI_API_KEY, maxRetries: 0, timeout: IMAGE_TIMEOUT_MS });
   } };
@@ -182,7 +199,7 @@ export const withStructure = (group: GenerationGroup, handoff: Pick<GenerationHa
  * the limit or an unknown ratio are refused before anything is written; a request carrying a final prompt is refused (a
  * variant's prompt is built here from the base prompt and its framing, never supplied).
  */
-export function createGenerationGroup(root: string, handoff: GenerationHandoff, input: { fields?: unknown; basePrompt?: unknown; prompt?: unknown; aspectRatios?: unknown }, config: Pick<GenerationConfig, 'model'>): { group: GenerationGroup; requested: string[] } {
+export function createGenerationGroup(root: string, handoff: GenerationHandoff, input: { fields?: unknown; basePrompt?: unknown; prompt?: unknown; aspectRatios?: unknown }, config: Pick<GenerationConfig, 'model' | 'referenceRatios'>): { group: GenerationGroup; requested: string[] } {
   const { profile } = handoff;
   if (input.prompt !== undefined) throw new RunError('PROMPT_NOT_ACCEPTED', 'A variant\'s prompt is built from the shared base prompt and its aspect ratio; it cannot be sent. Send basePrompt to edit the shared part.');
   const { values, errors } = profile.resolveFields(input.fields);
@@ -201,7 +218,8 @@ export function createGenerationGroup(root: string, handoff: GenerationHandoff, 
   } catch (error) { throw new RunError('INVALID_PROMPT', `${error instanceof Error ? error.message : String(error)} Shorten the prompt.`); }
   const now = new Date().toISOString(), id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`, dir = join(root, id), notes = profile.notes(values);
   const group: GenerationGroup = { id, templateKey: profile.templateKey, version: profile.version, createdAt: now, updatedAt: now, fields: values, builtPrompt: base.builtPrompt, basePrompt: base.basePrompt, promptEdited: base.promptEdited,
-    ...(handoff.structure ? { structure: handoff.structure(values) } : {}), ...(notes.length ? { notes } : {}), aspectRatios: [...GENERATION_ASPECT_RATIOS], variants };
+    ...(handoff.structure ? { structure: handoff.structure(values) } : {}), ...(notes.length ? { notes } : {}), ...(profile.referenceInstruction && config.referenceRatios !== false ? { ratioStrategy: 'reference' as const } : {}),
+    aspectRatios: [...GENERATION_ASPECT_RATIOS], variants };
   mkdirSync(dir, { recursive: true });
   write(dir, GROUP_FILE, group);
   return { group, requested: wanted.map(generationVariantId) };
@@ -235,25 +253,45 @@ function failureCode(error: unknown): string {
 }
 
 /**
+ * The finished variant another one is made from, in a group that keeps its ratios together by image: the first one that
+ * was itself generated from its prompt (the original, so copies are not made of copies), else the first finished one.
+ */
+function referenceVariant(group: GenerationGroup, variantId: string): GenerationVariant | undefined {
+  const finished = group.variants.filter(variant => variant.id !== variantId && variant.status === 'done' && variant.image);
+  return finished.find(variant => !variant.reference) ?? finished[0];
+}
+
+/**
  * Generates one variant: one OpenAI image request (never resent) with that variant's stored prompt at its exact size,
  * one PNG back. Only this variant of the group is written: its image, or its error with OpenAI's status, message and
  * complete error response. A failure is saved and returned, never thrown, and leaves every other variant as it is.
+ *
+ * In a group that keeps its ratios together by image, a variant that has a finished sibling is made from that sibling's
+ * image (an image edit request: the image, this variant's prompt and `referenceInstruction`); the first one, having no
+ * sibling yet, is generated from its prompt alone, as is any variant asked for with `independent`. Either way it is one
+ * request, and what was sent is recorded on the variant.
  */
-export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig): Promise<GenerationGroup> {
+export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig, options: { referenceInstruction?: string; independent?: boolean } = {}): Promise<GenerationGroup> {
   const dir = groupDir(root, groupId), files = { request: `${variantId}.openai-request.json`, response: `${variantId}.openai-response.json`, error: `${variantId}.provider-error.json` };
   const started = Date.now();
   const sending = findVariant(update(root, groupId, (group) => {
     const variant = findVariant(group, variantId);
     if (variant.status === 'done') throw new RunError('ALREADY_GENERATED', `The ${variant.aspectRatio} variant already has its image.`);
+    const source = group.ratioStrategy === 'reference' && options.referenceInstruction && !options.independent ? referenceVariant(group, variantId) : undefined;
     Object.assign(variant, { status: 'generating', attempts: variant.attempts + 1, startedAt: new Date(started).toISOString(), generator: { provider: 'openai', model: config.model }, requestFile: files.request });
     // What an earlier attempt left behind does not describe this one.
-    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs;
+    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs; delete variant.reference;
+    if (source) variant.reference = { variantId: source.id, aspectRatio: source.aspectRatio, file: source.image!.file, ...(source.image!.sha256 ? { sha256: source.image!.sha256 } : {}), instruction: options.referenceInstruction! };
   }), variantId);
-  const request = { model: config.model, prompt: sending.prompt, size: `${sending.size.width}x${sending.size.height}`, n: 1, output_format: 'png' as const };
-  write(dir, files.request, request);
+  const from = sending.reference;
+  const request = { model: config.model, prompt: from ? `${sending.prompt} ${from.instruction}` : sending.prompt, size: `${sending.size.width}x${sending.size.height}`, n: 1, output_format: 'png' as const };
+  write(dir, files.request, from ? { method: 'images.edit', ...request, image: `<the ${from.aspectRatio} variant's image: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
   let outcome: Partial<GenerationVariant>, requestId: string | undefined, responseSaved = false;
   try {
-    const response = await config.client().images.generate(request);
+    // The finished sibling's image, exactly as it was saved, is the input of an edit request; otherwise plain generation.
+    const response = from
+      ? await config.client().images.edit({ ...request, image: await toFile(readFileSync(join(dir, from.file)), from.file, { type: from.file.endsWith('.png') ? 'image/png' : from.file.endsWith('.webp') ? 'image/webp' : 'image/jpeg' }) })
+      : await config.client().images.generate(request);
     requestId = (response as { _request_id?: string | null })._request_id ?? undefined;
     // The response as returned, with the image bytes left to the image file.
     write(dir, files.response, { ...response, data: (response.data ?? []).map(({ b64_json, ...rest }) => ({ ...rest, b64_json: b64_json ? `<${b64_json.length} base64 characters: the saved image>` : undefined })) });

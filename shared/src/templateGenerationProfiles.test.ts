@@ -7,9 +7,11 @@ import { buildGenerationVariantPrompt, GENERATION_ASPECT_RATIOS, GENERATION_IMAG
 import { GENERATION_PROFILES, generationProfile } from './templateGenerationProfiles.js';
 
 const PROFILES = [templateAGenerationProfile, templateBGenerationProfile, templateCGenerationProfile];
-/** What a profile itself puts into a prompt: its fixed wording, and the prompts of its default creative. */
+/** A complete creative of a template: Templates A and C fill one in by default; Template B's two required inputs are the user's. */
+const sample = (profile: GenerationProfile) => profile === templateBGenerationProfile ? { ...profile.defaults, mainProduct: 'steel espresso machine', sceneStyle: 'dark walnut counter with two cups beside it' } : profile.defaults;
+/** What a profile itself puts into a prompt: its fixed wording, and the prompts of a creative of its own. */
 const wording = (profile: GenerationProfile) => {
-  const base = profile.buildBasePrompt(profile.defaults);
+  const base = profile.buildBasePrompt(sample(profile));
   return [profile.skeleton, profile.consistency, ...Object.values(profile.framing), base, ...GENERATION_ASPECT_RATIOS.map(ratio => buildGenerationVariantPrompt(profile, base, ratio))].join(' ');
 };
 const keys = (profile: GenerationProfile) => profile.fields.map(field => field.key);
@@ -30,25 +32,25 @@ describe('generation profiles: shared mechanics, separate semantics', () => {
     // No fixed sentence of one template is used by another.
     const sentences = PROFILES.map(profile => [profile.skeleton, profile.consistency, ...Object.values(profile.framing), profile.family, profile.sameAcrossRatios, profile.mayDiffer, profile.version]);
     expect(new Set(sentences.flat()).size).toBe(sentences.flat().length);
-    expect(PROFILES.map(profile => profile.version)).toEqual(['template-a-generation-v3', 'template-b-generation-v1', 'template-c-generation-v1']);
+    expect(PROFILES.map(profile => profile.version)).toEqual(['template-a-generation-v3', 'template-b-generation-v3', 'template-c-generation-v1']);
   });
 
   it('1–2. each template has its own field schema and refuses the fields of the others', () => {
     for (const profile of PROFILES) {
-      expect(profile.resolveFields(undefined)).toEqual({ values: profile.defaults, errors: [] });
+      expect(profile.resolveFields(sample(profile))).toEqual({ values: sample(profile), errors: [] });
       expect(Object.keys(profile.defaults)).toEqual(keys(profile));
       for (const other of PROFILES.filter(item => item !== profile)) {
         const foreign = keys(other).filter(key => !keys(profile).includes(key));
         // Most of another template's fields mean nothing here.
-        expect(foreign.length).toBeGreaterThanOrEqual(9);
-        for (const key of foreign) expect(profile.resolveFields({ [key]: 'a plain description' }).errors).toEqual([`Unknown field "${key}".`]);
+        expect(foreign.length).toBeGreaterThanOrEqual(other === templateBGenerationProfile ? 5 : 9);
+        for (const key of foreign) expect(profile.resolveFields({ ...sample(profile), [key]: 'a plain description' }).errors).toEqual([`Unknown field "${key}".`]);
         // A whole creative of another template is never accepted as this template's.
-        expect(profile.resolveFields(other.defaults).errors.length).toBeGreaterThan(0);
+        expect(profile.resolveFields(sample(other)).errors.length).toBeGreaterThan(0);
       }
     }
     // Validation messages name the template whose structure it is.
     expect(PROFILES.map(profile => profile.resolveFields({ [profile.fields[0].key]: '' }).errors[0])).toEqual(['Subject is required: it is part of the Template A structure.',
-      'Hero product / object is required: it is part of the Template B structure.', 'Campaign / creative concept is required: it is part of the Template C structure.']);
+      'Main product is required: it is part of the Template B structure.', 'Campaign / creative concept is required: it is part of the Template C structure.']);
   });
 
   it('3–4. no template\'s prompt carries another template\'s semantics', () => {
@@ -58,7 +60,7 @@ describe('generation profiles: shared mechanics, separate semantics', () => {
     expect(a).not.toMatch(/\bhero\b|\bpedestal\b|\bplatform\b|\bproducts?\b|surrounding objects/i);
     expect(a).not.toMatch(/\bcampaign\b|\bpanels?\b|\bpromo\w*|\bbadge\b|\bheadline\b|\bmodules?\b|\bshowcase\b|the people\b/i);
     // Template B: a hero product. No framed subject, no held object; no campaign modules.
-    expect(b).toMatch(/dominant hero object/);
+    expect(b).toMatch(/clearly dominant hero\./);
     expect(b).not.toMatch(/\bheld\b|\bholds?\b|inner region|outer background|\boval\b|\bportrait\b|\bborder\b|\bsubjects?\b/i);
     expect(b).not.toMatch(/\bcampaign\b|\bpanels?\b|\bpromo\w*|\bbadge\b|\bheadline\b|\bmodules?\b|\bshowcase\b|\bperson\b|the people\b/i);
     // Template C: people and modules. No framed subject with a held object; no hero product.
@@ -70,8 +72,8 @@ describe('generation profiles: shared mechanics, separate semantics', () => {
   it('5. every template builds a variant as its own base + its own consistency + its own framing, within the limits', () => {
     expect(GENERATION_PROMPT_LIMITS).toEqual({ base: 2000, final: 3000 });
     for (const profile of PROFILES) {
-      const base = profile.buildBasePrompt(profile.defaults);
-      expect(resolveGenerationBasePrompt(profile, profile.defaults)).toEqual({ builtPrompt: base, basePrompt: base, promptEdited: false, errors: [] });
+      const base = profile.buildBasePrompt(sample(profile));
+      expect(resolveGenerationBasePrompt(profile, sample(profile))).toEqual({ builtPrompt: base, basePrompt: base, promptEdited: false, errors: [] });
       for (const ratio of GENERATION_ASPECT_RATIOS) expect(buildGenerationVariantPrompt(profile, base, ratio)).toBe(`${base} ${profile.consistency} ${profile.framing[ratio]}`);
       // Even a base prompt at its limit fits: a variant is never cut and never refused for its template's fixed wording.
       const longest = Math.max(...Object.values(profile.framing).map(text => text.length));
@@ -80,9 +82,29 @@ describe('generation profiles: shared mechanics, separate semantics', () => {
     }
   });
 
+  it('simplifies the form of Template B only: Templates A and C keep their fields and their flat form', () => {
+    for (const profile of [templateAGenerationProfile, templateCGenerationProfile]) {
+      // None of the options Template B uses: no plain form, no earlier form to read, no ratio made from another ratio's image.
+      expect([profile.tagline, profile.intro, profile.upgradeFields, profile.referenceInstruction]).toEqual([undefined, undefined, undefined, undefined]);
+      expect(profile.fields.some(field => field.options !== undefined || field.placeholder !== undefined || field.examples !== undefined || field.multiline !== undefined || field.advanced !== undefined)).toBe(false);
+      // An empty request is still a complete creative of theirs: every required field has its default.
+      expect(profile.resolveFields(undefined)).toEqual({ values: profile.defaults, errors: [] });
+      expect(profile.fields.filter(field => field.required).every(field => field.default.length > 0)).toBe(true);
+    }
+    expect(templateBGenerationProfile.resolveFields(undefined).errors).toHaveLength(2);
+    expect([keys(templateAGenerationProfile).length, keys(templateBGenerationProfile).length, keys(templateCGenerationProfile).length]).toEqual([13, 5, 15]);
+    // Template C's form, as it was.
+    expect(templateCGenerationProfile.fields.map(field => [field.key, field.label, field.required])).toEqual([
+      ['concept', 'Campaign / creative concept', true], ['primarySubjects', 'Primary subject(s)', true], ['additionalSubjects', 'Additional human subjects', false], ['relationships', 'Relationships / grouping between people', false],
+      ['repeatedPanels', 'Repeated panels / modules', false], ['productShowcase', 'Product showcase', false], ['promoModule', 'Promo card / module', false], ['logoBadge', 'Logo / badge', false], ['headline', 'Headline text', false],
+      ['decorativeStructures', 'Decorative structures', false], ['background', 'Background / campaign environment', true], ['palette', 'Colour palette', false], ['composition', 'Composition', false], ['lightingStyle', 'Lighting / style', false],
+      ['extraNotes', 'Extra notes', false]]);
+    expect(templateCGenerationProfile.version).toBe('template-c-generation-v1');
+  });
+
   it('warns per template, never across: a creative of one template gets only that template\'s notes', () => {
     expect(templateAGenerationProfile.notes(TEMPLATE_A_DEFAULTS)).toEqual([]);
-    const notes = [templateBGenerationProfile.notes({ ...templateBGenerationProfile.defaults, secondaryObjects: 'two cups touching the hero', support: '' }).join(' '),
+    const notes = [templateBGenerationProfile.notes({ ...sample(templateBGenerationProfile), sceneStyle: 'dark walnut counter with two cups touching the machine' }).join(' '),
       templateCGenerationProfile.notes({ ...templateCGenerationProfile.defaults, repeatedPanels: 'three panels' }).join(' ')];
     expect(notes[0]).toContain('"Separate touching / overlapping independent objects"');
     expect(notes[0]).not.toMatch(/held object|people|panels/i);

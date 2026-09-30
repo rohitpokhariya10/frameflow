@@ -17,6 +17,8 @@ export type GenerationVariant = {
   framing: string; prompt: string;
   generator: { provider: string; model: string; requestId?: string }; attempts: number; durationMs?: number;
   image?: { file: string; mimeType: string; width: number; height: number; bytes: number; sha256?: string };
+  /** Set when the last attempt made this variant from another variant's image: which one, and the sentence added to the prompt. */
+  reference?: { variantId: string; aspectRatio: string; instruction: string };
   error?: { code: string; message: string; status?: number; messages?: { msg: string; type?: string }[]; bodyFile?: string };
   /** Runs made from this image: with Template A's held-object mode, or with the template's own options. */
   decompositions: { runId: string; createdAt: string; separateHeldObject?: boolean; templateOptions?: Record<string, boolean>; targetLayers?: number }[];
@@ -27,11 +29,15 @@ export type GenerationGroup = {
   fields: GenerationFieldValues; builtPrompt: string; basePrompt: string; promptEdited: boolean;
   /** Facts a decomposition's defaults follow, for templates that have any (Template A: border, held object). */
   structure?: Record<string, boolean>; notes?: string[];
+  /** 'reference': after the first finished ratio, the others are made from its image. Absent: every ratio from its prompt alone. */
+  ratioStrategy?: 'reference';
   aspectRatios: string[]; variants: GenerationVariant[];
   legacy?: true;
 };
 export type GeneratorInfo = { templateKey: GenerationTemplateKey; name: string; version: string; family: string; sameAcrossRatios: string; mayDiffer: string; skeleton: string; fields: GenerationField[]; defaults: GenerationFieldValues;
-  aspectRatios: GenerationAspectRatio[]; imageSizes: Record<string, { width: number; height: number }>; consistency: string; framing: Record<string, string>; promptLimits: { base: number; final: number }; generator: { provider: 'openai'; model: string } };
+  aspectRatios: GenerationAspectRatio[]; imageSizes: Record<string, { width: number; height: number }>; consistency: string; framing: Record<string, string>; promptLimits: { base: number; final: number }; generator: { provider: 'openai'; model: string };
+  /** Whether the ratios of a new creative are made from the first finished image rather than each from its prompt alone. */
+  ratioReference?: boolean };
 export type CreationRequest = { fields: GenerationFieldValues; basePrompt?: string; aspectRatios: GenerationAspectRatio[] };
 /** What a "decompose this variant" request carries: only the settings of the group's own template. */
 export type DecomposeRequest = { separateHeldObject: boolean } | { templateOptions: Record<string, boolean> };
@@ -53,8 +59,11 @@ export function generationApiFor(templateKey: GenerationTemplateKey) {
     get: (id: string) => call<GenerationGroup>(`/groups/${encodeURIComponent(id)}`),
     /** A new creative: the fields, the base prompt only when it was edited, and which ratios to generate now. The server builds every variant's prompt and answers at once; the images follow. */
     create: (request: CreationRequest) => call<GenerationGroup>('/groups', json(request)),
-    /** One more variant of an existing creative: a failed one again, or one not generated yet. One paid request. */
-    generateVariant: (groupId: string, variantId: string) => call<GenerationGroup>(`${at(groupId, variantId)}/generate`, { method: 'POST' }),
+    /**
+     * One more variant of an existing creative: a failed one again, or one not generated yet. One paid request.
+     * independent: from its prompt alone, in a creative whose ratios are otherwise made from the first finished image.
+     */
+    generateVariant: (groupId: string, variantId: string, options: { independent?: boolean } = {}) => call<GenerationGroup>(`${at(groupId, variantId)}/generate`, options.independent ? json({ independent: true }) : { method: 'POST' }),
     /** Decomposes that variant's image, and only it, with this template. */
     decompose: (groupId: string, variantId: string, request: DecomposeRequest) => call<ExperimentRun>(`${at(groupId, variantId)}/decompose`, json(request)),
   };
@@ -71,7 +80,7 @@ export const isUnderway = (variant: Pick<GenerationVariant, 'status'>) => varian
 export type GeneratorForm = { values: GenerationFieldValues; editedPrompt: string | null; ratios: GenerationAspectRatio[] };
 export type GeneratorAction = { type: 'field'; key: string; value: string } | { type: 'editPrompt'; value: string | null } | { type: 'ratio'; ratio: GenerationAspectRatio; on: boolean }
   | { type: 'load'; group: Pick<GenerationGroup, 'fields' | 'basePrompt' | 'promptEdited'> };
-type Defaults = Pick<GenerationProfile, 'defaults'>;
+type Defaults = Pick<GenerationProfile, 'defaults' | 'upgradeFields'>;
 export const initialFormFor = (profile: Defaults): GeneratorForm => ({ values: { ...profile.defaults }, editedPrompt: null, ratios: [...GENERATION_ASPECT_RATIOS] });
 export const generatorReducerFor = (profile: Defaults) => (state: GeneratorForm, action: GeneratorAction): GeneratorForm => {
   switch (action.type) {
@@ -80,7 +89,8 @@ export const generatorReducerFor = (profile: Defaults) => (state: GeneratorForm,
     // Kept in the fixed order, so the variants are always asked for as 1:1, 16:9, 4:5.
     case 'ratio': return { ...state, ratios: GENERATION_ASPECT_RATIOS.filter(ratio => ratio === action.ratio ? action.on : state.ratios.includes(ratio)) };
     // Load an earlier creative back into the form (to reproduce or vary it): its fields, and its prompt if that was edited.
-    case 'load': return { ...state, values: { ...profile.defaults, ...action.group.fields }, editedPrompt: action.group.promptEdited ? action.group.basePrompt : null };
+    // A creative stored by an earlier version of the template's form is read through the template's own mapping.
+    case 'load': return { ...state, values: { ...profile.defaults, ...(profile.upgradeFields ? profile.upgradeFields(action.group.fields) : action.group.fields) }, editedPrompt: action.group.promptEdited ? action.group.basePrompt : null };
   }
 };
 /**

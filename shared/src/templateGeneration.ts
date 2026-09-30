@@ -30,7 +30,14 @@ export const generationVariantId = (aspectRatio: string) => aspectRatio.replace(
  */
 export const GENERATION_PROMPT_LIMITS = { base: 2000, final: 3000 } as const;
 
-export type GenerationField = { key: string; label: string; default: string; required: boolean; maxLength: number; help: string };
+/**
+ * One field of a creative. A field with `options` is a closed choice: its value is one of them. The rest is
+ * presentation only and, like `label` and `help`, never reaches a prompt: `placeholder` (what the empty input shows),
+ * `examples` (listed under the field), `multiline` (a text box of a few lines instead of one line) and `advanced` (shown
+ * under "Advanced options", closed until opened).
+ */
+export type GenerationField = { key: string; label: string; default: string; required: boolean; maxLength: number; help: string;
+  options?: readonly { value: string; label: string }[]; placeholder?: string; examples?: readonly string[]; multiline?: boolean; advanced?: boolean };
 export type GenerationFieldValues = Record<string, string>;
 /**
  * Everything one template knows about generating its creatives. A profile is self-contained: its fields, its validation,
@@ -41,6 +48,12 @@ export interface GenerationProfile {
   templateKey: GenerationTemplateKey; name: string; version: string;
   /** The visual family, as shown above the form. */
   family: string;
+  /**
+   * A few words naming the family, and a sentence saying what the template does for the user. A profile with a tagline
+   * gets the plain form: a short heading, one field per row with its help and examples, and the advanced fields folded away.
+   */
+  tagline?: string;
+  intro?: string;
   /** What stays the same across the ratios of a creative of this template, as shown to the user. */
   sameAcrossRatios: string;
   /** Examples of what a description does not pin down, and so can differ between the ratios, as shown to the user. */
@@ -61,6 +74,17 @@ export interface GenerationProfile {
   notes: (values: GenerationFieldValues) => string[];
   /** A few words naming the creative, for history lists. */
   summarize: (values: GenerationFieldValues) => string;
+  /**
+   * Field values stored by an earlier version of this profile, as this version's fields. Used only to put an earlier
+   * creative back into the form; stored records are read as they are and never rewritten.
+   */
+  upgradeFields?: (stored: GenerationFieldValues) => GenerationFieldValues;
+  /**
+   * When given, the ratios of a new creative are kept together by image, not by words alone: the first ratio is generated
+   * from its prompt, and each further ratio is made from that image with its own prompt and this sentence added. A
+   * template without one generates every ratio from its prompt independently.
+   */
+  referenceInstruction?: string;
 }
 
 /** One line, no trailing punctuation. */
@@ -90,9 +114,18 @@ export function resolveGenerationFields(templateName: string, fields: readonly G
   for (const key of Object.keys(given)) if (!fields.some(field => field.key === key)) errors.push(`Unknown field "${key}".`);
   for (const field of fields) {
     const raw = given[field.key];
-    if (raw === undefined) continue;
+    if (raw === undefined) {
+      // A required field that has no default has to be given.
+      if (field.required && !field.default) errors.push(`${field.label} is required: it is part of the ${templateName} structure.`);
+      continue;
+    }
     if (typeof raw !== 'string') { errors.push(`${field.label} must be text.`); continue; }
     const value = tidyFieldValue(raw);
+    if (field.options) {
+      if (!field.options.some(option => option.value === value)) errors.push(`${field.label} must be one of ${field.options.map(option => option.value).join(', ')}.`);
+      else values[field.key] = value;
+      continue;
+    }
     if (field.required && !/\p{L}.*\p{L}/u.test(value)) errors.push(`${field.label} is required: it is part of the ${templateName} structure.`);
     else if (value.length > field.maxLength) errors.push(`${field.label} is ${value.length} characters; at most ${field.maxLength}.`);
     values[field.key] = value;
@@ -133,4 +166,13 @@ export function buildGenerationVariantPrompt(profile: Pick<GenerationProfile, 'c
   const prompt = `${basePrompt.trim()} ${profile.consistency} ${framing}`;
   if (prompt.length > GENERATION_PROMPT_LIMITS.final) throw new Error(`The ${aspectRatio} prompt is ${prompt.length} characters; at most ${GENERATION_PROMPT_LIMITS.final}.`);
   return prompt;
+}
+
+/**
+ * The exact prompt of a variant made from another variant's image: its own prompt, then the template's sentence about
+ * the attached image. The image carries what words cannot pin down; the prompt still says what the creative is.
+ */
+export function buildGenerationReferencePrompt(profile: Pick<GenerationProfile, 'referenceInstruction'>, variantPrompt: string): string {
+  if (!profile.referenceInstruction) throw new Error('This template does not generate a ratio from another ratio\'s image.');
+  return `${variantPrompt} ${profile.referenceInstruction}`;
 }
