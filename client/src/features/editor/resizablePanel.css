@@ -1,0 +1,8 @@
+.resizable-design-panel { position: relative; width: var(--left-panel-width); min-width: 0; min-height: 0; display: flex; }
+.resizable-design-panel > .design-panel { width: 100%; min-width: 0; }
+.left-panel-resizer { position: absolute; z-index: 5; right: -4px; top: 0; bottom: 0; width: 9px; cursor: col-resize; touch-action: none; outline: none; }
+.left-panel-resizer::after { content: ''; position: absolute; width: 3px; top: 8px; bottom: 8px; left: 3px; border-radius: 3px; background: transparent; transition: background-color 140ms; }
+.left-panel-resizer:hover::after, .left-panel-resizer:focus-visible::after, .left-panel-resizing .left-panel-resizer::after { background: var(--color-primary); }
+.left-panel-resizer:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.editor-shell:has(.left-panel-resizing) { cursor: col-resize; user-select: none; }
+@media (max-width: 700px) { .resizable-design-panel { display: none; } }

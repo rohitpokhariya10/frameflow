@@ -19,7 +19,9 @@ export function adaptText(source: DesignVariant, target: CanvasSize, format: Ada
   const elements = source.elements.map((original) => {
     let element: TextElement = { ...original, x: original.x / source.canvas.width * target.width,
       y: original.y / source.canvas.height * target.height, width: clamp(original.width / source.canvas.width * target.width, TEXT_LIMITS.minWidth, safe.width),
-      fontSize: clamp(original.fontSize * scale, TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize) };
+      fontSize: clamp(original.fontSize * scale, TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
+      // A fixed text box (from a template) keeps its proportions on the new canvas.
+      ...(original.height !== undefined ? { height: original.height / source.canvas.height * target.height } : {}), ...(original.minFontSize !== undefined ? { minFontSize: original.minFontSize * scale } : {}) };
     let region = safe;
     if (format !== 'custom' && original.role in slots) {
       const [offset, height] = slots[original.role as keyof typeof slots];

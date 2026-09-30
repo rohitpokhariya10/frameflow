@@ -1,0 +1,15 @@
+Do not merge the held object with the person.
+Do not merge hands or fingers into the held-object layer.
+Do not merge the frame with the background.
+Do not merge the person with the inner background.
+Do not merge separate foreground props into one layer.
+Avoid incomplete object masks.
+Avoid rough or jagged boundaries.
+Avoid cropped object edges.
+Avoid missing thin parts of objects.
+Avoid duplicated pixels across layers.
+Avoid halos or edge artifacts.
+Avoid transparent holes inside solid objects.
+Avoid splitting one object into many unnecessary fragments.
+Avoid combining visually overlapping semantic objects into a single layer.
+Avoid loss of fine details.

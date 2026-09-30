@@ -1,0 +1,17 @@
+import { randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+import type { Request, RequestHandler, Response } from 'express';
+import type { DecompositionConfig } from './config.js';
+import type { DecompositionRepository } from './repository.js';
+import { DecompositionError } from './errors.js';
+const scrypt=promisify(scryptCallback);const cookieName='frameflow_decomposition';
+export async function hashOperatorPassword(password:string){if(password.length<12||password.length>1024)throw new DecompositionError('WEAK_PASSWORD','Use an operator password between 12 and 1024 characters.');const salt=randomBytes(16).toString('hex');const key=await scrypt(password,salt,64) as Buffer;return `scrypt:${salt}:${key.toString('hex')}`;}
+export async function verifyOperatorPassword(password:string, encoded?:string){if(!encoded||password.length>1024)return false;const [scheme,salt,hash]=encoded.split(':');if(scheme!=='scrypt'||!/^[a-f0-9]{32}$/.test(salt??'')||!/^[a-f0-9]{128}$/.test(hash??''))return false;const actual=await scrypt(password,salt,64) as Buffer;return timingSafeEqual(actual,Buffer.from(hash,'hex'));}
+export function sessionTokenHash(token:string){return createHash('sha256').update(token).digest('hex');}
+function readToken(req:Request){const raw=req.headers.cookie?.split(';').map((part)=>part.trim()).find((part)=>part.startsWith(`${cookieName}=`))?.slice(cookieName.length+1);return raw&&/^[a-f0-9]{64}$/.test(raw)?raw:undefined;}
+function loopback(req:Request){return ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'');}
+export function optionalOwner(req:Request, config:DecompositionConfig, repo:DecompositionRepository){if(config.authMode==='development'&&!config.production&&loopback(req))return 'operator';const token=readToken(req);return token?repo.sessionOwner(sessionTokenHash(token)):undefined;}
+export function requireDecompositionAuth(config:DecompositionConfig,repo:DecompositionRepository):RequestHandler{return(req,res,next)=>{const owner=optionalOwner(req,config,repo);if(!owner)return next(new DecompositionError('UNAUTHORIZED','Sign in to use image decomposition.',401));res.locals.decompositionOwner=owner;next();};}
+export function protectMutation(config:DecompositionConfig):RequestHandler{return(req,_res,next)=>{if(!['POST','PUT','PATCH','DELETE'].includes(req.method))return next();const origin=req.headers.origin;if(!origin||!config.allowedOrigins.includes(origin))return next(new DecompositionError('ORIGIN_DENIED','This request must come from the configured FrameFlow origin.',403));if(req.headers['x-frameflow-csrf']!=='1')return next(new DecompositionError('CSRF_REQUIRED','Refresh FrameFlow before retrying this action.',403));next();};}
+export function issueSession(res:Response,config:DecompositionConfig,repo:DecompositionRepository){const token=randomBytes(32).toString('hex');repo.createSession(sessionTokenHash(token),'operator',Date.now()+config.sessionMs);res.cookie(cookieName,token,{httpOnly:true,secure:config.production,sameSite:'strict',maxAge:config.sessionMs,path:'/api/decomposition'});}
+export function revokeSession(req:Request,res:Response,config:DecompositionConfig,repo:DecompositionRepository){const token=readToken(req);if(token)repo.revokeSession(sessionTokenHash(token));res.clearCookie(cookieName,{httpOnly:true,secure:config.production,sameSite:'strict',path:'/api/decomposition'});}

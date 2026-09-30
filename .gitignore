@@ -13,3 +13,15 @@ test-results/
 # Local assessment notes
 /FreshFolks-Assessment-Master-Brief.md
 /IMPLEMENTATION_STATUS.md
+
+# Private decomposition runtime, credentials and live output
+/server/data/
+/data/decomposition/
+/decomposition-live/
+*.sqlite
+*.sqlite-*
+*.db-wal
+*.db-shm
+
+# Local phase 1–5 demo outputs (never commit uploads/generated media)
+/artifacts/decomposition/

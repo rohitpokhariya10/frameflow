@@ -97,3 +97,18 @@ it('collects artwork reachable only through undo, redo or an adaptation source r
   expect([...ids].sort()).toEqual(['preview-only', 'redo-only', 'reference-only', 'source-art', 'target-art', 'undo-only']);
   session.dispose();
 });
+
+it('reopens the version that was open before a reload, only for the same project and only if it still exists', () => {
+  const { session, store, storage, values } = setup();
+  store.dispatch(variantSelected('landscape'));
+  session.flush();
+  const reloaded = bootstrapEditor(() => storage);
+  expect(reloaded.store.getState().ui.activeVariantId).toBe('landscape');
+  values.set('frameflow:active-version:v1', JSON.stringify({ projectId: 'another-project', variantId: 'landscape' }));
+  expect(bootstrapEditor(() => storage).store.getState().ui.activeVariantId).toBe('original');
+  values.set('frameflow:active-version:v1', JSON.stringify({ projectId: 'old-project', variantId: 'deleted-version' }));
+  expect(bootstrapEditor(() => storage).store.getState().ui.activeVariantId).toBe('original');
+  values.set('frameflow:active-version:v1', '{broken');
+  expect(bootstrapEditor(() => storage).store.getState().ui.activeVariantId).toBe('original');
+  session.dispose(); reloaded.dispose();
+});

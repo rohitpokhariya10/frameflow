@@ -1,17 +1,20 @@
 import { expect, test, type Page } from '@playwright/test';
 
 async function expectFrameFits(page: Page) {
-  const viewport = await page.getByTestId('canvas-viewport').boundingBox();
-  const frame = await page.getByTestId('canvas-frame').boundingBox();
-  expect(viewport).not.toBeNull();
-  expect(frame).not.toBeNull();
-  if (!viewport || !frame) throw new Error('Missing canvas viewport or frame');
-  expect(frame.x).toBeGreaterThanOrEqual(viewport.x);
-  expect(frame.y).toBeGreaterThanOrEqual(viewport.y);
-  expect(frame.x + frame.width).toBeLessThanOrEqual(viewport.x + viewport.width + 1);
-  expect(frame.y + frame.height).toBeLessThanOrEqual(viewport.y + viewport.height + 1);
-  expect(Math.abs(frame.x + frame.width / 2 - viewport.x - viewport.width / 2)).toBeLessThan(2);
-  expect(Math.abs(frame.y + frame.height / 2 - viewport.y - viewport.height / 2)).toBeLessThan(2);
+  // Resizing triggers a ResizeObserver and a React render; sample the settled geometry together.
+  await expect(async () => {
+    const viewport = await page.getByTestId('canvas-viewport').boundingBox();
+    const frame = await page.getByTestId('canvas-frame').boundingBox();
+    expect(viewport).not.toBeNull();
+    expect(frame).not.toBeNull();
+    if (!viewport || !frame) throw new Error('Missing canvas viewport or frame');
+    expect(frame.x).toBeGreaterThanOrEqual(viewport.x);
+    expect(frame.y).toBeGreaterThanOrEqual(viewport.y);
+    expect(frame.x + frame.width).toBeLessThanOrEqual(viewport.x + viewport.width + 1);
+    expect(frame.y + frame.height).toBeLessThanOrEqual(viewport.y + viewport.height + 1);
+    expect(Math.abs(frame.x + frame.width / 2 - viewport.x - viewport.width / 2)).toBeLessThan(2);
+    expect(Math.abs(frame.y + frame.height / 2 - viewport.y - viewport.height / 2)).toBeLessThan(2);
+  }).toPass();
 }
 
 test('presets render exact logical dimensions and fit at desktop sizes', async ({ page }, testInfo) => {

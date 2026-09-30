@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { Layer, Rect, Stage, Text } from 'react-konva/lib/ReactKonvaCore';
+import { Layer, Rect, Stage } from 'react-konva/lib/ReactKonvaCore';
 import type { DesignVariant } from '@frameflow/shared';
 import { BackgroundArtwork } from '../canvas/BackgroundArtwork';
-import { textNodeStyle } from '../text/textGeometry';
+import { StaticText } from '../canvas/TextElementNode';
 import { formatLabel } from './variantLabel';
 
 function VariantCard({ variant, label }: { variant: DesignVariant; label: string }) {
@@ -13,13 +13,13 @@ function VariantCard({ variant, label }: { variant: DesignVariant; label: string
     const observer = new ResizeObserver(fit); observer.observe(node); fit(); return () => observer.disconnect();
   }, [variant.canvas]);
   return <section className="variant-card" aria-label={`${label} version`}>
-    <div className="variant-card-heading"><div><strong>{label}</strong><small>{label === 'Source' ? 'Original kept' : 'New composition'}</small></div><span>{formatLabel(variant.canvas)}<br />{variant.canvas.width} × {variant.canvas.height}</span></div>
-    <div className="variant-card-body" ref={holder}><div data-testid={`${label.toLowerCase()}-frame`} style={{ width: variant.canvas.width * zoom, height: variant.canvas.height * zoom }}>
+    <div className="variant-card-heading"><div><strong>{label}</strong><small>{label === 'Source' ? 'Source kept' : 'New composition'}</small></div><span>{formatLabel(variant.canvas)}<br />{variant.canvas.width} × {variant.canvas.height}</span></div>
+    <div className="variant-card-body" ref={holder}><div data-testid={`${label.toLowerCase()}-frame`} className={variant.canvas.transparent ? 'is-transparent-canvas' : undefined} style={{ width: variant.canvas.width * zoom, height: variant.canvas.height * zoom }}>
       <Stage width={variant.canvas.width * zoom} height={variant.canvas.height * zoom} scaleX={zoom} scaleY={zoom} listening={false}>
         <Layer listening={false} clipWidth={variant.canvas.width} clipHeight={variant.canvas.height}>
-          <Rect width={variant.canvas.width} height={variant.canvas.height} fill={variant.canvas.backgroundColor} />
+          {!variant.canvas.transparent && <Rect width={variant.canvas.width} height={variant.canvas.height} fill={variant.canvas.backgroundColor} />}
           {variant.background && <BackgroundArtwork background={variant.background} canvas={variant.canvas} onError={setError} />}
-          {variant.elements.map((element) => <Text key={element.id} name="comparison-text" {...textNodeStyle(element)} x={element.x} y={element.y} listening={false} />)}
+          {variant.elements.map((element) => <StaticText key={element.id} name="comparison-text" element={element} />)}
         </Layer>
       </Stage>
     </div></div>

@@ -1,4 +1,4 @@
-import { TEXT_FONTS, TEXT_LIMITS, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
+import { CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, LAYER_LIMITS, TEMPLATE_LIMITS, TEXT_FONTS, TEXT_LIMITS, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
 
 type Check = (value: unknown) => boolean;
 const string: Check = (v) => typeof v === 'string' && v.length <= 10_000;
@@ -15,23 +15,46 @@ const object = (required: Record<string, Check>, optional: Record<string, Check>
   return Object.entries(required).every(([key, check]) => check(record[key]))
     && Object.entries(record).every(([key, value]) => Object.hasOwn(required, key) || (Object.hasOwn(optional, key) && optional[key](value)));
 };
+const size = range(LAYER_LIMITS.minSide, LAYER_LIMITS.maxSide);
+const zIndex: Check = (v) => Number.isSafeInteger(v);
+const focalPoint = object({ x: range(0, 1), y: range(0, 1) });
+// Optional on text and layers alike: what an element opened from a template keeps of the shared CanvasElement model.
+// Every one is absent on documents saved before they existed, which stay valid as they are.
+const editable = object(Object.fromEntries(EDITABLE_PROPERTIES.map((property) => [property, choice(true, false)])));
 const text = object({
-  id, type: choice('text'), role: choice('eyebrow', 'title', 'date', 'venue', 'body', 'custom'),
+  id, type: choice('text'), role: choice('eyebrow', 'title', 'date', 'venue', 'body', 'custom', ...CANVAS_TEXT_ROLES),
   text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters,
   x: finite, y: finite, width: range(TEXT_LIMITS.minWidth, TEXT_LIMITS.maxWidth),
   fontFamily: choice(...TEXT_FONTS), fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
   fontWeight: choice(400, 600, 700), fill: color, align: choice('left', 'center', 'right'),
   lineHeight: (v) => finite(v) && (v as number) > 0, letterSpacing: finite,
+}, {
+  name: string, rotation: range(-360, 360), zIndex, visible: choice(true, false), height: size, verticalAlign: choice('top', 'middle', 'bottom'),
+  maxLines: (v) => Number.isSafeInteger(v) && (v as number) >= 1 && (v as number) <= TEMPLATE_LIMITS.maxLines, overflow: choice('shrink', 'ellipsis'),
+  minFontSize: (v) => finite(v) && (v as number) > 0 && (v as number) <= TEXT_LIMITS.maxFontSize,
+  box: object({ fill: (v) => v === null || color(v), radius: range(0, LAYER_LIMITS.maxSide) }), editable,
 });
+const layerBase = { id, name: string, x: finite, y: finite, width: size, height: size, rotation: range(-360, 360), opacity: range(0, 1), visible: choice(true, false), locked: choice(true, false) };
+const layerSource = object({ jobId: id, layerId: id, kind: choice('image', 'text', 'shape') });
+const layerShared = { source: layerSource, zIndex, role: choice(...CANVAS_IMAGE_ROLES, ...CANVAS_SHAPE_ROLES), editable };
+const imageLayer = object({ ...layerBase, type: choice('image') }, { ...layerShared, assetId: id, fit: choice('cover', 'contain'), focalPoint, radius: range(0, LAYER_LIMITS.maxSide),
+  textSuggestion: object({ text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters, confidence: choice('none', 'low') }, { fill: color, fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize), fontWeight: choice(400, 600, 700) }) });
+const shapeLayer = object({ ...layerBase, type: choice('shape'), shapeType: choice('rectangle', 'rounded-rectangle', 'ellipse', 'circle'), fill: color, radius: range(0, LAYER_LIMITS.maxSide) }, { ...layerShared,
+  gradient: object({ from: color, to: color, angle: range(-360, 360) }), stroke: object({ color, width: range(0, 1000) }) });
+const layer: Check = (v) => imageLayer(v) || shapeLayer(v);
 const uniqueIds: Check = (v) => Array.isArray(v) && new Set(v.map((item: { id: string }) => item.id)).size === v.length;
-const canvas: Check = (v) => object({ width: finite, height: finite, backgroundColor: color })(v)
+const canvas: Check = (v) => object({ width: finite, height: finite, backgroundColor: color }, { transparent: choice(true, false) })(v)
   && validateCanvasSize((v as { width: number }).width, (v as { height: number }).height).valid;
 const variant = object({
   id, name: string, revision: (v) => Number.isSafeInteger(v) && (v as number) >= 0, canvas,
   elements: (v) => array(text, TEXT_LIMITS.maxElements)(v) && uniqueIds(v),
 }, {
-  background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint: object({ x: range(0, 1), y: range(0, 1) }) }),
+  background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint }),
+  template: object({ templateId: id, templateVersion: (v) => Number.isSafeInteger(v) && (v as number) >= 1 }, { creativeId: id,
+    background: object({ id, name: string, fit: choice('cover', 'contain'), focalPoint, editable }) }),
   sourceVariantId: id,
+  decomposition: object({ jobId: id, mode: choice('blank', 'original') }),
+  layers: (v) => array(layer, LAYER_LIMITS.maxLayers)(v) && uniqueIds(v),
   generation: object({ mode: choice('live', 'example'), promptUsed: string, requestedAspectRatio: string,
     returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { provider: choice('gemini', 'cloudflare'), model: string, sourceAssetId: id }),
 });
@@ -40,5 +63,11 @@ const project = object({
   variants: (v) => Array.isArray(v) && v.length > 0 && array(variant, 30)(v) && uniqueIds(v),
 }, { originalPrompt: string, styleBrief: object({ theme: string, palette: array(string, 50), motifs: array(string, 50), mood: string }) });
 
+/** A single editable layer, with the same rules as persisted documents. */
+export function isDesignLayer(value: unknown): boolean { return layer(value); }
+/** A whole design version, with the same rules as persisted documents. */
+export function isDesignVariant(value: unknown): boolean { return variant(value); }
+/** A single text element, with the same rules as persisted documents. */
+export function isTextElement(value: unknown): boolean { return text(value); }
 /** Version 1 only. Unknown fields are rejected so runtime/UI data cannot leak into JSON. */
 export function isProjectDocument(value: unknown): value is ProjectDocument { return project(value); }

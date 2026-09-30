@@ -64,7 +64,7 @@ test('long venue fits with actual fonts, truthful warning, intact content, and i
   const control = await page.getByRole('button', { name: 'Auto Layout', exact: true }).boundingBox();
   expect(control!.y + control!.height).toBeLessThan(page.viewportSize()!.height);
   await page.getByRole('button', { name: 'Auto Layout', exact: true }).click();
-  await expect(page.getByText('This text already fits.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Text already fits.', { exact: true })).toBeVisible();
   expect(await nodeState(page)).toEqual(fitted);
   // Existing width handles remain functional after an atomic fit.
   await setNumber(page, 'Text box width', 600);
@@ -82,7 +82,7 @@ test('impossible explicit paragraphs retain original geometry and show unresolve
   await page.getByLabel('Text content').fill('Line one 👩🏽‍🎨\nLine two\n'.repeat(70));
   const before = await nodeState(page);
   await page.getByRole('button', { name: 'Auto Layout', exact: true }).click();
-  await expect(page.getByText('This text cannot fit at a readable size. Try a larger canvas or shorter copy.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Couldn’t fit this text safely. Try a wider text box, a smaller font or a larger canvas.', { exact: true })).toBeVisible();
   expect(await nodeState(page)).toEqual(before);
   await expectFeedbackInView(page, '.layout-feedback');
   await page.screenshot({ path: testInfo.outputPath('auto-layout-unresolved.png'), fullPage: true });
@@ -114,7 +114,7 @@ test('real renderer widens narrow graphemes, preserves tokens/newlines and reduc
   expect(reduced.fontSize).toBeLessThan(120);
   await expectInside(page);
   await page.getByRole('button', { name: 'Auto Layout', exact: true }).click();
-  await expect(page.getByText('This text already fits.')).toBeVisible();
+  await expect(page.getByText('Text already fits.')).toBeVisible();
   expect(await nodeState(page)).toEqual(reduced);
   // A slightly larger size cannot fit even after moving to the top of the safe region.
   await setNumber(page, 'Font size', reduced.fontSize + 0.02);

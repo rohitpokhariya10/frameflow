@@ -6,8 +6,9 @@ import { historyReducer, initialHistory, undo, redo } from './history';
 import { saveSlice } from './saveSlice';
 import { aiSlice, adaptationIsCurrent } from './aiSlice';
 import { projectReset } from './projectReset';
+import { decompositionSlice } from './decompositionSlice';
 
-const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer });
+const combined = combineReducers({ editor: historyReducer, ui: uiSlice.reducer, save: saveSlice.reducer, ai: aiSlice.reducer, decomposition: decompositionSlice.reducer });
 function reducer(state: ReturnType<typeof combined> | undefined, action: UnknownAction) {
   if (projectReset.match(action)) return { ...freshState(action.payload), save: { ...saveSlice.getInitialState(), status: 'saved' as const } };
   if (state && generatedDesignApplied.match(action) && action.payload.preview.sourceVersion !== state.editor.version) return state;
@@ -23,14 +24,14 @@ function reducer(state: ReturnType<typeof combined> | undefined, action: Unknown
   }
   if ((undo.match(action) || redo.match(action)) && next.ui.selectedElementId) {
     const variant = next.editor.document.variants.find((item) => item.id === next.ui.activeVariantId) ?? next.editor.document.variants[0];
-    if (!variant.elements.some((item) => item.id === next.ui.selectedElementId)) {
+    if (!variant.elements.some((item) => item.id === next.ui.selectedElementId) && !variant.layers?.some((item) => item.id === next.ui.selectedElementId)) {
       return { ...next, ui: { ...next.ui, selectedElementId: null } };
     }
   }
   return next;
 }
 
-const freshState = (document: ReturnType<typeof createDocument>) => ({ editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState() });
+const freshState = (document: ReturnType<typeof createDocument>) => ({ editor: initialHistory(document), ui: { ...uiSlice.getInitialState(), activeVariantId: document.variants[0].id }, save: saveSlice.getInitialState(), ai: aiSlice.getInitialState(), decomposition: decompositionSlice.getInitialState() });
 export const createEditorStore = (document = createDocument(crypto.randomUUID(), new Date().toISOString())) => configureStore({
   reducer,
   preloadedState: freshState(document),

@@ -18,7 +18,7 @@ export function TextPanel() {
     </div>
     {atLimit && <p className="field-error" role="status">This frame has reached its {TEXT_LIMITS.maxElements}-element limit.</p>}
     <div className="section-label elements-heading"><h3>Elements</h3><span>{elements.length}</span></div>
-    {elements.length === 0 ? <p className="elements-empty">Your text will appear here.<br />Select any element to make it yours.</p> :
+    {elements.length === 0 ? <p className="elements-empty">Add text above, then select it here to edit.</p> :
       <ul className="text-elements" aria-label="Text elements" data-selection-owner>
         {elements.map((element) => <li key={element.id}>
           <button aria-pressed={element.id === selectedId} onClick={() => actions.select(element.id)} title={element.text || 'Empty text'}>
@@ -26,6 +26,6 @@ export function TextPanel() {
           </button>
         </li>)}
       </ul>}
-    <p className="text-panel-hint">Select on the canvas or in this list.<br />Drag to move. Side handles reflow text.</p>
+    <p className="text-panel-hint">Select text to open its properties.<br />Drag to move. Use side handles to resize.</p>
   </div>;
 }
