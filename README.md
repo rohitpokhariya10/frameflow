@@ -1,14 +1,16 @@
 # FrameFlow for FreshFolk
 
-A focused design editor for creating event artwork, fitting exact text, and adapting a composition to a new format.
+A browser-based design editor for event artwork, reusable templates, format adaptation, and AI-assisted image decomposition.
 
-**[Live Demo](https://frameflow-h7fa.onrender.com)** · **[Source Code](https://github.com/rohitpokhariya10/frameflow)**
+**[Live Demo](https://frameflow-h7fa.onrender.com/)** · **[Source Code](https://github.com/rohitpokhariya10/frameflow)**
 
 ## Overview
 
-FrameFlow is a Canva-style editor built for the FreshFolks assessment. Choose a canvas, compose editable text, generate decorative artwork, and turn a portrait design into a related landscape composition while keeping both versions.
+FrameFlow began as a Canva-style editor for the FreshFolks assessment. The current code includes the original artwork/text editor, a local reusable-template studio, an OpenAI + Seedream experiment with Templates A/B/C, and an optional legacy Image to layers workflow. Choose a canvas, compose text, generate artwork, or import separated layers, then export the active design as a PNG.
 
-The central decision is simple: **AI owns the artwork; FrameFlow owns the words.** Names, dates, venues, and headings remain editable text layers. Auto Layout measures and fits those layers locally, while reference-based AI adaptation recomposes the artwork around them.
+This README describes the repository code. The linked deployment and historical verification notes below do not establish that every newer feature is enabled on the live site.
+
+For the core AI Generate and Adapt tools, the central decision is simple: **AI owns the artwork; FrameFlow owns the words.** Names, dates, venues, and headings remain editable text layers. Auto Layout measures and fits those layers locally, while reference-based AI adaptation recomposes the artwork around them.
 
 ## Key Features
 
@@ -24,8 +26,85 @@ The central decision is simple: **AI owns the artwork; FrameFlow owns the words.
 | Local recovery and history | Save the project and artwork in the browser; undo/redo meaningful edits |
 | PNG export | Download the active design at its exact logical dimensions, without editor controls |
 | Editable design title | Rename inline, cancel drafts, undo/redo renames, and restore the name after refresh |
+| Reusable templates | Author text, image slots, shapes, and backgrounds; save versions and create content-filled creatives locally |
+| Layer editing | Inspect imported layers; move, resize, rotate, change opacity, hide, lock, and reorder |
+| Template A/B/C experiments | Generate source creatives in several ratios, plan decomposition with OpenAI, and separate images through Seedream on fal.ai |
+| Image to layers (optional) | Upload, review, refine, and import detected layers through a server/worker pipeline; hidden by default |
 
 Custom canvases accept integer sides from **256–4096 px**, with a maximum area of **12 million pixels**. Side handles reflow text without stretching glyphs; the font-size control changes glyph size. Inter and Lora are bundled locally with their [font licenses](client/public/licenses/).
+
+## How to Use the Features
+
+### 1. Create and edit a design
+
+1. Open **Design** and choose Poster, Square, Landscape, Story, or a custom size. Set the canvas background as needed.
+2. Open **Text**, then add a heading, subheading, or body text. Select it on the canvas or in the list.
+3. Use **Properties** to change wording, font, size, colour, alignment, and position. Drag to move; side handles change text-box width and reflow the words.
+4. Select an overflowing text box and click **Auto Layout** to fit that box within the canvas. Review the result; it does not resolve collisions with other elements.
+5. Rename the design in the top bar. Use Undo/Redo for document changes, and **Export PNG** to download the active version at its canvas dimensions.
+6. Wait for **Saved on this device** before closing. **New design** asks before resetting the current editor project.
+
+### 2. Generate artwork and adapt its format
+
+Requires the core AI provider setup in [Running Locally](#running-locally).
+
+1. Open **AI → Generate**. Describe the visual style, such as “ivory florals, gold borders, quiet space for a wedding heading”.
+2. Expand **Exact event wording** and enter the title, date, venue, and other supported copy. These fields become editable text rather than instructions to draw lettering.
+3. Click **Generate design**, review the composition, then **Use this design**. Applying replaces the active version's artwork and text; Undo restores it.
+4. With artwork in the design, choose **Adapt format**, select a target such as Landscape, and click **Adapt artwork**. Reference adaptation requires Cloudflare.
+5. Compare Source and Target, then click **Use this version**. The source remains available in the version selector; the target's text can be edited independently.
+
+### 3. Create a reusable template (no AI required)
+
+1. Click **Create Own Template** at the bottom right. Give the template a name and choose its supported aspect ratios.
+2. Add text, image slots, shapes, and a background. Position and resize them, set their styles and order, and upload slot images where needed.
+3. For each element, choose which properties a creative may edit—for example wording, image, or colour. Leave position and size locked when every creative should keep the layout.
+4. Preview the supported ratios, then click **Save Template**. Ratios use the same normalized layout; they do not automatically rearrange the design.
+5. In **Existing templates**, click **Use Template**. Name the creative, choose its ratio, and fill in the permitted content. Click **Save Creative** to keep it in the local library.
+6. Click **Open in editor** to add an independent design version, then **Export PNG** in the main editor. Main-editor changes do not save back to the template or creative.
+
+Use **Edit Template** to change a saved structure. Saving creates a new version; existing creatives retain their earlier version until explicitly updated. **Duplicate** creates a separate template. This studio saves in the current browser, requires no provider keys, and has no template-editor Undo or direct PNG export.
+
+### 4. Separate an image with OpenAI + Seedream
+
+Enable the [layerize experiment](#openai--seedream-experiment-setup) first. The **OpenAI + Seedream test** launcher is visible even when its backend routes are disabled.
+
+| Recipe | Suitable source image |
+| --- | --- |
+| Template A | A framed portrait of one person or animal, optionally holding an object |
+| Template B | A dominant product, food item, furniture item, or other non-human hero with optional supports and props |
+| Template C | A designed human-centric campaign with people, repeated panels, product showcases, or promotional modules |
+
+1. Click **OpenAI + Seedream test** and select the matching **Template**.
+2. Choose a PNG, JPEG, or WebP. For A, choose whether to **Separate held object from subject**; for B/C, use the recipe's own grouping options.
+3. Leave **Target layers** empty for the natural result, or enter a permitted count. The count includes the base image; reducing it merges layers rather than discovering more objects.
+4. Run **Generate new prompt (OpenAI)** where shown. OpenAI plans the layers and fal.ai Seedream performs the separation. B/C use image-specific prompts; A can save and reuse a representative prompt.
+5. Inspect the run's source, plan, outputs, and warnings. When done, click **Open in editor** and edit the imported layers through **Properties** and **Layers**.
+6. Use the saved-run selector to revisit results. Where available, **Resume from saved request** or **Re-render from saved results** reuses existing provider work; a button marked as a paid retry submits a new request.
+
+Separated lettering can remain raster artwork. Do not assume every image's words become editable text or that hidden content is reconstructed exactly. This experimental flow is separate from the core Generate tool's exact-text guarantee.
+
+### 5. Generate test images for Templates A/B/C
+
+1. In **OpenAI + Seedream test**, choose **Create Template A**, **Create Template B**, or **Create Template C**.
+2. Fill that recipe's creative fields, review the shared prompt, and select the ratios to generate: **1:1**, **16:9**, and/or **4:5**.
+3. Start generation and inspect each ratio card. Each generated variant is a provider operation; failed variants can be generated again individually.
+4. Set the decomposition options on a completed card, then click **Decompose … image** to send it into the matching recipe.
+5. Review the resulting run and use **Open in editor** to continue editing.
+
+Template B normally generates the first selected ratio from text and uses that image as a reference for the remaining ratios. Set `TEMPLATE_RATIO_REFERENCE=off` to generate every B ratio independently. A/C generate each ratio independently. Consistency across generated images is best effort. These AI recipes are separate from the reusable templates created in **Create Own Template**.
+
+### 6. Use the optional Image to layers workflow
+
+Enable both its backend and frontend entry points using the [legacy setup](#optional-legacy-image-to-layers-setup).
+
+1. Click **Image to layers**, or open **AI → Decompose**. Sign in with the operator password if prompted.
+2. Choose, drop, or paste an image, or use the current design's artwork. Optionally list things to separate, then click **Separate layers**.
+3. Follow the review/refinement steps shown for the job. Inspect proposed layers and adjust masks or edges where requested.
+4. At the ready screen, choose **Open on blank canvas** for the separated layers alone, or **Keep original background** to place them over the original image. In the latter mode, moving a layer can reveal the original pixels below it.
+5. Use **Detected layers** in the editor to add deferred detections. Where offered, **Make text editable** converts a detected text layer for wording changes; check its appearance afterward.
+
+Recent designs lets you reopen jobs. The API and separate worker must remain running for background processing.
 
 ## FreshFolks Requirement Mapping
 
@@ -42,13 +121,13 @@ Custom canvases accept integer sides from **256–4096 px**, with a maximum area
 | Share a live application | Single Render service serving the editor and API | Deployed; hosted browser regression verified |
 | Provide source and approach | This repository, architecture diagrams, and engineering notes | Available |
 
-The delivered AI integration uses Cloudflare; Gemini remains an alternate generation adapter, not the production provider.
+The original artwork integration uses Cloudflare, with Gemini as an explicitly selected alternate generation adapter. The separate layerize experiment uses OpenAI and fal.ai; the legacy decomposition pipeline uses fal.ai.
 
 ## Quick Reviewer Demo
 
 Allow roughly 1–2 minutes of interaction, plus provider generation time. AI latency and account allocation vary.
 
-1. Open the **[live app](https://frameflow-h7fa.onrender.com)** and choose **Poster** in Design.
+1. Open the **[live app](https://frameflow-h7fa.onrender.com/)** and choose **Poster** in Design.
 2. Click **Add heading**. In the inspector, replace its content with “The Grand Royal Wedding Palace, Connaught Place, New Delhi, India”. Set **X to 950** and **Y to 1250** to demonstrate overflow.
 3. Click **Auto Layout**. Observe the fitted text, then try Undo and Redo.
 4. Open **AI → Generate**. Use an artwork direction such as “Ivory florals, warm gold ornamentation, soft romantic lighting”. In the expanded **Exact event wording** section, enter a title, date, and venue; these become the generated design's editable text.
@@ -74,8 +153,8 @@ flowchart TD
 The repository uses three npm workspaces:
 
 - **Client:** React controls, Redux document/history, and Konva rendering. Canvas positions are stored in logical pixels; zoom changes only the view.
-- **Server:** Express validates requests, bounds provider work, and keeps credentials server-side. Small provider adapters translate the shared application contract into Cloudflare or Gemini requests.
-- **Shared:** TypeScript document/API contracts and handwritten runtime validators used across the application.
+- **Server:** Express validates requests and keeps credentials server-side. Core artwork adapters call Cloudflare or Gemini. The layerize experiment coordinates OpenAI and fal.ai; the legacy decomposition API queues SQLite-backed work for a separate worker.
+- **Shared:** TypeScript document/API contracts, handwritten runtime validators, generation profiles, and pure reusable-template geometry/versioning functions.
 
 ```mermaid
 flowchart TD
@@ -93,11 +172,11 @@ flowchart TD
     Browser --> IDB[IndexedDB - artwork Blobs]
 ```
 
-The frontend executes in the browser; Render serves its built assets and the API from one origin. There is no project database on the server.
+The frontend executes in the browser; Render serves its built assets and the API from one origin. Main-editor projects and reusable templates remain browser-local. The optional legacy decomposition service uses SQLite and filesystem artifacts under `DECOMP_DATA_DIR`; the layerize experiment stores runs and generation groups in repository-level `artifacts/decomposition/`.
 
 Redux stores serializable documents, asset IDs, UI metadata, and bounded history snapshots. Image Blobs, decoded images, canvas/DOM nodes, object URLs, and request controllers stay outside Redux. This keeps saving and undo/redo predictable without duplicating image data in every snapshot.
 
-## Why Artwork and Text Are Separate
+## Why Core Artwork and Text Are Separate
 
 Image models can create visual compositions, but exact event copy needs a stronger guarantee than generated lettering. FrameFlow asks the model for decorative artwork and renders **names, dates, venues, headings, and supporting wording** itself as TextElements.
 
@@ -256,7 +335,10 @@ server/
     index.ts        Server startup and built-client static serving
     providers/      Cloudflare and Gemini adapters
     services/       AI orchestration and image validation
-shared/src/         Document/API types, limits, and runtime contracts
+    decomposition/  Legacy queue/worker, SQLite, providers, layerize recipes and generators
+shared/src/         Document/API types, limits, template generation and runtime contracts
+  designTemplates/  Local template schema, normalized geometry, versions and creatives
+artifacts/          Generated experiment runs and images (local runtime output)
 tests/e2e/          Browser regression flows at both desktop sizes
 docs/               Engineering notes and controlled live evidence
 ```
@@ -269,7 +351,10 @@ docs/               Engineering notes and controlled live evidence
 | `POST /api/ai/generate` | Validate a visual brief, target size, style, and text-space region; return normalized artwork metadata and image data |
 | `POST /api/ai/adapt` | Validate a bounded source reference and target intent; return recomposed artwork for the new variant |
 
-AI responses include a request ID. Errors use safe codes and messages. The backend does not store projects or accept arbitrary remote asset URLs to fetch.
+| `/api/decomposition/*` | Legacy capabilities, operator session, uploads, jobs, reviews, and artifacts; requires decomposition configuration and a worker |
+| `/api/layerize-experiment/*` | Template recipes, runs, generated-image groups, resume/retry, and output downloads; mounted only with `LAYERIZE_EXPERIMENT=1` |
+
+Core AI responses include a request ID; errors use safe codes and messages. The main editor's project document is browser-local, while decomposition jobs and experiment artifacts are stored server-side.
 
 ## Running Locally
 
@@ -315,10 +400,63 @@ Editing, Auto Layout, export, and mocked tests work without AI credentials. Clou
 | `npm run build` | Build shared code, the Vite client, and Express server |
 | `npm start` | Serve the built client and API through Express; build first |
 | `npm run test:e2e` | Run the development browser suite, starting servers as needed |
+| `npm run dev:decomposition` | Start client, API, and legacy worker; enables legacy frontend entry points |
+| `npm run decomp:setup` | Set up the legacy data directory and operator credentials |
+| `npm run decomp:verify` | Run focused legacy source/analysis/candidate/provider tests |
+| `npm run test:e2e:decomposition` | Run the dedicated decomposition browser suite |
+| `npm run decomp:backup -- /absolute/path/to/backup` | Back up legacy SQLite and artifacts; stop the API and worker first |
+
+### OpenAI + Seedream experiment setup
+
+Add these values to `server/.env`, using your own keys, then run `npm run dev` (or restart it):
+
+```dotenv
+LAYERIZE_EXPERIMENT=1
+OPENAI_API_KEY=your_openai_api_key
+FAL_KEY=your_fal_key
+```
+
+This route runs its work inside the API process; it does **not** require the legacy worker or `DECOMPOSITION_ENABLED=true`. Its configured model defaults live in [aiModels.ts](server/src/decomposition/aiModels.ts): `gpt-5-mini` for planning and `gpt-image-2` for source-image generation. Override them with `OPENAI_DECOMPOSITION_MODEL` and `OPENAI_IMAGE_MODEL` if needed. These are code defaults, not a guarantee of model access for an account. `LAYERIZE_FIT_CHECK=1` enables an additional template-fit check before planning; it is off by default.
+
+Run outputs go to `artifacts/decomposition/layerize-experiment/`; generator groups go to `artifacts/decomposition/template-{a,b,c}-generations/`. These paths are independent of the legacy `DECOMP_DATA_DIR`.
+
+### Optional legacy Image to layers setup
+
+For local development, add this separate configuration to `server/.env`:
+
+```dotenv
+DECOMPOSITION_ENABLED=true
+DECOMP_PROVIDER_MODE=live
+DECOMP_AUTH_MODE=development
+DECOMP_DATA_DIR=./data/decomposition
+FAL_KEY=your_fal_key
+```
+
+Then start all three processes:
+
+```sh
+npm run dev:decomposition
+```
+
+That command sets `VITE_LEGACY_IMAGE_TO_LAYERS=1` for the client and starts the worker. `npm run dev` alone does neither. If starting processes separately, enable the flag in `client/.env.local` and run `npm run worker:dev -w @frameflow/server` alongside the API and client. A Vite flag must be set at build time for a production client; placing it only in `server/.env` does not enable the UI.
+
+For operator login, set `DECOMP_AUTH_MODE=local-operator` and run `npm run decomp:setup`. Relative data paths resolve from `server/`; API and worker must use the same directory. `DECOMP_PROVIDER_MODE=mock` is a development-only fixture mode, not a way to process arbitrary uploads without provider credentials.
+
+### Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Core AI says it is not configured | Match `AI_PROVIDER` to its credentials and restart the API. `/api/health` checks credential presence, not provider quota. |
+| Experiment launcher opens but API returns 404 | Set exactly `LAYERIZE_EXPERIMENT=1` in the server environment and restart. |
+| Image to layers button is missing | Enable `VITE_LEGACY_IMAGE_TO_LAYERS=1` in the client environment, then restart Vite or rebuild. |
+| Legacy job remains queued | Run the worker with the same settings and `DECOMP_DATA_DIR` as the API. |
+| Layerize request is denied behind a proxy | Set `CLIENT_ORIGIN` to the actual frontend origin. |
+| Generation or decomposition fails | Inspect the displayed error and provider access/quota; Cloudflare, Gemini, OpenAI, and fal keys serve different flows. |
+| Design or template is absent in another browser | Storage is local to a browser origin; localhost and 127.0.0.1 have separate libraries. |
 
 ## Production Deployment
 
-**[FrameFlow on Render](https://frameflow-h7fa.onrender.com)** uses a **single Render Web Service**. Express serves the built Vite frontend and `/api` from the same origin.
+**[FrameFlow on Render](https://frameflow-h7fa.onrender.com/)** uses a **single Render Web Service**. Express serves the built Vite frontend and `/api` from the same origin.
 
 ```mermaid
 flowchart TD
@@ -352,9 +490,15 @@ TRUST_PROXY_HOPS=1
 
 `CLIENT_ORIGIN` is the **allowed browser/frontend origin**. Here it equals the Render origin because the frontend and API share that origin. `TRUST_PROXY_HOPS=1` accounts for the Render proxy; direct local access uses `0`. Let Render supply its listening port.
 
+For the legacy pipeline in production, use a persistent `DECOMP_DATA_DIR`, `DECOMP_AUTH_MODE=local-operator`, configured operator credentials, and a separate built worker (`npm run worker -w @frameflow/server`) sharing that storage. Production rejects development authentication and mock mode. A default single web-service deployment does not start this worker.
+
+The layerize experiment can also be enabled in production, but it has **no operator login**. Its origin checks are not authentication; visitors able to use the app can trigger paid provider work. Keep it disabled on an unrestricted deployment or protect access externally, and persist its artifact directories if run history must survive redeploys.
+
 ## Verification and Testing
 
-The latest full verification, recorded on **22 September 2026** for the **New design/reset implementation**, produced:
+Run the commands above against the current checkout. This documentation update is based on source inspection; it does not claim a new full test run or new live-provider verification.
+
+The following historical core-editor verification was recorded on **22 September 2026** for the **New design/reset implementation**, produced:
 
 | Check | Verified result |
 | --- | --- |
@@ -381,7 +525,7 @@ Use `PLAYWRIGHT_CHANNEL=chrome` with either test command when using installed Ch
 
 **Automated provider operations are mocked.** The built production count is against the locally built app. The preceding AI release (`02c8850`) also passed a separate full run of **124 tests** against the deployed Render service, with every AI provider call mocked. The hosted page and `/api/health` returned HTTP 200; health reported `provider=cloudflare`, `aiConfigured=true`, and `aiAvailable=true`. Final screenshot review covered both desktop sizes, including long document titles, inspector/Auto Layout, AI forms, loading/error states, composed comparison and version switching.
 
-## Real AI Verification
+## Historical Real AI Verification
 
 The final release check exercised the deployed Render UI and Cloudflare
 `@cf/black-forest-labs/flux-2-klein-4b` with **FitnessHUB Opening**:
@@ -421,7 +565,7 @@ retain detailed earlier milestone checks.
 - **Explicit API origins:** CORS uses an exact allowlist of local development origins plus `CLIENT_ORIGIN`, without wildcard credential access. CORS is not user authentication.
 - **Runtime validation:** Shared handwritten validators check API inputs; saved documents are validated on recovery. Request sizes, dimensions, style fields, and image metadata are bounded.
 - **Image checks:** The backend checks image signatures, decoded byte sizes, and dimensions; the browser fully decodes artwork before storage/preview. Generation JSON is limited to 24 KiB and adaptation JSON to 3 MiB.
-- **Bounded provider work:** Generation and adaptation share three requests per IP per minute and a maximum of two active requests per server process, with timeout/abort handling.
+- **Bounded core provider work:** Core artwork generation and adaptation share three requests per IP per minute and a maximum of two active requests per server process, with timeout/abort handling.
 - **Safe failures:** Normalized errors and request IDs avoid exposing provider payloads or credentials. Logs omit full prompts and image bytes. No automatic provider retry loop consumes quota after ambiguous failures.
 - **Stale-result protection:** Cancelled, superseded, or obsolete responses cannot silently replace current work.
 
@@ -431,6 +575,8 @@ retain detailed earlier milestone checks.
 - **Provider allocation:** Cloudflare quota and availability are bounded. Rate limiting is per process, not a distributed budget system. Cancelling does not guarantee remote processing or charging stops.
 - **Local storage:** One project per browser origin, without accounts, cloud backup, or cross-device sync. Clearing/evicting storage removes recovery data; history and selected-version preference do not persist. Multiple tabs use the last successful save.
 - **Layout scope:** Up to 30 variants and 50 text elements per variant, with 5,000 characters per element. Single-element Auto Layout is not a general collision-solving design engine.
+- **Experimental decomposition:** Generated layers and reconstructed backgrounds need visual review. Source lettering may remain rasterized; generation and decomposition use provider calls independent of the core artwork tools.
+- **Reusable-template scope:** One normalized layout across ratios, without per-ratio rearrangement, cross-browser sharing, or template-editor Undo. Export through the main editor.
 - **Desktop-first editing:** Both supported desktop sizes are verified. Narrow screens show a desktop-editing notice rather than a full mobile editor.
 - **Rendering and export:** Provider dimensions can differ from logical dimensions, so proportional cover may crop. Large PNGs depend on browser memory; downloads can also be limited by browser or disk policies. Emoji and scripts outside the bundled Latin fonts use platform fallbacks.
 
@@ -440,10 +586,13 @@ retain detailed earlier milestone checks.
 - [AI adaptation](docs/AI_ADAPTATION.md) — source reference processing, exact text, variants, and live comparison
 - [Auto Layout](docs/AUTO_LAYOUT.md) — measurement, fitting policy, and invariants
 - [Persistence and history](docs/PERSISTENCE_AND_HISTORY.md) — recovery, snapshots, and IndexedDB lifecycle
+- [Template A/B/C generators](docs/TEMPLATE_GENERATION.md) — recipe-specific forms, ratio groups, and decomposition handoff
+- [Template A generation](docs/TEMPLATE_A_GENERATION.md) — focused generation design notes
+- [Decomposition progress](docs/DECOMPOSITION_PROGRESS.md) — legacy pipeline implementation history
 - [Reusable templates](docs/REUSABLE_TEMPLATES.md) — normalized layout, creatives, versions, and the element model shared with the editor
 
-Detailed notes preserve historical milestone decisions and deployment plans. This README describes the current submission and single-service Render deployment.
+Detailed notes preserve historical milestone decisions and deployment plans. This README describes current source behavior and the base single-service deployment; historical test counts and live-provider evidence apply only to their recorded milestones.
 
 ## Live Demo / Repository
 
-**[Open FrameFlow](https://frameflow-h7fa.onrender.com)** · **[Browse the source](https://github.com/rohitpokhariya10/frameflow)**
+**[Open FrameFlow](https://frameflow-h7fa.onrender.com/)** · **[Browse the source](https://github.com/rohitpokhariya10/frameflow)**
