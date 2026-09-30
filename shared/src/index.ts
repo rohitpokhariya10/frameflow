@@ -164,7 +164,11 @@ export function validateCanvasSize(width: string | number, height: string | numb
 }
 export * from './ai.js';
 export * from './decomposition.js';
+export * from './templateGeneration.js';
 export * from './templateAGeneration.js';
+export * from './templateBGeneration.js';
+export * from './templateCGeneration.js';
+export * from './templateGenerationProfiles.js';
 export * from './canvasElement.js';
 export * from './designTemplates/index.js';
 export * from './canvasEditorAdapter.js';

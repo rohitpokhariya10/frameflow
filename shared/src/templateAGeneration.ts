@@ -17,6 +17,8 @@
  * framing, pose, colors and styling are field values; the defaults are examples, not rules.
  */
 import { AI_LIMITS } from './ai.js';
+import { buildGenerationVariantPrompt, GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS, generationVariantId, resolveGenerationBasePrompt, withArticle,
+  type GenerationAspectRatio, type GenerationProfile } from './templateGeneration.js';
 
 export const TEMPLATE_A_GENERATION_VERSION = 'template-a-generation-v3';
 export type TemplateAFieldKey = 'subject' | 'subjectDetails' | 'composition' | 'heldObject' | 'pose' | 'expression' | 'outfit' | 'innerBackdrop' | 'frameShape' | 'frameBorder' | 'outerBackground' | 'lighting' | 'extraNotes';
@@ -40,18 +42,13 @@ export const TEMPLATE_A_FIELDS: TemplateAField[] = [
   { key: 'extraNotes', label: 'Extra notes', default: '', required: false, maxLength: 300, help: 'A little extra visual guidance; it cannot replace the Template A structure.' },
 ];
 export const TEMPLATE_A_DEFAULTS = Object.fromEntries(TEMPLATE_A_FIELDS.map(f => [f.key, f.default])) as TemplateAFieldValues;
-/** The aspect-ratio variants of one creative, and the exact pixel size requested for each (both sides divisible by 16). */
-export const TEMPLATE_A_IMAGE_SIZES = { '1:1': { width: 1024, height: 1024 }, '16:9': { width: 1536, height: 864 }, '4:5': { width: 1216, height: 1520 } } as const;
-export type TemplateAAspectRatio = keyof typeof TEMPLATE_A_IMAGE_SIZES;
-export const TEMPLATE_A_ASPECT_RATIOS = Object.keys(TEMPLATE_A_IMAGE_SIZES) as TemplateAAspectRatio[];
-/** A variant's id inside its group: its ratio, as a file-safe word ("16:9" → "16x9"). */
-export const templateAVariantId = (aspectRatio: string) => aspectRatio.replace(':', 'x');
-/**
- * base: the shared creative prompt, built or edited (the app's prompt limit, AI_LIMITS.prompt). final: a variant's whole
- * prompt (base + consistency + framing). Written out rather than read from AI_LIMITS, which may not be initialised yet
- * when this module is loaded through ai.ts.
- */
-export const TEMPLATE_A_PROMPT_LIMITS = { base: 2000, final: 3000 } as const;
+// The ratios, sizes, variant ids and limits are the generic mechanics every template's generator shares
+// (templateGeneration.ts); these are the same values under the names Template A's code was written with.
+export const TEMPLATE_A_IMAGE_SIZES = GENERATION_IMAGE_SIZES;
+export type TemplateAAspectRatio = GenerationAspectRatio;
+export const TEMPLATE_A_ASPECT_RATIOS = GENERATION_ASPECT_RATIOS;
+export const templateAVariantId = generationVariantId;
+export const TEMPLATE_A_PROMPT_LIMITS = GENERATION_PROMPT_LIMITS;
 
 /** Added to every variant, word for word: what stays the same across the aspect ratios. */
 export const TEMPLATE_A_CONSISTENCY = 'This image is one of several aspect-ratio versions of the same creative. Everything described above is the same in every version: the same subject, styling, held object, inner region, border and backgrounds. Only the framing changes with the aspect ratio; do not add, remove or redesign anything.';
@@ -69,12 +66,7 @@ const tidy = (value: string) => value.replace(/\s+/g, ' ').trim().replace(/[.;,]
 /** A border field that means none: empty, or "no …", "none", "without …", "borderless". */
 export const hasVisibleBorder = (values: Pick<TemplateAFieldValues, 'frameBorder'>) => !!values.frameBorder && !/^(?:no\b|none\b|without\b|borderless\b)/i.test(values.frameBorder.trim());
 export const hasHeldObject = (values: Pick<TemplateAFieldValues, 'heldObject'>) => !!values.heldObject && !/^(?:no\b|none\b|nothing\b)/i.test(values.heldObject.trim());
-/** "smartphone" → "a smartphone"; kept when it already has an article, possessive, number or is plural. */
-export function withArticle(noun: string): string {
-  if (/^(?:a|an|the|one|two|three|four|some|his|her|their|its|my|your|pair of)\b/i.test(noun) || /^\d/.test(noun)) return noun;
-  if (/[^s]s$/i.test(noun.split(' ').pop() ?? '')) return noun;
-  return `${/^[aeiou]/i.test(noun) ? 'an' : 'a'} ${noun}`;
-}
+export { withArticle };
 
 /**
  * The field values for a generation: missing fields take their default; strings are tidied (one line, no trailing
@@ -118,30 +110,27 @@ export function buildTemplateAPrompt(values: TemplateAFieldValues): string {
 }
 
 /**
- * The shared base prompt of a creative: built from the fields, or the text the user edited it to. An edit is tidied to
- * one line; it must still be a description (not a few characters) and fit the base limit. Nothing is cut to fit.
+ * The shared base prompt of a Template A creative: built from the fields, or the text the user edited it to (the generic
+ * mechanics, with Template A's own builder).
  */
 export function resolveTemplateABasePrompt(values: TemplateAFieldValues, edited?: unknown): { builtPrompt: string; basePrompt: string; promptEdited: boolean; errors: string[] } {
-  let builtPrompt = '';
-  const errors: string[] = [];
-  try { builtPrompt = buildTemplateAPrompt(values); } catch (error) { errors.push(`${error instanceof Error ? error.message : String(error)} Shorten some fields.`); }
-  if (edited === undefined || edited === null) return { builtPrompt, basePrompt: builtPrompt, promptEdited: false, errors };
-  if (typeof edited !== 'string') return { builtPrompt, basePrompt: builtPrompt, promptEdited: false, errors: [...errors, 'The edited prompt must be text.'] };
-  const basePrompt = edited.replace(/\s+/g, ' ').trim();
-  if ((basePrompt.match(/\p{L}/gu) ?? []).length < 20) errors.push('The edited prompt is too short to describe the creative.');
-  if (basePrompt.length > TEMPLATE_A_PROMPT_LIMITS.base) errors.push(`The edited prompt is ${basePrompt.length} characters; at most ${TEMPLATE_A_PROMPT_LIMITS.base}.`);
-  return { builtPrompt, basePrompt, promptEdited: basePrompt !== builtPrompt, errors };
+  return resolveGenerationBasePrompt({ buildBasePrompt: () => buildTemplateAPrompt(values) }, values, edited);
 }
 
 /**
- * The exact prompt of one aspect-ratio variant: the shared base prompt, the consistency sentence, and that ratio's
- * framing. The base is used as it is for every ratio, so two variants of a creative differ in their framing sentence
- * and in nothing else.
+ * The exact prompt of one aspect-ratio variant of a Template A creative: the shared base prompt, Template A's consistency
+ * sentence, and Template A's framing for that ratio.
  */
 export function buildTemplateAVariantPrompt(basePrompt: string, aspectRatio: TemplateAAspectRatio): string {
-  const framing = TEMPLATE_A_RATIO_FRAMING[aspectRatio];
-  if (!framing) throw new Error(`Aspect ratio must be one of ${TEMPLATE_A_ASPECT_RATIOS.join(', ')}.`);
-  const prompt = `${basePrompt.trim()} ${TEMPLATE_A_CONSISTENCY} ${framing}`;
-  if (prompt.length > TEMPLATE_A_PROMPT_LIMITS.final) throw new Error(`The ${aspectRatio} prompt is ${prompt.length} characters; at most ${TEMPLATE_A_PROMPT_LIMITS.final}.`);
-  return prompt;
+  return buildGenerationVariantPrompt({ consistency: TEMPLATE_A_CONSISTENCY, framing: TEMPLATE_A_RATIO_FRAMING }, basePrompt, aspectRatio);
 }
+
+/** Template A's generation profile: everything above, in the form the shared multi-ratio mechanics take. */
+export const templateAGenerationProfile: GenerationProfile = {
+  templateKey: 'template-a', name: 'Template A', version: TEMPLATE_A_GENERATION_VERSION,
+  family: 'One clearly dominant subject (a person or an animal) inside a clearly distinguishable inner region with its own backdrop, visually separate from the outer background, optionally holding one object; a clean poster composition with no other subjects, props or text.',
+  sameAcrossRatios: 'the subject, styling, held object, inner region, border and backgrounds', mayDiffer: 'the exact face, the exact folds of a fabric',
+  skeleton: TEMPLATE_A_SKELETON, fields: TEMPLATE_A_FIELDS, defaults: TEMPLATE_A_DEFAULTS, consistency: TEMPLATE_A_CONSISTENCY, framing: TEMPLATE_A_RATIO_FRAMING,
+  resolveFields: resolveTemplateAFields, buildBasePrompt: values => buildTemplateAPrompt(values as TemplateAFieldValues),
+  notes: () => [], summarize: values => `${values.subject}${values.heldObject ? ` + ${values.heldObject}` : ''}`,
+};

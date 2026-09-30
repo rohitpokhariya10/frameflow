@@ -91,10 +91,11 @@ export type RunRecord = {
   /** The user chose to run despite the fit check ("Run anyway"): the check is not made. */
   skipFitCheck?: boolean;
   /**
-   * Where the image came from, when not an upload: a Template A test generation (templateAGeneration.ts). generationId is
-   * the creative's group; variantId and aspectRatio say which of its aspect-ratio variants (absent on runs made before groups).
+   * Where the image came from, when not an upload: a template test generation (generationGroups.ts). `kind` names the
+   * template whose generator made it, which is also the run's template; generationId is the creative's group; variantId
+   * and aspectRatio say which of its aspect-ratio variants (absent on runs made before groups).
    */
-  origin?: { kind: 'template-a-generation'; generationId: string; variantId?: string; aspectRatio?: string };
+  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation'; generationId: string; variantId?: string; aspectRatio?: string };
 };
 export type RunnerDeps = {
   planner: Planner;

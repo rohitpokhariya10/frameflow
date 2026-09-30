@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { GENERATION_PROFILES, GENERATION_TEMPLATE_KEYS, type GenerationTemplateKey } from '@frameflow/shared';
 import { useAppDispatch, useAppSelector } from '../../store';
 import { assets } from '../../lib/assets/runtimeAssets';
 import { isDesignVariant } from '../../lib/persistence/schema';
@@ -7,7 +8,7 @@ import { decomposedDesignImported } from '../../store/editorSlice';
 import { variantSelected } from '../../store/uiSlice';
 import { experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, ownsOptions, parseTargetLayers, runPrompt, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
 import './workspace/workspace.css';
-import { TemplateAGenerator } from './TemplateAGenerator';
+import { TemplateGenerator } from './TemplateGenerator';
 
 const ACTIVE = ['uploaded', 'planning', 'planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading'];
 const box: React.CSSProperties = { padding: 16, borderTop: '1px solid var(--color-line)' };
@@ -22,6 +23,8 @@ const sourceLabel = (run: ExperimentRun) => run.promptSource?.mode === 'template
 const isAutomatic = (run: ExperimentRun) => run.promptSource?.mode === 'automatic' || (run.promptSource?.mode === 'retry' && run.promptSource.providerPrompt === 'auto');
 const runTemplateKey = (run: ExperimentRun) => run.templateKey ?? run.layerTarget?.templateKey ?? (run.promptSource?.mode === 'template' ? run.promptSource.templateKey : undefined) ?? 'template-a';
 const heldObjectLabel = (run: ExperimentRun) => run.separateHeldObject === false ? (runTemplateKey(run) === 'template-a' ? 'Combined with subject' : 'Combined with main product') : 'Separate';
+/** The template whose test generator made a run's image ("template-b-generation" → "Template B"). */
+const originTemplateName = (kind: string) => GENERATION_PROFILES[kind.replace(/-generation$/, '') as GenerationTemplateKey]?.name ?? kind;
 /** A run's own template options (Template B), or undefined for runs that use the held-object checkbox (Template A, older Template B runs). */
 const optionsLabel = (run: ExperimentRun, template?: TemplateEntry) => run.templateOptions && template?.options
   ? template.options.map(o => `${o.label}: ${run.templateOptions![o.key] ? 'on' : 'off'}`).join(' · ') : undefined;
@@ -60,8 +63,8 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
   const [retargetText, setRetargetText] = useState('');
   const [notes, setNotes] = useState('');
   const [message, setMessage] = useState('');
-  // Template A test generator (admin harness), shown on demand.
-  const [showGenerator, setShowGenerator] = useState(false);
+  // The test generator of one template (admin harness), shown on demand.
+  const [generatorKey, setGeneratorKey] = useState<GenerationTemplateKey>();
   // Whether the server checks the template before planning (off in the test harness: the selected template is trusted).
   const [fitCheck, setFitCheck] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -150,7 +153,8 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
     <div className="ws-body" style={{ fontSize: 13 }}>
       <section style={{ ...box, borderTop: 0, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="ws-btn" onClick={() => setShowGenerator(v => !v)}>{showGenerator ? 'Hide Template A generator' : 'Create Template A'}</button>
+          {GENERATION_TEMPLATE_KEYS.map(key => <button key={key} className="ws-btn" aria-pressed={generatorKey === key} onClick={() => setGeneratorKey(open => open === key ? undefined : key)}>
+            {generatorKey === key ? `Hide ${GENERATION_PROFILES[key].name} generator` : `Create ${GENERATION_PROFILES[key].name}`}</button>)}
           <label>Template: <select value={templateKey} onChange={e => setTemplateKey(e.target.value)}>
             {(templates.length ? templates : [{ key: 'template-a', name: 'Template A' }]).map(t => <option key={t.key} value={t.key}>{t.name}</option>)}
           </select></label>
@@ -192,10 +196,11 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
           </select>}
         </div>
       </section>
-      {showGenerator && <TemplateAGenerator templateA={templates.find(t => t.key === 'template-a')} runActive={polling} fitCheck={fitCheck}
+      {/* Keyed by template: switching generators starts from that template's own form, with nothing carried over. */}
+      {generatorKey && <TemplateGenerator key={generatorKey} templateKey={generatorKey} template={templates.find(t => t.key === generatorKey)} runActive={polling} fitCheck={fitCheck}
         // A new generation clears the run view, so no earlier decomposition looks like it belongs to it.
         onGenerated={() => setRun(undefined)}
-        onRunStarted={next => { setTemplateKey('template-a'); setRun(next); setRuns(r => [next, ...r]); }}
+        onRunStarted={next => { setTemplateKey(generatorKey); setRun(next); setRuns(r => [next, ...r]); }}
         onOpenRun={id => void act(async () => setRun(await experimentApi.get(id)))} />}
       {message && <p role="alert" style={{ ...box, color: 'var(--color-error)' }}>{message}</p>}
       {run && <>
@@ -248,7 +253,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
           <div style={{ marginTop: 6 }}><strong>Template: {runTemplate?.name ?? runTemplateKey(run)} · {optionsLabel(run, runTemplate) ?? <>{runGrouping.modeName}: {heldObjectLabel(run)}</>}</strong></div>
           {run.templateFit && <div>Template fit: <strong>{run.templateFit.fits ? 'fits' : 'does not fit'}</strong> ({run.templateFit.reason})</div>}
           {run.skipFitCheck && <div>Template fit: not checked (run anyway)</div>}
-          {run.origin && <div>Image: Template A test generation <code>{run.origin.generationId}</code>{run.origin.aspectRatio && <>, its <strong>{run.origin.aspectRatio}</strong> variant</>}</div>}
+          {run.origin && <div>Image: {originTemplateName(run.origin.kind)} test generation <code>{run.origin.generationId}</code>{run.origin.aspectRatio && <>, its <strong>{run.origin.aspectRatio}</strong> variant</>}</div>}
           <div><strong>Layer count:</strong> {run.layerCount
             ? `Suggested ${run.layerCount.suggestedLayers ?? '—'} · Target ${run.layerCount.targetLayers ?? '— (none)'} · Provider returned ${run.layerCount.providerReturnedLayers} · Final output ${run.layerCount.finalOutputLayers}`
             : run.layerTarget ? `Suggested ${run.layerTarget.suggestedLayers} · Target ${run.layerTarget.targetLayers ?? (run.layerTarget.minLayers !== undefined || run.layerTarget.maxLayers !== undefined ? `older min/max run (${run.layerTarget.minLayers ?? '—'}–${run.layerTarget.maxLayers ?? '—'})` : '—')}` : 'not recorded (older run)'}</div>

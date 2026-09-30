@@ -102,8 +102,8 @@ export type ExperimentRun = {
   templateFit?: { fits: boolean; bestTemplate: string | null; plausibleTemplates?: string[]; reason: string; model: string; durationMs: number };
   /** The user ran it anyway, without the fit check. */
   skipFitCheck?: boolean;
-  /** Where the image came from when not an upload: a Template A test generation (the creative's group) and, since creatives have aspect-ratio variants, which variant. */
-  origin?: { kind: 'template-a-generation'; generationId: string; variantId?: string; aspectRatio?: string };
+  /** Where the image came from when not an upload: a template's test generation (the creative's group) and, since creatives have aspect-ratio variants, which variant. */
+  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation'; generationId: string; variantId?: string; aspectRatio?: string };
   /** The exact prompt sent to Seedream after held-object grouping; absent on older runs. */
   finalPrompt?: string;
   /** Suggested and target output layer count; absent on older runs. */

@@ -3,6 +3,10 @@
 A test/admin harness inside the **OpenAI + Seedream test** panel (button **Create Template A**). It is served only by
 the local layerize experiment router (`LAYERIZE_EXPERIMENT=1`, never in production).
 
+Templates B and C have the same capability, each with its own fields, prompt and decomposition controls. What the
+three share and what they do not is in [TEMPLATE_GENERATION.md](TEMPLATE_GENERATION.md). Template A's fields, prompt
+wording, framing sentences and decomposition are unchanged by that work.
+
 A Template A creative is defined once and generated as a **group** of aspect-ratio variants:
 
 | Ratio | Size requested | Variant id |
@@ -41,8 +45,9 @@ base prompt + consistency sentence + framing sentence of the ratio  →  the pro
 - The client never sends a variant's final prompt; a request that carries one is refused (`PROMPT_NOT_ACCEPTED`).
 - Every exact prompt can be read before generating (under "What each aspect ratio adds…") and afterwards on each card.
 
-All of this is in `shared/src/templateAGeneration.ts`, shared by the server (which builds what it sends) and the client
-(which shows it).
+Template A's wording is in `shared/src/templateAGeneration.ts`, used by the server (which builds what it sends) and the
+client (which shows it). Putting base, consistency and framing together is the generic mechanics in
+`shared/src/templateGeneration.ts`.
 
 ## Data model
 
@@ -101,7 +106,7 @@ A decomposition run made from a variant records where it came from:
 | `POST /groups` `{ fields, basePrompt?, aspectRatios? }` | New creative; answers at once, variants follow in the background |
 | `POST /groups/:id/variants/:variant/generate` | One failed or not yet generated variant |
 | `GET /groups/:id/variants/:variant/image` | The image exactly as generated |
-| `POST /groups/:id/variants/:variant/decompose` `{ separateHeldObject?, targetLayers?, skipFitCheck? }` | A Template A run of that image |
+| `POST /groups/:id/variants/:variant/decompose` `{ separateHeldObject?, targetLayers?, skipFitCheck? }` | A Template A run of that image; any other key (e.g. another template's `templateOptions`) is refused |
 
 ## Cost
 

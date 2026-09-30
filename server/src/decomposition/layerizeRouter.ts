@@ -16,9 +16,12 @@ import { ZipArchive } from 'archiver';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRetryRun, createRun, DEFAULT_RUNS_DIR, executeRun, liveDeps, listRuns, MAX_UPLOAD_BYTES, readRun, resumeRun, retargetLayers, RunError, validRunId, type PromptSource, type RunnerDeps } from './layerizeExperiment.js';
-import { getTemplatePrompt, listTemplates, saveTemplatePrompt, suggestedLayerCount, targetLayersProblem } from './layerizeTemplates.js';
-import { TEMPLATE_A_ASPECT_RATIOS, TEMPLATE_A_CONSISTENCY, TEMPLATE_A_DEFAULTS, TEMPLATE_A_FIELDS, TEMPLATE_A_GENERATION_VERSION, TEMPLATE_A_IMAGE_SIZES, TEMPLATE_A_PROMPT_LIMITS, TEMPLATE_A_RATIO_FRAMING, TEMPLATE_A_SKELETON } from '@frameflow/shared';
-import { createGroup, DEFAULT_GENERATIONS_DIR, findVariant, generateVariant, groupDir, listGroups, liveGenerationConfig, presentGroup, queueVariant, readGroup, recordDecomposition, variantImage, type GenerationConfig, type GenerationGroup } from './templateAGeneration.js';
+import { getTemplatePrompt, listTemplates, saveTemplatePrompt, suggestedLayerCount } from './layerizeTemplates.js';
+import { GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS, type GenerationTemplateKey } from '@frameflow/shared';
+import { createGenerationGroup, findVariant, generateVariant, generationsDirFor, groupDir, listGroups, liveGenerationConfig, ownGroup, presentGroup, queueVariant, readGroup, recordDecomposition, variantImage, withStructure, type GenerationConfig, type GenerationGroup } from './generationGroups.js';
+import { templateAHandoff } from './templateAGeneration.js';
+import { templateBHandoff } from './templateBGeneration.js';
+import { templateCHandoff } from './templateCGeneration.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
@@ -49,8 +52,11 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
   });
 }
 
-/** generationsDir / generation: the Template A test generator's groups and image generator (default: the app's configured ones). */
-export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generation?: () => GenerationConfig } = {}): Router {
+/**
+ * generation: the test generators' image generator. generationsDir: where Template A's groups are kept; generationDirs:
+ * the same per template. Defaults: the app's configured generator and one folder per template.
+ */
+export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
   const deps = options.deps ?? (() => liveDeps());
   let active: string | undefined;
@@ -94,88 +100,88 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   // fitCheck: whether new runs are checked against the template before planning (off in this experiment by default).
   router.get('/templates', (_req, res) => res.json({ templates: listTemplates(runsDir), fitCheck: Boolean(deps().fitCheck) }));
 
-  // Template A test generator (admin harness). One creative is generated as a group of aspect-ratio variants (1:1, 16:9,
-  // 4:5): the fields (or the base prompt edited from them) → one prompt per ratio, built here and never sent by the
-  // client → OpenAI Image 2 (aiModels.ts), one request per variant → the saved images. "Decompose image" on a variant
-  // runs exactly that image as an ordinary Template A run (planner, fal Seedream Layerize and local grouping unchanged),
-  // linked both ways with the group, the variant and its ratio. Variants are generated one at a time, in the order they
-  // were asked for; a decomposition follows the one-active-run rule above.
-  const generationsDir = options.generationsDir ?? DEFAULT_GENERATIONS_DIR;
+  // Template test generators (admin harness). One creative is generated as a group of aspect-ratio variants (1:1, 16:9,
+  // 4:5): its template's fields (or the base prompt edited from them) → one prompt per ratio, built here and never sent
+  // by the client → OpenAI Image 2 (aiModels.ts), one request per variant → the saved images. "Decompose image" on a
+  // variant runs exactly that image as an ordinary run of the same template (planner, fal Seedream Layerize and local
+  // grouping unchanged), linked both ways with the group, the variant and its ratio.
+  //
+  // The mechanics are shared (generationGroups.ts); the templates are not. Each template's routes are registered under
+  // its own path and are bound to its own profile, handoff and folder, so a request to one template can only ever use
+  // that template's fields, prompt wording, decomposition template and options. Variants are generated one at a time,
+  // in the order they were asked for, whichever template they belong to; a decomposition follows the one-active-run
+  // rule above.
   const generation = options.generation ?? (() => liveGenerationConfig());
-  /** Variants this process has queued or is generating, as "group/variant". */
+  /** Variants this process has queued or is generating, as "template/group/variant". */
   const inProgress = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
-  const shown = (group: GenerationGroup) => presentGroup(group, variantId => inProgress.has(`${group.id}/${variantId}`));
-  /** Queues variants behind whatever is already being generated. Each is one paid request; none is ever resent. */
-  const enqueue = (groupId: string, variantIds: string[], config: GenerationConfig) => {
-    for (const variantId of variantIds) {
-      const key = `${groupId}/${variantId}`;
-      queueVariant(generationsDir, groupId, variantId, inProgress.has(key));
-      inProgress.add(key);
-      queue = queue.then(() => generateVariant(generationsDir, groupId, variantId, config)).catch(error => console.error('template A generation', key, error)).finally(() => inProgress.delete(key));
-    }
-  };
-  router.get('/template-a/generator', (_req, res, next) => {
-    try {
-      res.json({ version: TEMPLATE_A_GENERATION_VERSION, skeleton: TEMPLATE_A_SKELETON, fields: TEMPLATE_A_FIELDS, defaults: TEMPLATE_A_DEFAULTS, aspectRatios: TEMPLATE_A_ASPECT_RATIOS,
-        imageSizes: TEMPLATE_A_IMAGE_SIZES, consistency: TEMPLATE_A_CONSISTENCY, framing: TEMPLATE_A_RATIO_FRAMING, promptLimits: TEMPLATE_A_PROMPT_LIMITS, generator: { provider: 'openai', model: generation().model } });
-    } catch (error) { next(error); }
-  });
-  router.get('/template-a/groups', (_req, res) => res.json({ groups: listGroups(generationsDir).map(shown) }));
-  router.get('/template-a/groups/:id', (req, res, next) => { try { res.json(shown(readGroup(generationsDir, req.params.id))); } catch (error) { next(error); } });
-  router.get('/template-a/groups/:id/variants/:variant/image', (req, res, next) => {
-    try {
-      const variant = findVariant(readGroup(generationsDir, req.params.id), req.params.variant);
-      if (!variant.image) throw new RunError('NOT_FOUND', 'This variant has no image.');
-      res.setHeader('Cache-Control', 'no-store');
-      res.sendFile(join(groupDir(generationsDir, req.params.id), variant.image.file));
-    } catch (error) { next(error); }
-  });
-  // Body: { fields, basePrompt?, aspectRatios? }. A new creative is always a new group; earlier groups are never changed
-  // by it. basePrompt: the shared prompt as the user edited it. aspectRatios: which variants to generate now (default:
-  // all); the others stay pending and can be generated later. Answers at once; the variants follow in the background.
-  router.post('/template-a/groups', express.json({ limit: '24kb' }), (req, res, next) => {
-    try {
-      const config = generation();
-      const { group, requested } = createGroup(generationsDir, (req.body ?? {}) as { fields?: unknown; basePrompt?: unknown; prompt?: unknown; aspectRatios?: unknown }, config);
-      enqueue(group.id, requested, config);
-      res.status(202).json(shown(readGroup(generationsDir, group.id)));
-    } catch (error) { next(error); }
-  });
-  // One variant of an existing group, generated now: a failed one again, or one not generated yet. The group's shared
-  // definition and its other variants are not touched. A variant that has its image is refused.
-  router.post('/template-a/groups/:id/variants/:variant/generate', (req, res, next) => {
-    try {
-      enqueue(req.params.id, [req.params.variant], generation());
-      res.status(202).json(shown(readGroup(generationsDir, req.params.id)));
-    } catch (error) { next(error); }
-  });
-  // Body: { separateHeldObject?: boolean, targetLayers?: number, skipFitCheck?: boolean }. Decomposes this variant's
-  // image, and only this one. Defaults follow the structure the creative's fields describe (scoped to generated images;
-  // uploads keep Template A's usual defaults): held object separate only when there is one (a creative without one
-  // cannot be decomposed "separate"), and a target of Template A's natural count minus the border layer when the fields
-  // asked for no visible border.
-  router.post('/template-a/groups/:id/variants/:variant/decompose', express.json({ limit: '2kb' }), async (req, res, next) => {
-    try {
-      busy();
-      const body = (req.body ?? {}) as { separateHeldObject?: unknown; targetLayers?: unknown; skipFitCheck?: unknown };
-      for (const key of ['separateHeldObject', 'skipFitCheck'] as const) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw new RunError('INVALID_REQUEST', `${key} must be true or false.`);
-      if (body.targetLayers !== undefined && typeof body.targetLayers !== 'number') throw new RunError('INVALID_TARGET_LAYERS', 'targetLayers must be a number.');
-      const { group, variant, bytes } = variantImage(generationsDir, req.params.id, req.params.variant), structure = group.structure;
-      if (body.separateHeldObject === true && !structure.heldObject) throw new RunError('INVALID_REQUEST', 'This generation has no held object, so it cannot be decomposed with the held object separate.');
-      const separateHeldObject = structure.heldObject && body.separateHeldObject !== false;
-      const expected = suggestedLayerCount('template-a', separateHeldObject)! - (structure.visibleBorder ? 0 : 1);
-      const targetLayers = body.targetLayers ?? expected;
-      const problem = targetLayersProblem('template-a', separateHeldObject, targetLayers);
-      if (problem) throw new RunError('INVALID_TARGET_LAYERS', problem);
-      const layerTarget = { templateKey: 'template-a', suggestedLayers: expected, targetLayers };
-      const { dir, run } = await createRun(runsDir, bytes, { mode: 'generated' }, { templateKey: 'template-a', separateHeldObject, layerTarget, skipFitCheck: body.skipFitCheck === true,
-        origin: { kind: 'template-a-generation', generationId: group.id, variantId: variant.id, aspectRatio: variant.aspectRatio } });
-      recordDecomposition(generationsDir, group.id, variant.id, { runId: run.id, createdAt: run.createdAt, separateHeldObject, targetLayers });
-      background(run.id, () => executeRun(dir, deps()));
-      res.status(202).json(run);
-    } catch (error) { next(error); }
-  });
+  for (const handoff of [templateAHandoff, templateBHandoff, templateCHandoff]) {
+    const { profile } = handoff, key = profile.templateKey, at = `/${key}`;
+    const generationsDir = options.generationDirs?.[key] ?? (key === 'template-a' ? options.generationsDir : undefined) ?? generationsDirFor(key);
+    const own = (id: string) => ownGroup(generationsDir, key, id);
+    const shown = (group: GenerationGroup) => presentGroup(withStructure(group, handoff), variantId => inProgress.has(`${key}/${group.id}/${variantId}`));
+    /** Queues variants behind whatever is already being generated. Each is one paid request; none is ever resent. */
+    const enqueue = (groupId: string, variantIds: string[], config: GenerationConfig) => {
+      for (const variantId of variantIds) {
+        const running = `${key}/${groupId}/${variantId}`;
+        queueVariant(generationsDir, groupId, variantId, inProgress.has(running));
+        inProgress.add(running);
+        queue = queue.then(() => generateVariant(generationsDir, groupId, variantId, config)).catch(error => console.error('template generation', running, error)).finally(() => inProgress.delete(running));
+      }
+    };
+    router.get(`${at}/generator`, (_req, res, next) => {
+      try {
+        res.json({ templateKey: key, name: profile.name, version: profile.version, family: profile.family, sameAcrossRatios: profile.sameAcrossRatios, mayDiffer: profile.mayDiffer, skeleton: profile.skeleton, fields: profile.fields, defaults: profile.defaults,
+          aspectRatios: GENERATION_ASPECT_RATIOS, imageSizes: GENERATION_IMAGE_SIZES, consistency: profile.consistency, framing: profile.framing, promptLimits: GENERATION_PROMPT_LIMITS, generator: { provider: 'openai', model: generation().model } });
+      } catch (error) { next(error); }
+    });
+    router.get(`${at}/groups`, (_req, res) => res.json({ groups: listGroups(generationsDir).filter(group => group.templateKey === key).map(shown) }));
+    router.get(`${at}/groups/:id`, (req, res, next) => { try { res.json(shown(own(req.params.id))); } catch (error) { next(error); } });
+    router.get(`${at}/groups/:id/variants/:variant/image`, (req, res, next) => {
+      try {
+        const variant = findVariant(own(req.params.id), req.params.variant);
+        if (!variant.image) throw new RunError('NOT_FOUND', 'This variant has no image.');
+        res.setHeader('Cache-Control', 'no-store');
+        res.sendFile(join(groupDir(generationsDir, req.params.id), variant.image.file));
+      } catch (error) { next(error); }
+    });
+    // Body: { fields, basePrompt?, aspectRatios? }. A new creative is always a new group; earlier groups are never
+    // changed by it. basePrompt: the shared prompt as the user edited it. aspectRatios: which variants to generate now
+    // (default: all); the others stay pending and can be generated later. Answers at once; the variants follow.
+    router.post(`${at}/groups`, express.json({ limit: '24kb' }), (req, res, next) => {
+      try {
+        const config = generation();
+        const { group, requested } = createGenerationGroup(generationsDir, handoff, (req.body ?? {}) as { fields?: unknown; basePrompt?: unknown; prompt?: unknown; aspectRatios?: unknown }, config);
+        enqueue(group.id, requested, config);
+        res.status(202).json(shown(readGroup(generationsDir, group.id)));
+      } catch (error) { next(error); }
+    });
+    // One variant of an existing group, generated now: a failed one again, or one not generated yet. The group's shared
+    // definition and its other variants are not touched. A variant that has its image is refused.
+    router.post(`${at}/groups/:id/variants/:variant/generate`, (req, res, next) => {
+      try {
+        own(req.params.id);
+        enqueue(req.params.id, [req.params.variant], generation());
+        res.status(202).json(shown(own(req.params.id)));
+      } catch (error) { next(error); }
+    });
+    // Decomposes this variant's image, and only this one, with this template. What the body may carry, and what the run
+    // is given, is the template's own handoff: Template A's held-object choice, or the template's declared options.
+    router.post(`${at}/groups/:id/variants/:variant/decompose`, express.json({ limit: '2kb' }), async (req, res, next) => {
+      try {
+        busy();
+        own(req.params.id);
+        const found = variantImage(generationsDir, req.params.id, req.params.variant), group = withStructure(found.group, handoff), { variant, bytes } = found;
+        const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+        const { run: settings, entry } = handoff.decomposition(group, body);
+        const { dir, run } = await createRun(runsDir, bytes, { mode: 'generated' }, { templateKey: key, ...settings,
+          origin: { kind: `${key}-generation`, generationId: group.id, variantId: variant.id, aspectRatio: variant.aspectRatio } });
+        recordDecomposition(generationsDir, group.id, variant.id, { runId: run.id, createdAt: run.createdAt, ...entry });
+        background(run.id, () => executeRun(dir, deps()));
+        res.status(202).json(run);
+      } catch (error) { next(error); }
+    });
+  }
   router.post('/templates/:key', express.json({ limit: '8kb' }), (req, res, next) => {
     try { res.json(saveTemplatePrompt(runsDir, req.params.key, String(req.body?.runId ?? ''), typeof req.body?.notes === 'string' ? req.body.notes : undefined)); }
     catch (error) { next(error); }
