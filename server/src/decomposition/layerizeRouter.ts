@@ -1,7 +1,9 @@
 /**
- * Local-only HTTP surface for the OpenAI → Seedream layerize experiment. Enabled only with LAYERIZE_EXPERIMENT=1 outside
- * production, and only answers loopback clients (the Vite proxy or a local browser): it spends paid API credit and
- * has no authentication. One active run at a time; runs execute in-process, no worker.
+ * HTTP surface for the OpenAI → Seedream layerize experiment (the Template A/B/C review flow). Mounted only with
+ * LAYERIZE_EXPERIMENT=1, in development and in production alike. It spends paid API credit and has no login, so it
+ * only answers its own frontend: a direct request on this machine in development, or, behind a proxy, a request the
+ * browser marks as coming from the app's own origin (see experimentAccess). One active run at a time; runs execute
+ * in-process, no worker.
  * Runs take optional promptMode (generated | template), templateKey (default template-a; also sets the suggested layer
  * count), separateHeldObject (true | false, default true; Template A's checkbox, ignored by templates without it),
  * templateOptions (JSON object of the selected template's own options, e.g. Template B's
@@ -10,7 +12,7 @@
  * (exact output layer count including the base, applied locally after Seedream) form fields. Resume takes an optional
  * targetLayers to re-render a finished run at another count from its saved result. Templates are listed and saved under /templates.
  */
-import express, { type Request, type Router } from 'express';
+import express, { type Request, type RequestHandler, type Router } from 'express';
 import busboy from 'busboy';
 import { ZipArchive } from 'archiver';
 import { existsSync } from 'node:fs';
@@ -26,7 +28,41 @@ import { templateCHandoff } from './templateCGeneration.js';
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
 
-export function layerizeExperimentEnabled(env = process.env) { return env.LAYERIZE_EXPERIMENT === '1' && env.NODE_ENV !== 'production'; }
+/** Off unless explicitly turned on, whatever the environment. */
+export function layerizeExperimentEnabled(env = process.env) { return env.LAYERIZE_EXPERIMENT === '1'; }
+
+/** clientOrigin: the deployed app's own origin (CLIENT_ORIGIN). production: NODE_ENV is production. */
+export type ExperimentAccess = { clientOrigin?: string; production?: boolean };
+const refuse = (message: string) => ({ error: { code: 'ORIGIN_DENIED', message } });
+/**
+ * Who may use the experiment.
+ *
+ * In development, a direct request on this machine (a loopback peer that no proxy forwarded: the Vite proxy or a local
+ * browser) is answered, as it always was. That is never assumed in production, where the peer is a proxy.
+ *
+ * Every other request has to come from the app's own frontend, as the browser states it:
+ *   - a request that changes something (every POST; these are the ones that spend credit) must carry the app's origin
+ *     in `Origin`, which a browser sends on every POST and a page cannot set for itself;
+ *   - a read must be same-origin. A browser sends no `Origin` on a same-origin GET, but says so in `Sec-Fetch-Site`;
+ *     "none" is the user opening an address themselves, which no other site can cause.
+ * Without CLIENT_ORIGIN nothing can match, so nothing that changes anything is accepted.
+ *
+ * This keeps other sites and stray clients out. It is not authentication: whoever can open the app can use the
+ * experiment, and a script can send these headers itself.
+ */
+export function experimentAccess(access: ExperimentAccess = {}): RequestHandler {
+  const production = access.production ?? process.env.NODE_ENV === 'production', origin = (access.clientOrigin ?? process.env.CLIENT_ORIGIN)?.trim().replace(/\/$/, '');
+  return (req, res, next) => {
+    if (!production && LOOPBACK.has(req.socket.remoteAddress ?? '') && !req.headers['x-forwarded-for']) return next();
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const site = req.headers['sec-fetch-site'];
+      if (req.headers.origin ? req.headers.origin === origin : site === 'same-origin' || site === 'none') return next();
+      return void res.status(403).json(refuse('The layerize experiment only answers the FrameFlow app itself.'));
+    }
+    if (origin && req.headers.origin === origin) return next();
+    res.status(403).json(refuse(origin ? 'The layerize experiment only accepts requests from the FrameFlow app itself.' : 'Set CLIENT_ORIGIN to the app\'s own address to use the layerize experiment here.'));
+  };
+}
 
 function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<string, string> }> {
   return new Promise((resolve, reject) => {
@@ -54,14 +90,15 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
 
 /**
  * generation: the test generators' image generator. generationsDir: where Template A's groups are kept; generationDirs:
- * the same per template. Defaults: the app's configured generator and one folder per template.
+ * the same per template. Defaults: the app's configured generator and one folder per template. access: who may use it
+ * (default: from CLIENT_ORIGIN and NODE_ENV).
  */
-export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig } = {}): Router {
+export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig; access?: ExperimentAccess } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
   const deps = options.deps ?? (() => liveDeps());
   let active: string | undefined;
   const router = express.Router();
-  router.use((req, res, next) => LOOPBACK.has(req.socket.remoteAddress ?? '') ? next() : res.status(403).json({ error: { code: 'LOCAL_ONLY', message: 'The layerize experiment only accepts local requests.' } }));
+  router.use(experimentAccess(options.access));
   const background = (id: string, work: () => Promise<unknown>) => {
     active = id;
     void work().catch(error => console.error('layerize experiment', id, error)).finally(() => { if (active === id) active = undefined; });
