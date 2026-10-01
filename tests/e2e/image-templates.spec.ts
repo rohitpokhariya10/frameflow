@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { generationVariantId, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_SIZES, imageTemplateVariantPrompt, resolveImageTemplateName, resolveImageTemplatePrompt, resolveImageTemplateRatios } from '@frameflow/shared';
+import { generationVariantId, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_SIZES, imageTemplateVariantPrompt, resolveImageTemplateName, resolveImageTemplatePrompt, resolveImageTemplateRatios } from '@frameflow/shared';
 
 // "Create Template from Image" in the real app, with every provider faked. The experiment API is answered here, inside
 // the browser, by a small in-memory fake: no request of this test reaches a server, so no OpenAI, fal or Seedream
@@ -9,7 +9,7 @@ const API = '/api/layerize-experiment';
 const BASE = `${API}/image-templates`;
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const GENERATED = 'A premium product advertisement in a soft 3D render style: a lavender smartphone stands upright in the centre on a white round platform, with pale spheres floating around it, on a pastel lilac studio background with soft daylight.';
-const INFO = { ratios: IMAGE_TEMPLATE_RATIOS.map(ratio => ({ ratio, name: { '1:1': 'Square', '4:5': 'Portrait', '16:9': 'Landscape' }[ratio], ...IMAGE_TEMPLATE_SIZES[ratio] })), limits: { name: 80, prompt: 2000 },
+const INFO = { ratios: IMAGE_TEMPLATE_RATIOS.map(ratio => ({ ratio, name: { '1:1': 'Square', '4:5': 'Portrait', '16:9': 'Landscape' }[ratio], ...IMAGE_TEMPLATE_SIZES[ratio] })), limits: IMAGE_TEMPLATE_LIMITS,
   imageModel: 'gpt-image-2', promptModel: 'gpt-5-mini', ratioReference: true,
   layerStyles: [{ key: 'template-a', name: 'Template A', summary: 'Framed portrait: one person or animal in a framed backdrop, optionally holding an object' },
     { key: 'template-b', name: 'Template B', summary: 'Product: one dominant product or object on a designed background' },
@@ -409,4 +409,50 @@ test('cancelled prompt regeneration keeps edits; a successful retry replaces the
   page.once('dialog', dialog => void dialog.accept());
   await d.getByRole('button', { name: 'Write again from image' }).click();
   await expect(prompt).toHaveValue(GENERATED, { timeout: 10_000 });
+});
+
+
+test('raw editable counter and inclusive limit block invalid Generate without provider work', async ({ page }) => {
+  const api = await fakeApi(page), template = savedSquare('Boundary draft');
+  delete template.generatedAt; template.variants = []; api.templates.push(template);
+  await open(page);
+  const d = dialog(page), prompt = d.getByLabel('Generated prompt');
+  const generate = d.getByRole('button', { name: /^Generate selected templates/ });
+  for (const size of [IMAGE_TEMPLATE_LIMITS.prompt - 1, IMAGE_TEMPLATE_LIMITS.prompt, IMAGE_TEMPLATE_LIMITS.prompt + 1, IMAGE_TEMPLATE_LIMITS.prompt - 1]) {
+    const text = 'a'.repeat(size - 1) + ' ';
+    await prompt.fill(text);
+    await expect(prompt).toHaveValue(text);
+    await expect(d.locator('.cti-count')).toHaveText(`${size} / ${IMAGE_TEMPLATE_LIMITS.prompt}`);
+    if (size > IMAGE_TEMPLATE_LIMITS.prompt) {
+      await expect(generate).toBeDisabled();
+      await expect(d.locator('.cti-count')).toHaveClass(/is-over/);
+      await expect(d.getByTestId('generate-hint')).toContainText(`The prompt is ${size} characters`);
+    } else await expect(generate).toBeEnabled();
+  }
+  expect(api.posts.filter(p => p.path.endsWith('/generate'))).toHaveLength(0);
+});
+
+
+test('failed prompt autosave prevents Generate from using stale text until an explicit save retry', async ({ page }) => {
+  const api = await fakeApi(page), template = savedSquare('Prompt save protection');
+  delete template.generatedAt; template.variants = []; api.templates.push(template);
+  let failSave = true;
+  await page.route(`**${BASE}/${template.id}`, route => {
+    if (route.request().method() !== 'PATCH' || !failSave) return route.fallback();
+    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Prompt save unavailable.' } }) });
+  });
+  await open(page);
+  const d = dialog(page), edited = `${GENERATED} Warm light and unchanged product.`;
+  await d.getByLabel('Generated prompt').fill(edited);
+  await d.getByRole('button', { name: /^Generate selected templates/ }).click();
+  await expect(d.getByRole('alert')).toContainText('Prompt save unavailable.');
+  expect(api.posts.filter(post => post.path.endsWith('/generate'))).toHaveLength(0);
+  expect(template.prompt).toBe(GENERATED);
+  failSave = false;
+  await d.getByRole('button', { name: 'Retry save', exact: true }).click();
+  await expect.poll(() => template.prompt).toBe(edited);
+  await d.getByRole('button', { name: /^Generate selected templates/ }).click();
+  await expect.poll(() => statuses(page), { timeout: 10_000 }).toEqual(['Generated']);
+  expect(api.posts.filter(post => post.path.endsWith('/generate'))).toHaveLength(1);
+  expect(template.prompt).toBe(edited);
 });

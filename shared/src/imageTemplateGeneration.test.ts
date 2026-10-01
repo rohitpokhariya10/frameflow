@@ -31,11 +31,11 @@ describe('Create Template from Image: shared rules', () => {
   });
 
   it('a prompt keeps its paragraphs, must describe something, and is refused over the limit, never cut', () => {
-    expect(resolveImageTemplatePrompt(`  ${PROMPT}  \n\n  Soft  daylight.  `)).toEqual({ prompt: `${PROMPT}\nSoft daylight.` });
+    expect(resolveImageTemplatePrompt(`  ${PROMPT}  \n\n  Soft  daylight.  `)).toEqual({ prompt: `  ${PROMPT}  \n\n  Soft  daylight.  ` });
     expect(resolveImageTemplatePrompt('').error).toBe('Generate a prompt from the image, or write one.');
     expect(resolveImageTemplatePrompt('a red phone').error).toBe('The prompt is too short to describe an image.');
     expect(resolveImageTemplatePrompt(null).error).toBe('The prompt must be text.');
-    expect(resolveImageTemplatePrompt('word '.repeat(401)).error).toBe('The prompt is 2004 characters; at most 2000.');
+    expect(resolveImageTemplatePrompt('word '.repeat(401)).error).toBe('The prompt is 2005 characters; at most 2000.');
   });
 
   it('a ratio\'s prompt is the template\'s prompt, the consistency sentence and its framing: the framing is the only difference', () => {

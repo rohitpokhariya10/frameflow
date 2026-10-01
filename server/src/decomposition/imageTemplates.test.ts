@@ -1,3 +1,4 @@
+import { verboseImageAnalysis } from './imageTemplateAnalysis.fixture.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,16 +8,16 @@ import { request as httpRequest } from 'node:http';
 import express from 'express';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, templateBGenerationProfile } from '@frameflow/shared';
+import { IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_REQUEST_LIMIT, buildImageTemplatePrompt, normalizeImageAnalysis, IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, templateBGenerationProfile } from '@frameflow/shared';
 import type { FalTransport } from './providers/falClient.js';
-import type { GenerationConfig, GenerationGroup } from './generationGroups.js';
+import { generateVariant, type GenerationConfig, type GenerationGroup } from './generationGroups.js';
 import { MAX_UPLOAD_BYTES, readRun, type RunnerDeps } from './layerizeExperiment.js';
 import { createOpenAIPlanner } from './layerizePlanner.js';
 import { createLayerizeRouter } from './layerizeRouter.js';
 import { PLAN_SCHEMA_B } from './layerizeTemplateB.js';
 import { PLAN_SCHEMA_C } from './layerizeTemplateC.js';
 import { TEMPLATES } from './layerizeTemplates.js';
-import { createImageTemplate, createOpenAIImagePromptWriter, imagePromptInstruction, referenceForPrompt, type ImagePromptWriter, type ImageTemplate } from './imageTemplates.js';
+import { createImageTemplate, createOpenAIImagePromptWriter, imagePromptInstruction, referenceForPrompt, startImageTemplateGeneration, type ImagePromptWriter, type ImageTemplate } from './imageTemplates.js';
 
 // "Create Template from Image" with every provider faked: no OpenAI, fal or Seedream request is made by this file. Any
 // request that leaves this machine fails the test that made it: fetch reaches this test's own local server and nothing else.
@@ -97,10 +98,10 @@ async function server(options: { images?: ReturnType<typeof imageFake>; writer?:
     return { status: r.status, body: await r.json() };
   };
   const get = (path: string) => send('GET', path), post = (path: string, body: unknown = {}) => send('POST', path, body), patch = (path: string, body: unknown) => send('PATCH', path, body);
-  const upload = async (image: Buffer | undefined, fields: Record<string, string> = {}, fileName = 'reference.png') => {
+  const upload = async (image: Buffer | undefined, fields: Record<string, string> = {}, fileName = 'reference.png', mimeType = 'image/png') => {
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) form.append(key, value);
-    if (image) form.append('image', new Blob([new Uint8Array(image)], { type: 'image/png' }), fileName);
+    if (image) form.append('image', new Blob([new Uint8Array(image)], { type: mimeType }), fileName);
     const r = await fetch(url('/image-templates'), { method: 'POST', body: form });
     return { status: r.status, body: await r.json() };
   };
@@ -122,6 +123,74 @@ async function server(options: { images?: ReturnType<typeof imageFake>; writer?:
 }
 
 describe('Create Template from Image', () => {
+  it.each([3344, 4002])('%i-character structured response persists a usable prompt after exactly one analysis; regenerate is explicit', async length => {
+    const fake = writerFake(), response = verboseImageAnalysis(length);
+    const create = vi.fn(async () => ({ status: 'completed', output: [], output_text: JSON.stringify(response) }));
+    fake.writer = createOpenAIImagePromptWriter({ model: 'gpt-5-mini', client: { responses: { create } } as never });
+    const s = await server({ writer: fake });
+    try {
+      const t = await s.draft({ name: 'Keep this name', aspectRatios: JSON.stringify(['1:1', '4:5']) });
+      expect(t.promptGeneration?.status).toBe('done');
+      expect(t.prompt.length).toBeLessThanOrEqual(IMAGE_TEMPLATE_LIMITS.prompt);
+      expect(t.analysis?.hero.identity).toBe('one lavender smartphone');
+      expect(t.prompt).toContain('4 lavender/white spheres');
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(s.images.send).not.toHaveBeenCalled(); expect(s.create).not.toHaveBeenCalled();
+      await s.patch(`/image-templates/${t.id}`, { decomposeWith: 'template-c' });
+      await s.post(`/image-templates/${t.id}/prompt`);
+      const again = await s.wait(() => s.template(t.id), t => t.promptGeneration?.status === 'done');
+      expect(again).toMatchObject({ name: t.name, reference: t.reference, aspectRatios: ['1:1', '4:5'], decomposeWith: 'template-c', analysis: t.analysis });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(s.images.send).not.toHaveBeenCalled(); expect(s.create).not.toHaveBeenCalled();
+      const edited = `${again.prompt} Warm afternoon lighting.`;
+      await s.post(`/image-templates/${t.id}/generate`, { prompt: edited, aspectRatios: ['1:1', '4:5'] });
+      const done = await s.settled(t.id);
+      expect(done.variants.filter(v => v.status === 'done')).toHaveLength(2);
+      expect(s.images.requests.map(r => r.method)).toEqual(['edit', 'edit']);
+      expect(s.images.requests).toHaveLength(2);
+      for (const request of s.images.requests) {
+        expect(request.prompt.startsWith(edited)).toBe(true);
+        expect(request.prompt.length).toBeLessThanOrEqual(IMAGE_TEMPLATE_REQUEST_LIMIT);
+        expect(sha(Buffer.from(await request.image!.arrayBuffer()))).toBe(t.reference.sha256);
+      }
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally { s.app.close(); }
+  });
+
+  it('rejects raw over-limit edits without any image request, then accepts the exact inclusive editable boundary', async () => {
+    const s = await server();
+    try {
+      const t = await s.draft({ name: 'Boundary' }), exact = 'a'.repeat(IMAGE_TEMPLATE_LIMITS.prompt);
+      for (const invalid of [exact + 'b', exact + ' ']) {
+        expect((await s.post(`/image-templates/${t.id}/generate`, { prompt: invalid, aspectRatios: ['1:1'] })).status).toBe(400);
+        expect((await s.patch(`/image-templates/${t.id}`, { prompt: invalid })).status).toBe(400);
+      }
+      expect(s.images.send).not.toHaveBeenCalled();
+      expect((await s.post(`/image-templates/${t.id}/generate`, { prompt: exact, aspectRatios: ['1:1'] })).status).toBe(202);
+      await s.settled(t.id);
+      expect(s.images.requests).toHaveLength(1);
+      expect(s.images.requests[0].prompt.startsWith(exact)).toBe(true);
+    } finally { s.app.close(); }
+  });
+
+  it('checks the FULL edit request including appended reference text before instantiating the provider', async () => {
+    const s = await server();
+    try {
+      const t = await s.draft({ name: 'Full boundary' });
+      const { template } = startImageTemplateGeneration(s.dir, t.id, { prompt: 'a'.repeat(IMAGE_TEMPLATE_LIMITS.prompt), aspectRatios: ['1:1'] }, s.images.config, false);
+      const prefixLength = template.variants[0].prompt.length + 1;
+      const instruction = 'r'.repeat(IMAGE_TEMPLATE_REQUEST_LIMIT - prefixLength);
+      const sourceReference = { file: t.reference.file, sha256: t.reference.sha256, instruction: instruction + 'x' };
+      const failed = await generateVariant(s.dir, t.id, '1x1', s.images.config, { sourceReference });
+      expect(failed.variants[0]).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('complete image prompt') } });
+      expect(s.images.send).not.toHaveBeenCalled();
+      const done = await generateVariant(s.dir, t.id, '1x1', s.images.config, { sourceReference: { ...sourceReference, instruction } });
+      expect(done.variants[0].status).toBe('done');
+      expect(s.images.requests).toHaveLength(1);
+      expect(s.images.requests[0].prompt).toHaveLength(IMAGE_TEMPLATE_REQUEST_LIMIT);
+    } finally { s.app.close(); }
+  });
+
   it('1–4. saves the uploaded reference as a draft and writes its prompt from the image: one prompt request, nothing else', async () => {
     const s = await server();
     try {
@@ -163,9 +232,27 @@ describe('Create Template from Image', () => {
       huge.writeUInt32BE(100000, 16); huge.writeUInt32BE(100000, 20);
       expect(await s.upload(huge)).toMatchObject({ status: 400, body: { error: { code: 'UNSUPPORTED_IMAGE' } } });
       expect(await s.upload(await png(10, 10), { name: 'x'.repeat(81) })).toMatchObject({ status: 400, body: { error: { code: 'INVALID_NAME' } } });
+      const valid = await png(100, 100);
+      expect(await s.upload(valid, {}, 'phone.png', 'image/jpeg')).toMatchObject({ status: 400 });
+      expect(await s.upload(valid, {}, 'phone.png', 'application/octet-stream')).toMatchObject({ status: 400 });
+      expect(await s.upload(valid.subarray(0, valid.length - 25))).toMatchObject({ status: 400 });
       expect(readdirSync(s.dir)).toEqual([]);
       expect(s.writer.writer.describe).not.toHaveBeenCalled();
       expect((await s.get('/image-templates')).body).toEqual({ templates: [] });
+    } finally { s.app.close(); }
+  });
+
+  it.each(['png', 'jpeg', 'webp'] as const)('accepts fully decodable %s bytes with matching MIME regardless of filename extension', async format => {
+    const s = await server();
+    try {
+      const image = await sharp({ create: { width: 32, height: 24, channels: 3, background: '#999' } }).toFormat(format).toBuffer();
+      const reply = await s.upload(image, { name: 'Valid source' }, 'untrusted.extension', `image/${format}`);
+      expect(reply.status).toBe(202);
+      const t = await s.wait(() => s.template(reply.body.id), t => t.promptGeneration?.status !== 'generating');
+      expect(t.promptGeneration?.status).toBe('done');
+      expect(t.reference).toMatchObject({ mimeType: `image/${format}`, sha256: sha(image), width: 32, height: 24 });
+      expect(s.writer.writer.describe).toHaveBeenCalledTimes(1);
+      expect(s.images.send).not.toHaveBeenCalled();
     } finally { s.app.close(); }
   });
 
@@ -577,13 +664,13 @@ describe('Create Template from Image', () => {
 
 describe('the prompt request to OpenAI', () => {
   const answer = (body: unknown, extra: Record<string, unknown> = {}) => ({ responses: { create: vi.fn(async () => ({ id: 'resp_9', status: 'completed', output: [], output_text: JSON.stringify(body), usage: { input_tokens: 1, output_tokens: 2 }, ...extra })) } });
-  const valid = { prompt: PROMPT, suggested_name: 'Lavender phone studio', decomposition_template: 'template-b', reason: 'One product is the hero.' };
+  const valid = verboseImageAnalysis(3344);
 
   it('sends the image with the instruction and a strict schema, on the planner\'s model, and reads the answer', async () => {
     const client = answer(valid), writer = createOpenAIImagePromptWriter({ model: 'gpt-5-mini', client: client as never });
     const image = await referenceForPrompt(await png(3000, 2000));
     const result = await writer.describe(image.bytes, image.mime);
-    expect(result).toMatchObject({ prompt: PROMPT, suggestedName: 'Lavender phone studio', templateKey: 'template-b', reason: 'One product is the hero.', model: 'gpt-5-mini', responseId: 'resp_9' });
+    expect(result).toMatchObject({ prompt: buildImageTemplatePrompt(normalizeImageAnalysis(valid.analysis)), suggestedName: 'Lavender phone studio', templateKey: 'template-b', reason: 'One product is the hero', model: 'gpt-5-mini', responseId: 'resp_9' });
     const request = (client.responses.create.mock.calls[0] as unknown as [unknown])[0] as { model: string; store: boolean; instructions: string; input: { content: { type: string; image_url?: string; detail?: string }[] }[]; text: { format: { strict: boolean; schema: { properties: { decomposition_template: { enum: string[] } } } } } };
     expect(request).toMatchObject({ model: 'gpt-5-mini', store: false, text: { format: { type: 'json_schema', strict: true } } });
     expect(request.text.format.schema.properties.decomposition_template.enum).toEqual(['template-a', 'template-b', 'template-c']);
@@ -592,10 +679,17 @@ describe('the prompt request to OpenAI', () => {
     expect(request.instructions).toBe(imagePromptInstruction());
     // The layer styles are described exactly as the decomposition templates describe what fits them.
     for (const template of TEMPLATES) expect(request.instructions).toContain(`- ${template.key} (${template.name}): ${template.fit}`);
-    for (const detail of ['Exact main subject/product appearance', 'Exact visible object count', 'approximate center in percentages', 'orientation/rotation', 'camera angle', 'crop/framing', 'shadow/reflection', 'material/texture', 'background treatment', 'do not invent text/logos/branding', 'do not change the dominant color palette', 'camera module', 'uncertain']) expect(request.instructions).toContain(detail);
+    for (const detail of ['structured visual evidence', 'camera module', 'visible counts', 'percentages', 'orientation/rotation', 'camera angle', 'framing/crop', 'shadow/reflection', 'material/texture', 'background treatment', 'text/logos/branding', 'uncertain']) expect(request.instructions).toContain(detail);
     // The saved request never carries the image itself.
     expect(JSON.stringify(result.request)).not.toContain('base64');
     expect(await sharp(image.bytes).metadata()).toMatchObject({ width: 1536, height: 1024 });
+  });
+
+  it.each(['template-a', 'template-b', 'template-c'])('retains %s detection in the same single structured response', async templateKey => {
+    const client = answer({ ...valid, decomposition_template: templateKey });
+    const result = await createOpenAIImagePromptWriter({ model: 'm', client: client as never }).describe(Buffer.from('x'), 'image/jpeg');
+    expect(result.templateKey).toBe(templateKey);
+    expect(client.responses.create).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an answer it cannot use, and needs a key before sending anything', async () => {
@@ -604,11 +698,16 @@ describe('the prompt request to OpenAI', () => {
       [[], {}, 'PROMPT_INVALID_JSON'],
       [valid, { output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }] }, 'PROMPT_REFUSED'],
       [valid, { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }, 'PROMPT_INCOMPLETE'],
-      [{ ...valid, prompt: 'x'.repeat(2001) }, {}, 'PROMPT_INVALID'],
-      [{ ...valid, prompt: 'a phone' }, {}, 'PROMPT_INVALID'],
+      [{ ...valid, analysis: {} }, {}, 'PROMPT_INVALID'],
+      [{ ...valid, analysis: { hero: 'a phone' } }, {}, 'PROMPT_INVALID'],
       [{ ...valid, decomposition_template: 'template-z' }, {}, 'PROMPT_INVALID'],
     ];
     for (const [body, extra, code] of cases) await expect(createOpenAIImagePromptWriter({ model: 'm', client: answer(body, extra) as never }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code });
+    for (const output of [null, [], { status: 'completed', output: {} }]) {
+      const create = vi.fn(async () => output);
+      await expect(createOpenAIImagePromptWriter({ model: 'm', client: { responses: { create } } as never }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code: 'PROMPT_INVALID_JSON' });
+      expect(create).toHaveBeenCalledTimes(1);
+    }
     await expect(createOpenAIImagePromptWriter({ model: 'm', client: { responses: { create: async () => ({ status: 'completed', output: [], output_text: '{"prompt":' }) } } as never }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code: 'PROMPT_INVALID_JSON' });
     await expect(createOpenAIImagePromptWriter({ model: 'm', client: { responses: { create: async () => { throw Object.assign(new Error('quota'), { status: 429 }); } } } as never }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code: 'PROMPT_API_ERROR', status: 429 });
     await expect(createOpenAIImagePromptWriter({ model: 'm' }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code: 'PROMPT_NOT_CONFIGURED' });

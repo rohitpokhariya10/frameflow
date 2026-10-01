@@ -2,6 +2,35 @@
 
 Open **OpenAI + Seedream test → Create Template from Image**. The existing bottom launchers and zoom controls retain their positions. This feature is separate from the local **Create Own Template** authoring flow.
 
+## Structured analysis and local prompt compilation
+
+The root fix replaces `image → model-written prose → reject over 2000 characters` with:
+
+`validated reference → one structured analysis → local normalization/compilation → editable prompt → original-reference images.edit → decomposition → layers → editor`.
+
+`createOpenAIImagePromptWriter` requests `IMAGE_ANALYSIS_SCHEMA` and passes the response to `parseImageAnalysisResponse` and `buildImageTemplatePrompt`. The schema contains scene type, hero identity/appearance/orientation/view/position/scale, counted objects with spatial relationships, composition, palette, lighting, materials, background treatment, visible text, preservation rules, suggested name and A/B/C detection. Strings have per-field bounds; objects are limited to 12 entries and palette/material/rule lists to six each. The same call detects the layer style. There is no AI prose-rewrite or automatic retry.
+
+Local normalization tolerates missing optional fields, nulls, unknown keys, duplicate evidence and excess verbosity. It bounds whole phrases/words with Unicode-aware segmentation, never slices the finished prompt or splits a word/emoji. An oversized unbroken identifier is represented by a reference-preservation phrase rather than a broken identifier. Invalid object counts, unknown layer styles, unusable core evidence, malformed JSON, refusals and incomplete responses produce one explicit analysis error.
+
+The deterministic builder first reserves a compact representation of every retained P0 section: hero identity/appearance, orientation/view/position, object counts/relationships and fixed preservation constraints. It expands those sections before admitting P1 framing/scale/palette/background/hierarchy and then P2 lighting/material/depth/prop detail. Optional sections that do not fit are omitted whole. Exact duplicate objects/rules are removed. Beyond 12 object entries, the prompt explicitly preserves additional objects from the canonical image; the prompt is a bounded description, not an exhaustive scene graph. Normalized analysis is persisted independently in each group's `group.json`; the raw response remains in the existing server artifact file.
+
+| Budget | Source / value |
+| --- | --- |
+| Editable prompt | `IMAGE_TEMPLATE_LIMITS.prompt`: **2000**, derived from the existing base limit and available complete-request space |
+| App complete request | `IMAGE_TEMPLATE_REQUEST_LIMIT`: **3000** |
+| Fixed instruction headroom | Consistency + longest framing + reference instruction + join spaces: **949** |
+| Longest valid request | **2949** with a full 2000-character edit; 51 characters spare |
+| GPT Image provider maximum | Installed OpenAI SDK documents **32000**; the app keeps its smaller contract |
+| Decomposition | Independent **2000** Seedream limit and planner reserves; unchanged |
+
+Client counter, client blockers, server draft-save validation and Generate validation now count the exact editable text, including whitespace. A user edit at 2000 is valid; 2001 is displayed unchanged and blocks generation. Going below the limit re-enables Generate. `generateVariant` validates the **complete** image-template request after appending reference instructions and before creating the image client. System compaction costs zero provider calls; user-authored text is never silently compacted.
+
+Uploads retain the existing 25 MB and Sharp decoder/pixel limits. Before creating a group or analyzing, the server validates PNG/JPEG/WebP signature/metadata, single-frame dimensions, matching multipart MIME and actual decode through the analysis-image preparation path. Filename extensions are cosmetic: decoded bytes and matching MIME govern acceptance. Missing/empty/corrupt, unsupported, oversized, extreme-dimension and interrupted multipart uploads cannot start analysis. Original bytes remain unchanged.
+
+**Write again from image** makes one explicit new analysis request and compiles locally, preserving name, ratio selection and manual A/B/C override. It is draft-only. Source replacement still requires a new group. Selected ratios use the original bytes plus the latest valid edit; retries and later-added ratios preserve that lineage. No text-only fallback or copy-from-copy chain was added. Existing save serialization, duplicate-action guards and stale-response protection remain in place.
+
+The offline fixture now uses the real analysis adapter/compiler with synthetic JSON responses of exactly **3344** and **4002** characters. Both must yield a visible, editable, budget-safe prompt after one fake analysis call. `?analysis=3344` on the test reference endpoint selects the smaller case; the default selects 4002. Fake images still cannot establish live visual fidelity.
+
 ## Reviewer walkthrough without provider calls
 
 ```sh
@@ -77,7 +106,7 @@ The takeover reproduced the three failures already reported against clean HEAD; 
 
 The existing main-client chunk-size warning also remains. These are separate from the image-template feature's focused tests.
 
-## Verification completed on 2026-10-01
+## Historical feature verification (before the structured-analysis fix)
 
 - Typecheck, lint and production build passed after the final review fixes. Main client chunk: 617.73 kB raw / 184.14 kB gzip; the 500 kB warning predates this feature.
 - All 41 focused feature/access tests passed.
@@ -89,7 +118,7 @@ The existing main-client chunk-size warning also remains. These are separate fro
 
 Review artifacts (ignored by Git): [1366px launchers](../test-results/image-template-review/1366-launchers.png), [1920px prompt](../test-results/image-template-review/1920-prompt.png), [returned layers](../test-results/image-template-review/1920-layers.png), [editor](../test-results/image-template-review/1920-editor.png). The same folder contains the test logs, including the full unit-run failures and isolated reruns.
 
-## Working-tree file inventory
+## Historical initial feature inventory
 
 23 feature/verification files: 10 modified tracked files and 13 new files. All remain uncommitted.
 
@@ -138,7 +167,7 @@ No generated sibling is used as input, no silent text-only fallback exists, and 
 
 The Create Own Template laptop drag failure was a test-coordinate race: its logical-size assertion completed before ResizeObserver fitted the visible canvas, so mouse-down hit the background at an outdated position. Only the test helper changed: Playwright's trial click waits for element stability before coordinates are read. It sends no click. The test still performs the real drag and asserts geometry and persistence, with the original timeouts. Runtime template code remains unchanged.
 
-## Final fidelity verification (2026-10-01)
+## Historical fidelity verification (before the structured-analysis fix)
 
 - Final typecheck, lint and production build: passed. The existing main-chunk size warning remains.
 - Final focused feature/access/A/B/C generation tests: **91 passed** across six files.
@@ -149,3 +178,40 @@ The Create Own Template laptop drag failure was a test-coordinate race: its logi
 - `git diff --check`: passed. No commits, pushes, staged files or live provider calls. Work remains on `main`.
 
 Latest evidence is copied into the ignored `test-results/fidelity-review/` directory: final check logs, the original full-unit log, isolated drag reruns and viewport screenshots. The final browser log retains the complete list of passing tests.
+
+## Structured-analysis fix: current file inventory
+
+This fix leaves 16 feature/verification files uncommitted on `main`:
+
+| Category | Files |
+| --- | --- |
+| Client (3) | `client/src/features/imageTemplates/CreateTemplateFromImage.tsx`, `imageTemplates.ts`, `imageTemplates.test.ts` |
+| Server (4) | `server/src/decomposition/imageTemplates.ts`, `generationGroups.ts`, `imageTemplates.test.ts`, new `imageTemplateAnalysis.fixture.ts` |
+| Shared (5) | new `shared/src/imageTemplateAnalysis.ts`, new `imageTemplateAnalysis.test.ts`, `imageTemplateGeneration.ts`, `imageTemplateGeneration.test.ts`, `index.ts` |
+| Browser/fixture (3) | `tests/e2e/image-templates.spec.ts`, `tests/e2e-image-templates/journey.spec.ts`, `tests/fixtures/imageTemplateOfflineServer.ts` |
+| Documentation (1) | `docs/CREATE_TEMPLATE_FROM_IMAGE.md` |
+
+The inherited `test__.png` is untouched and excluded. No dependency, access-control, feature-flag, standalone A/B/C, decomposition, editor or persistence implementation was changed. The small editor-facing UI change describes prompt provenance accurately and marks whitespace-only edits as edits. Test screenshots/build output/logs remain ignored. There are no commits, pushes or merges for this fix.
+
+## Structured-analysis verification (2026-10-01)
+
+- Focused shared/client/server/access/A/B/C suite: **119 passed** after the compaction and malformed-response changes. Three PNG/JPEG/WebP acceptance cases added afterward also passed in the final full unit run.
+- Final full unit suite: **933 passed / 935 total**. Only the known `reviewFlow.test.ts` phase-4-versus-5 and `router.test.ts` 503-versus-202 failures remain. No new failures or timeouts. The previously documented repository lease failure did not reproduce in either full run.
+- Full offline browser suite: **197/197 passed**, at 1366/1440 with real-backend journeys additionally at 1920. The initial new multi-group test omitted the Origin header on direct API reads; the access guard correctly rejected it. The harness now supplies Origin; production access rules were not changed.
+- After the final provenance-hint and whitespace-edit badge changes, the rebuilt client passed **27/27 targeted browser checks**, including all three real-backend viewports.
+- Final typecheck, lint, production build and `git diff --check`: **passed**. The existing main-client chunk-size warning remains.
+- Both synthetic 3344/4002-character analysis responses compile locally to **1146-character** editable prompts with hero/camera details, all four sphere positions/count, orientation and preservation constraints intact. One explicit analysis request; no extra rewrite/retry. Tests also cover dense scenes, huge individual fields, missing optional data, Unicode/emoji, invalid responses, all edit/request boundaries, selection counts, lineage and failure isolation.
+- No live OpenAI/fal/Seedream calls, no automatic paid retries, no commits, no pushes. Screenshots/logs/build outputs are ignored.
+
+| Required outcome | Result |
+| --- | --- |
+| 3344-equivalent / 4002-equivalent → usable editable prompt | YES / YES |
+| Extra OpenAI retry / raw string truncation | NO / NO |
+| Editable and complete-request budgets enforced | YES / YES |
+| Prompt visible / editable / over-limit edits blocked / no provider call while invalid | YES / YES / YES / YES |
+| Original input for 1:1 / 4:5 / 16:9 / later-added ratio / retry | YES / YES / YES / YES / YES |
+| Copy-from-copy / text-only fallback | NO / NO |
+| Template A / B / C / Create Own Template | PASS / PASS / PASS / PASS |
+| This feature's decomposition / Open in editor / reload persistence | PASS / PASS / PASS |
+
+Cheapest live retest, described only: a new valid reference plus one **Generate prompt** click costs one analysis request and directly checks the reported bug. To check fidelity afterward, select only **1:1** and generate once: one additional image edit. Decompose only after that result is acceptable; it adds the existing planner and Seedream costs described above. No live retest was executed. Raster text remains pixels; native OCR/text extraction and live-model visual fidelity are outside this offline verification.

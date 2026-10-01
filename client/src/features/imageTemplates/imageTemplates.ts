@@ -1,4 +1,4 @@
-import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type DesignVariant, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
+import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ImageVisualAnalysis, type DesignVariant, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { experimentToVariant, type ExperimentRun } from '../decomposition/layerizeExperiment';
 import type { GenerationVariant } from '../decomposition/templateGeneration';
@@ -15,7 +15,7 @@ export type ImageTemplateVariant = GenerationVariant & { sourceReference?: { fil
 export type ImageTemplate = {
   id: string; kind: 'image-template'; version: string; createdAt: string; updatedAt: string; name: string;
   reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number };
-  promptGeneration?: PromptGeneration; generatedPrompt?: string; prompt: string; promptEdited: boolean;
+  analysis?: ImageVisualAnalysis; promptGeneration?: PromptGeneration; generatedPrompt?: string; prompt: string; promptEdited: boolean;
   detected?: { templateKey: GenerationTemplateKey; reason: string }; decomposeWith?: GenerationTemplateKey; decomposeWithChosen?: boolean;
   aspectRatios: ImageTemplateRatio[]; generatedAt?: string; ratioStrategy?: 'reference' | 'uploaded-reference'; variants: ImageTemplateVariant[];
 };

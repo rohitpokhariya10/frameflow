@@ -1,3 +1,4 @@
+import { IMAGE_TEMPLATE_LIMITS } from '@frameflow/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ExperimentLayer } from '../decomposition/layerizeExperiment';
 import { generationBlockers, imageTemplateApi, importAsVersion, RESULT_STATUS_LABELS, resultStatus, templateInProgress, templateSummary, withRatio, withTemplate, type ImageTemplate, type ImageTemplateVariant } from './imageTemplates';
@@ -56,6 +57,13 @@ describe('Create Template from Image: the form', () => {
     expect(generationBlockers({ name: ' ', prompt: '', ratios: [] })).toEqual(['Name your template.', 'Generate the prompt from the image, or write one.', 'Choose at least one size.']);
     expect(generationBlockers({ name: 'x', prompt: '', ratios: ['1:1'], promptGeneration: 'generating' })).toEqual(['Wait for the prompt to be written.']);
     expect(generationBlockers({ name: 'x'.repeat(81), prompt: 'red phone', ratios: ['1:1'] })).toEqual(['The template name is 81 characters; at most 80.', 'The prompt is too short to describe an image.']);
+  });
+
+  it('counts exact user text and rejects one character above the inclusive shared limit', () => {
+    for (const [length, valid] of [[IMAGE_TEMPLATE_LIMITS.prompt - 1, true], [IMAGE_TEMPLATE_LIMITS.prompt, true], [IMAGE_TEMPLATE_LIMITS.prompt + 1, false], [IMAGE_TEMPLATE_LIMITS.prompt - 1, true]] as const) {
+      const prompt = 'a'.repeat(length - 1) + ' ';
+      expect(generationBlockers({ name: 'Boundary', prompt, ratios: ['1:1'] }).length === 0).toBe(valid);
+    }
   });
 
   it('keeps the list newest first, replacing a template where it is', () => {

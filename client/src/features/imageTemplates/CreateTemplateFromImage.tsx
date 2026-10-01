@@ -195,7 +195,7 @@ function TemplateDraft({ template, info, busy, onCreate, onChange, onRegenerate,
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
   const nameText = name ?? template?.name ?? '', promptText = prompt ?? template?.prompt ?? '', chosen = ratios ?? template?.aspectRatios ?? [...IMAGE_TEMPLATE_RATIOS];
   const writing = template?.promptGeneration?.status === 'generating', failed = template?.promptGeneration?.status === 'failed';
-  const edited = !!template?.generatedPrompt && promptText.trim() !== template.generatedPrompt;
+  const edited = !!template?.generatedPrompt && promptText !== template.generatedPrompt;
   const blockers = generationBlockers({ name: nameText, prompt: promptText, ratios: chosen, promptGeneration: template?.promptGeneration?.status });
   const choose = (next: File) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(next.type)) return onInvalid('Choose a PNG, JPEG or WebP image.');
@@ -235,7 +235,7 @@ function TemplateDraft({ template, info, busy, onCreate, onChange, onRegenerate,
     </section>
 
     <section className="cti-step" aria-label="Prompt">
-      <StepHead number={2} title="Prompt" done={!!template?.prompt && !writing} hint={info ? `Written by OpenAI ${info.promptModel} from your image` : undefined} />
+      <StepHead number={2} title="Prompt" done={!!template?.prompt && !writing} hint="Built from your image’s visual details" />
       {!template
         ? <div className="cti-generate-prompt">
           <button className="ws-btn ws-btn-primary" disabled={!file || !!busy} onClick={() => file && onCreate(file, nameText, chosen)}>{busy === 'create' ? spinner : <Sparkles size={16} aria-hidden="true" />} Generate prompt from image</button>

@@ -1,5 +1,7 @@
 /** Local-only reviewer fixture: real routes/storage/planner adaptation/import, deterministic providers, no credentials. */
 import express from 'express';
+import { verboseImageAnalysis } from '../../server/src/decomposition/imageTemplateAnalysis.fixture.js';
+import { createOpenAIImagePromptWriter } from '../../server/src/decomposition/imageTemplates.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -15,7 +17,7 @@ if (process.env.FRAMEFLOW_OFFLINE_E2E !== '1') throw new Error('This fixture req
 globalThis.fetch = async () => { throw new Error('Network is disabled in the offline fixture server.'); };
 const port = Number(process.env.FRAMEFLOW_OFFLINE_PORT ?? 3317), origin = `http://127.0.0.1:${port}`;
 const root = mkdtempSync(join(tmpdir(), 'frameflow-image-template-e2e-'));
-const prompt = 'A premium lavender smartphone advertisement. A single upright phone is centred above a pale round platform, with small decorative spheres on a soft lilac studio background. Soft daylight, clean geometry and generous breathing room.';
+
 const pause = () => new Promise<void>(done => setTimeout(done, 350));
 async function artwork(width: number, height: number, part: 'all' | 'background' | 'phone' = 'all') {
   const backdrop = '<rect width="1000" height="1000" fill="#ede4f7"/><circle cx="190" cy="230" r="75" fill="#ddd0ed"/><circle cx="800" cy="500" r="110" fill="#e1d7ed"/><ellipse cx="500" cy="820" rx="320" ry="65" fill="#c6b6dc"/><ellipse cx="500" cy="790" rx="320" ry="60" fill="#faf7ff"/>';
@@ -51,13 +53,19 @@ const router = createLayerizeRouter({
   runsDir: join(root, 'runs'), imageTemplatesDir: join(root, 'templates'),
   generationDirs: { 'template-a': join(root, 'a'), 'template-b': join(root, 'b'), 'template-c': join(root, 'c') },
   access: { production: true, clientOrigin: origin },
-  generation: (): GenerationConfig => ({ model: 'offline-image-fixture', client: () => ({ images: { generate, edit: generate } }) as unknown as ReturnType<GenerationConfig['client']> }),
-  imagePrompt: () => ({ model: 'offline-prompt-fixture', describe: async () => { await pause(); return { prompt, suggestedName: 'Lavender studio', templateKey: 'template-b', reason: 'One dominant product on a studio background.', model: 'offline-prompt-fixture', request: { fixture: true }, raw: { fixture: true } }; } }),
+  generation: (): GenerationConfig => ({ model: 'offline-image-fixture', client: () => ({ images: { generate: async () => { throw new Error('Image templates must use images.edit.'); }, edit: generate } }) as unknown as ReturnType<GenerationConfig['client']> }),
+  imagePrompt: () => createOpenAIImagePromptWriter({ model: 'offline-prompt-fixture', client: { responses: { create: async (request: { input: { content: { image_url?: string }[] }[] }) => {
+    await pause();
+    const image = request.input[0].content.find(item => item.image_url)!.image_url!;
+    const { width } = await sharp(Buffer.from(image.split(',')[1], 'base64')).metadata();
+    const characters = width === 900 ? 3344 : 4002;
+    return { id: `offline-analysis-${characters}`, status: 'completed', output: [], output_text: JSON.stringify(verboseImageAnalysis(characters)) };
+  } } } as never }),
   deps: () => ({ planner, transport: () => transport }),
 });
 // Explicit empty configuration: no environment credentials or .env files are read.
 const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router);
-app.get('/__test__/reference.png', async (_req, res) => { res.type('png').send(await artwork(1024, 1024)); });
+app.get('/__test__/reference.png', async (req, res) => { const side = req.query.analysis === '3344' ? 900 : 1024; res.type('png').send(await artwork(side, side)); });
 app.use(express.static(resolve('client/dist')));
 app.get('/{*path}', (_req, res) => res.sendFile(resolve('client/dist/index.html')));
 app.listen(port, '127.0.0.1', () => console.info(`Offline fixture: ${origin}; data: ${root}`));

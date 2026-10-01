@@ -22,8 +22,6 @@ export const IMAGE_TEMPLATE_RATIO_NAMES: Record<ImageTemplateRatio, string> = { 
 export const IMAGE_TEMPLATE_SIZES: Record<ImageTemplateRatio, { width: number; height: number }> = {
   '1:1': GENERATION_IMAGE_SIZES['1:1'], '4:5': GENERATION_IMAGE_SIZES['4:5'], '16:9': GENERATION_IMAGE_SIZES['16:9'],
 };
-/** name: a template's name. prompt: the template's prompt, the shared base limit (a ratio adds its sentences to it). */
-export const IMAGE_TEMPLATE_LIMITS = { name: 80, prompt: GENERATION_PROMPT_LIMITS.base } as const;
 
 /** Added to every ratio's prompt, word for word: what stays the same between the ratios of one template. */
 export const IMAGE_TEMPLATE_CONSISTENCY = 'Adapt the original uploaded reference with minimal reinterpretation. Apply explicit edits in the prompt above; otherwise the reference governs exact subject/product geometry and details (including camera modules), object count, relative sizes and positions, orientation, camera view, framing, overlaps and depth, visual hierarchy, palette, lighting, materials/textures and background. Do not otherwise add or remove objects, redesign products or props, invent text/logos/branding, change object arrangements, stretch objects or newly crop important elements.';
@@ -35,6 +33,18 @@ export const IMAGE_TEMPLATE_FRAMING: Record<ImageTemplateRatio, string> = {
 };
 /** Added to every ratio's edit request, which always carries the original uploaded reference. */
 export const IMAGE_TEMPLATE_REFERENCE_INSTRUCTION = 'The attached image is the original uploaded reference, the canonical source for every ratio. Preserve its details over vague prompt wording; never copy another generated variant.';
+/** The installed OpenAI SDK's GPT Image edit limit. Our existing application contract is intentionally smaller. */
+export const GPT_IMAGE_PROMPT_LIMIT = 32_000;
+export const IMAGE_TEMPLATE_REQUEST_LIMIT = Math.min(GENERATION_PROMPT_LIMITS.final, GPT_IMAGE_PROMPT_LIMIT);
+/** Includes the three spaces added when joining the four request parts. Derived whenever wording changes. */
+export const IMAGE_TEMPLATE_INSTRUCTION_HEADROOM = IMAGE_TEMPLATE_CONSISTENCY.length
+  + Math.max(...Object.values(IMAGE_TEMPLATE_FRAMING).map(text => text.length)) + IMAGE_TEMPLATE_REFERENCE_INSTRUCTION.length + 3;
+export const IMAGE_TEMPLATE_LIMITS = { name: 80, prompt: Math.min(GENERATION_PROMPT_LIMITS.base,
+  IMAGE_TEMPLATE_REQUEST_LIMIT - IMAGE_TEMPLATE_INSTRUCTION_HEADROOM) } as const;
+/** Also used at the provider boundary, after the reference instruction has been appended. Never rewrites user text. */
+export function validateImageTemplateRequestPrompt(prompt: string): void {
+  if (prompt.length > IMAGE_TEMPLATE_REQUEST_LIMIT) throw new Error(`The complete image prompt is ${prompt.length} characters; at most ${IMAGE_TEMPLATE_REQUEST_LIMIT}. No image request was sent.`);
+}
 /** The framing and consistency sentences in the shape the shared prompt builder takes. */
 export const IMAGE_TEMPLATE_PROMPT_PARTS = { consistency: IMAGE_TEMPLATE_CONSISTENCY, framing: { ...IMAGE_TEMPLATE_FRAMING } as Record<GenerationAspectRatio, string> };
 
@@ -54,15 +64,15 @@ export function resolveImageTemplateName(input: unknown): { name: string; error?
   return { name };
 }
 /**
- * The template's prompt as it will be sent: trimmed (its line breaks are kept), and long enough to describe an image and
+ * The template's prompt exactly as edited, and long enough to describe an image and
  * no longer than the limit. Nothing is ever cut to fit.
  */
 export function resolveImageTemplatePrompt(input: unknown): { prompt: string; error?: string } {
   if (typeof input !== 'string') return { prompt: '', error: 'The prompt must be text.' };
-  const prompt = input.replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
-  if (!prompt) return { prompt, error: 'Generate a prompt from the image, or write one.' };
-  if ((prompt.match(/\p{L}/gu) ?? []).length < 20) return { prompt, error: 'The prompt is too short to describe an image.' };
+  const prompt = input;
+  if (!prompt.trim()) return { prompt, error: 'Generate a prompt from the image, or write one.' };
   if (prompt.length > IMAGE_TEMPLATE_LIMITS.prompt) return { prompt, error: `The prompt is ${prompt.length} characters; at most ${IMAGE_TEMPLATE_LIMITS.prompt}.` };
+  if ((prompt.match(/\p{L}/gu) ?? []).length < 20) return { prompt, error: 'The prompt is too short to describe an image.' };
   return { prompt };
 }
 /** The exact prompt of one ratio: the template's prompt, the consistency sentence and that ratio's framing. */

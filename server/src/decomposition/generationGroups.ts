@@ -31,7 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import OpenAI, { toFile } from 'openai';
 import sharp from 'sharp';
-import { buildGenerationVariantPrompt, GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, generationVariantId, resolveGenerationBasePrompt,
+import { validateImageTemplateRequestPrompt, buildGenerationVariantPrompt, GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, generationVariantId, resolveGenerationBasePrompt,
   type GenerationAspectRatio, type GenerationFieldValues, type GenerationProfile, type GenerationTemplateKey } from '@frameflow/shared';
 import { imageModel } from './aiModels.js';
 import { RunError, validRunId, type LayerTarget } from './layerizeExperiment.js';
@@ -292,6 +292,7 @@ export async function generateVariant(root: string, groupId: string, variantId: 
   write(dir, files.request, from ? { method: 'images.edit', ...request, image: `<${sending.sourceReference ? 'original uploaded reference' : `the ${sending.reference!.aspectRatio} variant's image`}: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
   let outcome: Partial<GenerationVariant>, requestId: string | undefined, responseSaved = false;
   try {
+    if (sending.sourceReference) validateImageTemplateRequestPrompt(request.prompt);
     // Original upload (when supplied), otherwise the finished sibling, exactly as saved. Missing input fails; no fallback.
     const input = from ? readFileSync(join(dir, from.file)) : undefined;
     if (sending.sourceReference && createHash('sha256').update(input!).digest('hex') !== sending.sourceReference.sha256) {
