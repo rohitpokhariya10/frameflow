@@ -73,6 +73,8 @@ export type GenerationVariant = {
    * variant and image, and the sentence added to the prompt. What was sent is `prompt`, a space, then `instruction`.
    */
   reference?: { variantId: string; aspectRatio: string; file: string; sha256?: string; instruction: string };
+  /** Original uploaded artwork, when supplied by the caller. Every ratio uses this file, never a generated sibling. */
+  sourceReference?: { file: string; sha256: string; instruction: string };
   /** The provider's own status and messages when it failed, and the file with its complete error response. */
   error?: { code: string; message: string; status?: number; messages?: { msg: string; type?: string }[]; bodyFile?: string };
   /** Decomposition runs (of the group's template) made from this variant's image, oldest first. */
@@ -90,7 +92,7 @@ export type GenerationGroup = {
   /** What the template's profile noted about this creative when it was made. */
   notes?: string[];
   /** 'reference': after the first finished ratio, the others are made from its image. Absent: every ratio from its prompt alone. */
-  ratioStrategy?: 'reference';
+  ratioStrategy?: 'reference' | 'uploaded-reference';
   aspectRatios: string[]; variants: GenerationVariant[];
   /** Read from a record made before groups existed: one image, never regenerated. */
   legacy?: true;
@@ -269,28 +271,34 @@ function referenceVariant(group: GenerationGroup, variantId: string): Generation
  * In a group that keeps its ratios together by image, a variant that has a finished sibling is made from that sibling's
  * image (an image edit request: the image, this variant's prompt and `referenceInstruction`); the first one, having no
  * sibling yet, is generated from its prompt alone, as is any variant asked for with `independent`. Either way it is one
- * request, and what was sent is recorded on the variant.
+ * request, and what was sent is recorded on the variant. An explicit sourceReference takes precedence over sibling
+ * selection and independent generation: every attempt edits that original file, with no text-only fallback.
  */
-export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig, options: { referenceInstruction?: string; independent?: boolean } = {}): Promise<GenerationGroup> {
+export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig, options: { referenceInstruction?: string; independent?: boolean; sourceReference?: GenerationVariant['sourceReference'] } = {}): Promise<GenerationGroup> {
   const dir = groupDir(root, groupId), files = { request: `${variantId}.openai-request.json`, response: `${variantId}.openai-response.json`, error: `${variantId}.provider-error.json` };
   const started = Date.now();
   const sending = findVariant(update(root, groupId, (group) => {
     const variant = findVariant(group, variantId);
     if (variant.status === 'done') throw new RunError('ALREADY_GENERATED', `The ${variant.aspectRatio} variant already has its image.`);
-    const source = group.ratioStrategy === 'reference' && options.referenceInstruction && !options.independent ? referenceVariant(group, variantId) : undefined;
+    const source = !options.sourceReference && group.ratioStrategy === 'reference' && options.referenceInstruction && !options.independent ? referenceVariant(group, variantId) : undefined;
     Object.assign(variant, { status: 'generating', attempts: variant.attempts + 1, startedAt: new Date(started).toISOString(), generator: { provider: 'openai', model: config.model }, requestFile: files.request });
     // What an earlier attempt left behind does not describe this one.
-    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs; delete variant.reference;
-    if (source) variant.reference = { variantId: source.id, aspectRatio: source.aspectRatio, file: source.image!.file, ...(source.image!.sha256 ? { sha256: source.image!.sha256 } : {}), instruction: options.referenceInstruction! };
+    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs; delete variant.reference; delete variant.sourceReference;
+    if (options.sourceReference) variant.sourceReference = options.sourceReference;
+    else if (source) variant.reference = { variantId: source.id, aspectRatio: source.aspectRatio, file: source.image!.file, ...(source.image!.sha256 ? { sha256: source.image!.sha256 } : {}), instruction: options.referenceInstruction! };
   }), variantId);
-  const from = sending.reference;
+  const from = sending.sourceReference ?? sending.reference;
   const request = { model: config.model, prompt: from ? `${sending.prompt} ${from.instruction}` : sending.prompt, size: `${sending.size.width}x${sending.size.height}`, n: 1, output_format: 'png' as const };
-  write(dir, files.request, from ? { method: 'images.edit', ...request, image: `<the ${from.aspectRatio} variant's image: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
+  write(dir, files.request, from ? { method: 'images.edit', ...request, image: `<${sending.sourceReference ? 'original uploaded reference' : `the ${sending.reference!.aspectRatio} variant's image`}: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
   let outcome: Partial<GenerationVariant>, requestId: string | undefined, responseSaved = false;
   try {
-    // The finished sibling's image, exactly as it was saved, is the input of an edit request; otherwise plain generation.
+    // Original upload (when supplied), otherwise the finished sibling, exactly as saved. Missing input fails; no fallback.
+    const input = from ? readFileSync(join(dir, from.file)) : undefined;
+    if (sending.sourceReference && createHash('sha256').update(input!).digest('hex') !== sending.sourceReference.sha256) {
+      throw new RunError('REFERENCE_CHANGED', 'The original reference file has changed. Create a new template from the intended image.');
+    }
     const response = from
-      ? await config.client().images.edit({ ...request, image: await toFile(readFileSync(join(dir, from.file)), from.file, { type: from.file.endsWith('.png') ? 'image/png' : from.file.endsWith('.webp') ? 'image/webp' : 'image/jpeg' }) })
+      ? await config.client().images.edit({ ...request, image: await toFile(input!, from.file, { type: from.file.endsWith('.png') ? 'image/png' : from.file.endsWith('.webp') ? 'image/webp' : 'image/jpeg' }) })
       : await config.client().images.generate(request);
     requestId = (response as { _request_id?: string | null })._request_id ?? undefined;
     // The response as returned, with the image bytes left to the image file.

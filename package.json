@@ -19,6 +19,8 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:offline": "playwright test -c playwright.offline.config.ts",
+    "demo:image-templates": "FRAMEFLOW_OFFLINE_E2E=1 node --conditions=development --import tsx tests/fixtures/imageTemplateOfflineServer.ts",
     "test:e2e:decomposition": "playwright test -c playwright.decomposition.config.ts",
     "dev:decomposition": "VITE_LEGACY_IMAGE_TO_LAYERS=1 concurrently -k -n client,server,worker \"npm run dev -w @frameflow/client\" \"npm run dev -w @frameflow/server\" \"npm run worker:dev -w @frameflow/server\"",
     "decomp:setup": "npm run decomp:setup -w @frameflow/server",

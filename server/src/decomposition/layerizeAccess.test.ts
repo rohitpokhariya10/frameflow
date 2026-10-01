@@ -45,7 +45,8 @@ const providers = () => {
 async function app(env: Record<string, string | undefined>, access: ExperimentAccess = PRODUCTION) {
   const fakes = providers(), root = mkdtempSync(join(tmpdir(), 'layerize-access-'));
   const dirs = { 'template-a': join(root, 'a'), 'template-b': join(root, 'b'), 'template-c': join(root, 'c') };
-  const experiment = layerizeExperimentEnabled(env) ? createLayerizeRouter({ runsDir: join(root, 'runs'), deps: fakes.deps, generation: fakes.generation, generationsDir: dirs['template-a'], generationDirs: dirs, access }) : undefined;
+  const experiment = layerizeExperimentEnabled(env) ? createLayerizeRouter({ runsDir: join(root, 'runs'), deps: fakes.deps, generation: fakes.generation, generationsDir: dirs['template-a'], generationDirs: dirs, access,
+    imageTemplatesDir: join(root, 'image-templates'), imagePrompt: () => ({ model: 'fake', describe: async () => { throw new Error('No prompt calls in access tests.'); } }) }) : undefined;
   // The earlier generic decomposition pipeline, configured as on Render: DECOMPOSITION_ENABLED is not set.
   const legacy = createDecompositionRouter(readDecompositionConfig({ NODE_ENV: 'production', CLIENT_ORIGIN: APP, DECOMP_DATA_DIR: join(root, 'legacy') }));
   const server = createApp(readConfig({ CLIENT_ORIGIN: APP, TRUST_PROXY_HOPS: '1' }), undefined, () => undefined, undefined, legacy, experiment).listen(0, '127.0.0.1');
@@ -83,6 +84,21 @@ describe('the layerize experiment is mounted only when LAYERIZE_EXPERIMENT=1', (
         expect(await s.call('GET', `/api/layerize-experiment/${key}/groups`, READ)).toEqual({ status: 200, body: { groups: [] } });
       }
       expect(await s.call('GET', '/api/health')).toMatchObject({ status: 200, body: { status: 'ok' } });
+      expect(s.fakes.image).not.toHaveBeenCalled();
+      expect(s.fakes.planner).not.toHaveBeenCalled();
+    } finally { s.server.close(); }
+  });
+
+  it('image-derived templates inherit production origin checks for reads, uploads, PATCH edits and every paid action', async () => {
+    const s = await app({ NODE_ENV: 'production', LAYERIZE_EXPERIMENT: '1' });
+    try {
+      const base = '/api/layerize-experiment/image-templates';
+      expect(await s.call('GET', base, READ)).toMatchObject({ status: 200, body: { templates: [] } });
+      expect((await s.call('GET', `${base}/info`, READ)).status).toBe(200);
+      for (const [method, path] of [['GET', base], ['POST', base], ['PATCH', `${base}/draft`], ['POST', `${base}/draft/prompt`],
+        ['POST', `${base}/draft/generate`], ['POST', `${base}/draft/variants/1x1/decompose`], ['POST', `${base}/draft/variants/1x1/resume`]]) {
+        expect(await s.call(method, path, PROXIED)).toMatchObject({ status: 403, body: { error: { code: 'ORIGIN_DENIED' } } });
+      }
       expect(s.fakes.image).not.toHaveBeenCalled();
       expect(s.fakes.planner).not.toHaveBeenCalled();
     } finally { s.server.close(); }

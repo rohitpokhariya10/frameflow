@@ -36,6 +36,9 @@ async function setLayout(page: Page, values: Record<string, number>) {
 const fields = (page: Page, element: string) => page.locator('fieldset.tpl-fields').filter({ has: page.locator('legend', { hasText: element }) });
 /** Drags the element at `index` by a fraction of the canvas, with the real pointer. */
 async function dragElement(page: Page, index: number, by: [number, number]) {
+  // Aspect changes update logical dimensions before ResizeObserver finishes fitting the visible canvas.
+  // Wait for stable screen geometry before deriving pointer coordinates; a trial click sends no input.
+  await page.getByTestId('template-canvas').click({ trial: true });
   const frame = (await page.getByTestId('template-canvas').boundingBox())!, [x, y, width, height] = (await canvasState(page)).elements[index].fractions;
   const from = { x: frame.x + (x + width / 2) * frame.width, y: frame.y + (y + height / 2) * frame.height };
   await page.mouse.move(from.x, from.y);

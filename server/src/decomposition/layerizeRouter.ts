@@ -24,6 +24,7 @@ import { createGenerationGroup, findVariant, generateVariant, generationsDirFor,
 import { templateAHandoff } from './templateAGeneration.js';
 import { templateBHandoff } from './templateBGeneration.js';
 import { templateCHandoff } from './templateCGeneration.js';
+import { DEFAULT_IMAGE_TEMPLATES_DIR, liveImagePromptWriter, registerImageTemplateRoutes, type ImagePromptWriter } from './imageTemplates.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
@@ -91,9 +92,11 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
 /**
  * generation: the test generators' image generator. generationsDir: where Template A's groups are kept; generationDirs:
  * the same per template. Defaults: the app's configured generator and one folder per template. access: who may use it
- * (default: from CLIENT_ORIGIN and NODE_ENV).
+ * (default: from CLIENT_ORIGIN and NODE_ENV). imageTemplatesDir, imagePrompt: where "Create Template from Image" keeps
+ * its templates, and what writes a prompt from a reference image (default: its own folder, and OpenAI).
  */
-export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig; access?: ExperimentAccess } = {}): Router {
+export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig; access?: ExperimentAccess;
+  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
   const deps = options.deps ?? (() => liveDeps());
   let active: string | undefined;
@@ -227,6 +230,21 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
       } catch (error) { next(error); }
     });
   }
+  // "Create Template from Image" (imageTemplates.ts): its own folder and routes, on this router's image queue and under
+  // its one-active-run rule. A decomposition it asks for while a run is active waits for that run instead of being
+  // refused; nothing above changes for it.
+  const waiting = new Set<string>();
+  let line: Promise<unknown> = Promise.resolve();
+  const idle = async () => { while (active) await new Promise(done => setTimeout(done, 200)); };
+  registerImageTemplateRoutes(router, {
+    dir: options.imageTemplatesDir ?? DEFAULT_IMAGE_TEMPLATES_DIR, runsDir, deps, generation, promptWriter: options.imagePrompt ?? (() => liveImagePromptWriter()),
+    enqueueImage: (label, work, settled) => { queue = queue.then(work).catch(error => console.error('image template generation', label, error)).finally(settled); },
+    runInTurn: (id, work) => {
+      waiting.add(id);
+      line = line.then(async () => { await idle(); waiting.delete(id); background(id, work); await idle(); }).catch(error => console.error('image template decomposition', id, error));
+    },
+    runState: id => active === id ? 'active' : waiting.has(id) ? 'waiting' : undefined,
+  });
   router.post('/templates/:key', express.json({ limit: '8kb' }), (req, res, next) => {
     try { res.json(saveTemplatePrompt(runsDir, req.params.key, String(req.body?.runId ?? ''), typeof req.body?.notes === 'string' ? req.body.notes : undefined)); }
     catch (error) { next(error); }

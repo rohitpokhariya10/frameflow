@@ -1,0 +1,119 @@
+/* Create Template from Image: its dialog, inside the shared workspace dialog (workspace.css). */
+
+.cti { grid-template-rows: auto minmax(0, 1fr); }
+.cti-header { grid-template-columns: 1fr auto; }
+.cti-body { display: grid; grid-template-columns: 268px minmax(0, 1fr); min-height: 0; }
+
+.cti-sidebar { display: flex; flex-direction: column; gap: 12px; padding: 16px 12px; overflow: auto; background: var(--color-panel); border-right: 1px solid var(--color-line); }
+.cti-side-head { display: flex; align-items: center; gap: 7px; padding: 4px 6px 0; font-size: 12px; font-weight: 600; color: var(--color-muted); text-transform: uppercase; letter-spacing: .4px; }
+.cti-side-empty { padding: 0 6px; font-size: 12.5px; line-height: 1.55; color: var(--color-muted); }
+.cti-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.cti-list button { width: 100%; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: center; padding: 7px 8px; border: 1px solid transparent; border-radius: 10px; text-align: left; }
+.cti-list button:hover { background: var(--color-chrome); }
+.cti-list button[aria-current="true"] { background: var(--color-selected); border-color: #b9cfc1; }
+.cti-thumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--color-workspace); }
+.cti-list-text { display: grid; min-width: 0; gap: 2px; }
+.cti-list-name { font-size: 13px; font-weight: 600; color: var(--color-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cti-list-meta { font-size: 11.5px; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cti-main { overflow: auto; padding: 22px 28px 48px; background: var(--color-chrome); }
+.cti-inner { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.cti-banner { display: flex; align-items: center; gap: 8px; max-width: 980px; margin: 0 auto 14px; padding: 10px 12px; border: 1px solid #f3d3cf; border-radius: 10px; background: #fdf2f1; color: var(--color-error); font-size: 13px; }
+.cti-page-head h2 { font-size: 20px; font-weight: 600; letter-spacing: -.3px; color: var(--color-ink); }
+.cti-page-head p { margin-top: 4px; font-size: 13px; line-height: 1.55; color: var(--color-muted); }
+
+.cti-step { display: grid; gap: 12px; padding: 18px 20px; background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 14px; }
+.cti-step-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cti-step-head h3 { font-size: 14px; font-weight: 600; color: var(--color-ink); }
+.cti-step-num { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; font-size: 12px; font-weight: 600; color: var(--color-muted); background: var(--color-chrome); border: 1px solid var(--color-line); }
+.cti-step.is-done .cti-step-num { color: var(--color-primary); background: var(--color-selected); border-color: #b7cdbf; }
+.cti-done { font-size: 11px; font-weight: 600; color: var(--color-primary); background: var(--color-selected); border-radius: 999px; padding: 1px 8px; }
+.cti-step-hint { margin-left: auto; font-size: 12px; color: var(--color-muted); }
+
+.cti-field { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--color-muted); }
+.cti-field select { max-width: 100%; height: 36px; border: 1px solid var(--color-line); border-radius: 9px; padding: 0 8px; background: #fff; color: var(--color-ink); font-size: 13px; }
+.cti-input { width: 100%; max-width: 480px; height: 40px; padding: 0 12px; border: 1px solid var(--color-line); border-radius: 9px; background: #fff; color: var(--color-ink); font-size: 14px; }
+.cti-input:focus-visible, .cti-textarea:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+
+.cti-drop { position: relative; display: grid; justify-items: center; align-content: center; gap: 6px; min-height: 170px; padding: 18px; border: 1.5px dashed #c5cdc7; border-radius: 12px; background: var(--color-chrome); color: var(--color-muted); font-size: 12.5px; text-align: center; cursor: pointer; }
+.cti-drop:hover, .cti-drop:focus-within { border-color: var(--color-primary); background: var(--color-selected); }
+.cti-drop strong { font-size: 13.5px; color: var(--color-ink); }
+.cti-drop input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.cti-drop.has-image { grid-template-columns: auto minmax(0, 1fr); justify-items: start; text-align: left; gap: 16px; }
+.cti-drop.has-image img, .cti-reference img { width: 150px; height: 150px; object-fit: contain; border-radius: 10px; border: 1px solid var(--color-line); background: repeating-conic-gradient(#ecebe6 0 25%, #fff 0 50%) 0 0/14px 14px; }
+.cti-drop-meta, .cti-reference-meta { display: grid; gap: 4px; font-size: 12.5px; color: var(--color-muted); }
+.cti-drop-meta strong, .cti-reference-meta strong { color: var(--color-ink); font-size: 13px; word-break: break-all; }
+.cti-reference { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
+
+.cti-generate-prompt { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cti-writing { display: flex; align-items: center; gap: 10px; min-height: 120px; justify-content: center; border-radius: 10px; background: #eef4ff; color: #264a8a; font-size: 13px; }
+.cti-alert { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px; background: #fdf2f1; color: var(--color-error); font-size: 12.5px; line-height: 1.5; }
+.cti-alert span { flex: 1 1 260px; }
+.cti-prompt-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--color-ink); }
+.cti-pill { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--color-selected); color: var(--color-primary); }
+.cti-pill.is-edited { background: #fff6e0; color: #8a5a00; }
+.cti-count { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--color-muted); }
+.cti-count.is-over { color: var(--color-error); }
+.cti-textarea { width: 100%; min-height: 150px; resize: vertical; padding: 12px; border: 1px solid var(--color-line); border-radius: 10px; background: #fff; color: var(--color-ink); font: inherit; font-size: 13px; line-height: 1.6; }
+.cti-advanced { font-size: 12.5px; color: var(--color-muted); }
+.cti-advanced summary { cursor: pointer; padding: 2px 0; }
+.cti-advanced[open] { display: grid; gap: 8px; }
+.cti-advanced strong { color: var(--color-ink); font-weight: 600; }
+
+.cti-ratios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.cti-ratio { position: relative; display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--color-line); border-radius: 12px; background: #fff; cursor: pointer; }
+.cti-ratio:hover { border-color: #c2ccc5; }
+.cti-ratio input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.cti-ratio:focus-within { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.cti-ratio.is-on { border-color: var(--color-primary); background: var(--color-selected); box-shadow: inset 0 0 0 1px var(--color-primary); }
+.cti-glyph { width: 30px; max-height: 34px; border: 2px solid #9aa49d; border-radius: 4px; background: #fff; flex-shrink: 0; }
+.cti-ratio.is-on .cti-glyph { border-color: var(--color-primary); }
+.cti-ratio-text { display: grid; gap: 2px; font-size: 12px; color: var(--color-muted); }
+.cti-ratio-text strong { font-size: 15px; color: var(--color-ink); }
+
+.cti-generate { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 4px 2px; }
+
+.cti-summary { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 18px; padding: 18px 20px; background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 14px; }
+.cti-summary > img { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--color-line); background: var(--color-workspace); }
+.cti-summary-text { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.cti-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cti-title-row h2 { font-size: 20px; font-weight: 600; letter-spacing: -.3px; color: var(--color-ink); overflow-wrap: anywhere; }
+.cti-meta { font-size: 12.5px; color: var(--color-muted); }
+.cti-prompt-text { margin-top: 6px; white-space: pre-wrap; font-size: 12.5px; line-height: 1.6; color: var(--color-ink); background: var(--color-chrome); border-radius: 9px; padding: 10px 12px; }
+
+.cti-section-head { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.cti-section-head h3 { font-size: 15px; font-weight: 600; color: var(--color-ink); margin-right: auto; }
+.cti-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; align-items: start; }
+.cti-result { display: flex; flex-direction: column; overflow: hidden; background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 14px; }
+/* The box keeps its ratio's shape whatever the image is; the image is fitted inside it. */
+.cti-result-media { position: relative; display: grid; place-items: center; width: 100%; max-height: 340px; min-height: 0; overflow: hidden; background: repeating-conic-gradient(#ecebe6 0 25%, #f8f8f5 0 50%) 0 0/16px 16px; border-bottom: 1px solid var(--color-line); }
+.cti-result-media > a { position: absolute; inset: 0; display: block; }
+.cti-result-media img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cti-placeholder { display: grid; justify-items: center; gap: 8px; color: var(--color-muted); font-size: 12.5px; }
+.cti-media-overlay { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 8px; background: rgba(248, 248, 245, .78); color: #264a8a; font-size: 13px; font-weight: 600; }
+.cti-result-body { display: grid; gap: 8px; padding: 12px 14px 14px; }
+.cti-result-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cti-result-head strong { font-size: 15px; color: var(--color-ink); }
+.cti-result-size { font-size: 12px; color: var(--color-muted); }
+.cti-status { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap; background: #f1f3ef; color: #3c463f; }
+.cti-status.is-generating, .cti-status.is-decomposing { background: #eef4ff; color: #264a8a; }
+.cti-status.is-generated { background: #f1f3ef; color: #3c463f; }
+.cti-status.is-decomposed { background: var(--color-selected); color: var(--color-primary); }
+.cti-status.is-in-editor { background: var(--color-primary); color: #fff; }
+.cti-status.is-failed { background: #fdf2f1; color: var(--color-error); }
+.cti-status.is-not-generated { background: var(--color-chrome); color: var(--color-muted); }
+.cti-result-detail { font-size: 12.5px; line-height: 1.5; color: var(--color-muted); }
+.cti-result-error { font-size: 12.5px; line-height: 1.5; color: var(--color-error); overflow-wrap: anywhere; }
+.cti-result-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cti-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-size: 12.5px; color: var(--color-muted); }
+.cti-layer-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.cti-layer-previews figure { margin: 0; min-width: 0; }
+.cti-layer-previews img { width: 100%; height: 100px; object-fit: contain; border: 1px solid var(--color-line); border-radius: 6px; background: repeating-conic-gradient(#ecebe6 0 25%, #fff 0 50%) 0 0/12px 12px; }
+.cti-layer-previews figcaption { overflow-wrap: anywhere; font-size: 11px; }
+
+@media (max-width: 900px) {
+  .cti-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .cti-sidebar { max-height: 210px; border-right: 0; border-bottom: 1px solid var(--color-line); }
+  .cti-ratios { grid-template-columns: minmax(0, 1fr); }
+  .cti-main { padding: 16px; }
+}

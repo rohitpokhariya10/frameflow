@@ -7,5 +7,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["e2e/**/*.ts", "e2e-decomposition/**/*.ts", "../playwright.config.ts", "../playwright.decomposition.config.ts"]
+  "include": ["e2e/**/*.ts", "e2e-decomposition/**/*.ts", "e2e-image-templates/**/*.ts", "fixtures/**/*.ts", "../playwright.config.ts", "../playwright.decomposition.config.ts", "../playwright.offline.config.ts"]
 }

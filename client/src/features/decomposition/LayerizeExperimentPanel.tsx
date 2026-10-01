@@ -46,8 +46,11 @@ function PlanDetails({ layers, warnings }: { layers: PlannedLayer[]; warnings: s
   </>;
 }
 
-/** Plain local test harness for the OpenAI → Seedream layerize experiment. Functionality first; no pipeline, no review. */
-export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
+/**
+ * Plain local test harness for the OpenAI → Seedream layerize experiment. Functionality first; no pipeline, no review.
+ * onCreateFromImage: when given, the panel offers "Create Template from Image" (its own dialog, features/imageTemplates).
+ */
+export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClose: () => void; onCreateFromImage?: () => void }) {
   const dispatch = useAppDispatch();
   const variantCount = useAppSelector((s) => s.editor.document.variants.length);
   const [file, setFile] = useState<File | null>(null);
@@ -153,6 +156,7 @@ export function LayerizeExperimentPanel({ onClose }: { onClose: () => void }) {
     <div className="ws-body" style={{ fontSize: 13 }}>
       <section style={{ ...box, borderTop: 0, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+          {onCreateFromImage && <button className="ws-btn ws-btn-primary" onClick={onCreateFromImage}>Create Template from Image</button>}
           {GENERATION_TEMPLATE_KEYS.map(key => <button key={key} className="ws-btn" aria-pressed={generatorKey === key} onClick={() => setGeneratorKey(open => open === key ? undefined : key)}>
             {generatorKey === key ? `Hide ${GENERATION_PROFILES[key].name} generator` : `Create ${GENERATION_PROFILES[key].name}`}</button>)}
           <label>Template: <select value={templateKey} onChange={e => setTemplateKey(e.target.value)}>
