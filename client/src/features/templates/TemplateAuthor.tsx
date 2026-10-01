@@ -1,9 +1,13 @@
 import { useMemo, useState } from 'react';
 import {
-  DESIGN_ASPECT_RATIOS, TEMPLATE_IMAGE_ROLES, TEMPLATE_SHAPE_ROLES, TEMPLATE_TEXT_ROLES, TEXT_FONTS, TEXT_WEIGHTS, addElement, commitPixelBox, createTemplateElement, designCanvasSize, findElement,
-  removeElement, reorderElement, resolveElements, roundNormalized, setElementLayout, templateIssues, textFitWarning, toPixels, updateElement,
+  DESIGN_ASPECT_RATIOS, TEMPLATE_IMAGE_ROLES, TEMPLATE_SHAPE_ROLES, TEMPLATE_TEXT_ROLES, TEXT_WEIGHTS, addElement, commitPixelBox, createTemplateElement, designCanvasSize, findElement,
+  removeElement, reorderElement, resolveElements, roundNormalized, setRatioLayout, templateAtRatio, elementAtRatio, pixelChangeToNormalized, offerTheme, themeFonts, themeColors, templateIssues, textFitWarning, toPixels, updateElement,
   type DesignAspectRatio, type DesignTemplate, type EditableProperty, type NormalizedLayout, type PixelBox, type ResolvedText, type TemplateElement, type TemplateElementRole,
 } from '@frameflow/shared';
+import { ThemePanel } from './ThemePanel';
+import { FontPicker } from '../fonts/FontPicker';
+import { useFonts } from '../fonts/useFonts';
+import { ThemePalette } from './templateUi';
 import { TemplateCanvas } from './TemplateCanvas';
 import { fitTemplateTexts } from './templateText';
 import { ColorInput, Field, ImagePicker, NumberInput, Section, Select, percent } from './templateUi';
@@ -30,22 +34,24 @@ interface Props {
   template: DesignTemplate;
   /** Already in the library (an edit) or not yet saved (a new template). */
   saved: boolean; dirty: boolean;
-  onChange: (template: DesignTemplate) => void; onSave: () => void;
+  onChange: (template: DesignTemplate) => void; onSave: (draft: DesignTemplate) => void;
 }
 
 /**
- * Template authoring: where a template's geometry is created. The canvas shows the one normalized layout in whichever
- * aspect ratio is being previewed; switching the ratio only changes the canvas it is resolved against.
+ * Template authoring uses normalized geometry, with optional themed layouts for each ratio.
+ * Preview changes are view state; transforms edit the selected ratio when an element has adaptive layouts.
  */
 export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Props) {
-  // The previewed ratio is view state: it is not part of the template and changing it writes nothing.
+  // Previewing writes nothing. Saving a themed template makes this ratio the default for new creatives.
   const [ratio, setRatio] = useState<DesignAspectRatio>(template.canvas.masterAspectRatio);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const canvas = useMemo(() => designCanvasSize(ratio), [ratio]);
   const resolved = useMemo(() => resolveElements(template.elements, canvas), [template.elements, canvas]);
-  const fits = useMemo(() => fitTemplateTexts(resolved), [resolved]);
-  const selected = selectedId ? findElement(template, selectedId) : undefined;
+  const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
+  const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
+  const selected = selectedId ? findElement(templateAtRatio(template, ratio), selectedId) : undefined;
   const warnings = [
     ...templateIssues(template).map(issue => issue.message),
     ...resolved.filter((element): element is ResolvedText => element.type === 'text').flatMap(element => textFitWarning(element, fits.get(element.id)!) ?? []),
@@ -61,20 +67,23 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
     if (change(current => addElement(current, createTemplateElement(role, id, 0, current.elements.length)))) setSelectedId(id);
   };
   const edit = (id: string, patch: (element: TemplateElement) => TemplateElement) => change(current => updateElement(current, id, patch));
-  const layout = (id: string, values: Partial<NormalizedLayout>) => change(current => setElementLayout(current, id, values));
+  const layout = (id: string, values: Partial<NormalizedLayout>) => change(current => setRatioLayout(current, id, ratio, values));
   const remove = (id: string) => { if (change(current => removeElement(current, id))) setSelectedId(null); };
   /** A drag or resize on the canvas: pixels of the previewed canvas in, normalized layout stored, the stored box back. */
   const commit = (id: string, pixels: Partial<PixelBox>): PixelBox | undefined => {
     try {
-      const next = commitPixelBox(template, id, pixels, canvas);
+      const source = findElement(template, id)!;
+      const next = source.ratioLayouts ? setRatioLayout(template, id, ratio, pixelChangeToNormalized(elementAtRatio(source, ratio).layout, pixels, canvas)) : commitPixelBox(template, id, pixels, canvas);
       if (next !== template) onChange(next);
       setError('');
-      return toPixels(findElement(next, id)!.layout, canvas);
+      return toPixels(elementAtRatio(findElement(next, id)!, ratio).layout, canvas);
     } catch (problem) { setError(problem instanceof Error ? problem.message : 'That change could not be made.'); return undefined; }
   };
+  const ratioChanged = !!template.themeId && ratio !== template.canvas.masterAspectRatio;
+  const save = () => onSave(template.themeId ? { ...template, canvas: { ...template.canvas, masterAspectRatio: ratio }, supportedAspectRatios: DESIGN_ASPECT_RATIOS.filter(item => item === ratio || template.supportedAspectRatios.includes(item)) } : template);
   const hasBackground = template.elements.some(element => element.type === 'background');
 
-  return <div className="tpl-main">
+  return <ThemePalette.Provider value={themeColors(offerTheme(template.themeId))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
       <label className="tpl-row"><strong>Template name</strong>
         <input type="text" aria-label="Template name" value={template.name} maxLength={200} onChange={event => onChange({ ...template, name: event.target.value })} style={{ width: 220 }} /></label>
@@ -82,7 +91,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
         {DESIGN_ASPECT_RATIOS.map(item => <button key={item} type="button" className={`ws-btn ${item === ratio ? 'ws-btn-primary' : ''}`} aria-pressed={item === ratio} onClick={() => setRatio(item)}>{item}</button>)}
         <span className="ws-muted">{canvas.width} × {canvas.height} px</span>
       </div>
-      <button type="button" className="ws-btn ws-btn-primary" disabled={!dirty && saved} onClick={onSave} style={{ marginLeft: 'auto' }}>{saved ? dirty ? 'Save Template (new version if the structure changed)' : 'Saved' : 'Save Template'}</button>
+      <button type="button" className="ws-btn ws-btn-primary" disabled={(!dirty && saved && !ratioChanged) || criticalOverflow || fonts.loading} onClick={save} style={{ marginLeft: 'auto' }}>{saved ? dirty || ratioChanged ? 'Save Template (new version if the structure changed)' : 'Saved' : 'Save Template'}</button>
       <div className="tpl-row" style={{ flexBasis: '100%' }}>
         {ADDABLE.map(({ group, roles }) => <span key={group} className="tpl-row"><strong>{group}</strong>
           {roles.map(([role, label]) => <button key={role} type="button" className="ws-btn" onClick={() => add(role)}>+ {label}</button>)}</span>)}
@@ -96,12 +105,15 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
         if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); remove(selected.id); }
         if (event.key === 'Escape') setSelectedId(null);
       }}>
-        <TemplateCanvas elements={resolved} fits={fits} canvas={canvas} selectedId={selectedId} onSelect={setSelectedId} onCommit={commit}
+        <TemplateCanvas fontRevision={fonts.revision} elements={resolved} fits={fits} canvas={canvas} selectedId={selectedId} onSelect={setSelectedId} onCommit={commit}
           allows={element => element.type === 'background' ? FIXED() : AUTHOR()} />
         {!template.elements.length && <p className="tpl-empty">Add a background, text, images and shapes with the buttons above, then drag and resize them here.</p>}
       </div>
       <aside className="tpl-panel" aria-label="Element properties">
-        <Section title="Supported in creatives" note="(the same layout in each)">
+        <ThemePanel template={template} ratio={ratio} onChange={next => { onChange(next); setSelectedId(null); }} />
+        {fonts.loading && <p role="status" className="ws-muted">Loading selected fonts…</p>}
+        {fonts.failed && <p role="status" className="ws-warn">Some fonts could not load. Readable fallbacks are shown; your font choices are kept.</p>}
+        <Section title="Supported in creatives" note={template.themeId ? "(adapted layouts)" : "(the same layout in each)"}>
           <div className="tpl-row">{DESIGN_ASPECT_RATIOS.map(item => <label key={item} className="tpl-check"><input type="checkbox" checked={template.supportedAspectRatios.includes(item)}
             // The master ratio, the one the template was designed in, is always supported.
             disabled={item === template.canvas.masterAspectRatio}
@@ -118,7 +130,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
           : <p className="ws-muted">Select an element on the canvas or in the layer list to edit its content, style, editable properties and layout.</p>}
       </aside>
     </div>
-  </div>;
+  </div></ThemePalette.Provider>;
 }
 
 /** Writes part of an element's style, behaviour, content or editable properties, leaving the rest as it is. */
@@ -162,7 +174,7 @@ function ElementProperties({ element, template, ratio, edit, layout, reorder, re
 
     <Section title="Style">
       {element.type === 'text' && <>
-        <Select label="Font" value={element.style.fontFamily} options={TEXT_FONTS.includes(element.style.fontFamily as typeof TEXT_FONTS[number]) ? TEXT_FONTS : [...TEXT_FONTS, element.style.fontFamily]} onChange={fontFamily => style({ fontFamily })} />
+        <FontPicker value={element.style.fontFamily} recommended={offerTheme(template.themeId) ? themeFonts(offerTheme(template.themeId)!, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${offerTheme(template.themeId)?.name ?? "text"}`} onChange={fontFamily => style({ fontFamily })} />
         {/* Font sizes are fractions of the canvas short edge, shown as a percentage of it. */}
         <NumberInput label="Font size" suffix="% of short edge" min={0.75} max={45} step={0.25} value={element.style.fontSize * 100}
           onChange={value => edit(current => current.type === 'text' ? { ...current, style: { ...current.style, fontSize: fraction(value) }, behavior: { ...current.behavior, minFontSize: Math.min(current.behavior.minFontSize, fraction(value)) } } : current)} />
@@ -222,10 +234,10 @@ function ElementProperties({ element, template, ratio, edit, layout, reorder, re
         <NumberInput label="Rotation" suffix="°" min={-180} max={180} step={1} value={l.rotation} onChange={rotation => layout({ rotation })} />
       </>}
       <pre className="tpl-debug" data-testid="layout-debug">{`x: ${percent(l.x)}\ny: ${percent(l.y)}\nw: ${percent(l.width)}\nh: ${percent(l.height)}\nrotation: ${l.rotation}°\nzIndex: ${element.zIndex}`}</pre>
-      <details><summary>The same layout in every ratio ({ratio}: {px.x.toFixed(1)}, {px.y.toFixed(1)} · {px.width.toFixed(1)} × {px.height.toFixed(1)} px)</summary>
+      <details><summary>Preview geometry ({ratio}: {px.x.toFixed(1)}, {px.y.toFixed(1)} · {px.width.toFixed(1)} × {px.height.toFixed(1)} px)</summary>
         <table className="tpl-ratios"><thead><tr><th>Ratio</th><th>Canvas</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead><tbody>
           {DESIGN_ASPECT_RATIOS.map((item) => {
-            const size = designCanvasSize(item), box = toPixels(l, size);
+            const size = designCanvasSize(item), box = toPixels(elementAtRatio(findElement(template, element.id)!, item).layout, size);
             return <tr key={item}><td>{item}</td><td>{size.width}×{size.height}</td><td>{box.x.toFixed(1)}</td><td>{box.y.toFixed(1)}</td><td>{box.width.toFixed(1)}</td><td>{box.height.toFixed(1)}</td></tr>;
           })}
           <tr><td colSpan={2}>% of canvas</td><td>{percent(l.x)}</td><td>{percent(l.y)}</td><td>{percent(l.width)}</td><td>{percent(l.height)}</td></tr>

@@ -24,8 +24,17 @@ it('the template source has no AI provider, no request and no server address in 
 });
 
 it('the template source imports only local code: the shared module, React, Konva and the editor\'s canvas, store, asset and storage helpers', () => {
-  const sharedAllowed = /^\.\/[a-zA-Z]+\.js$|^\.\.\/(index|text|canvasElement)\.js$|^\.\/designTemplates\/[a-zA-Z]+\.js$/;
-  const clientAllowed = /^(react|lucide-react|@frameflow\/shared)$|^konva\/lib\/|^react-konva\/lib\/|^\.\/[a-zA-Z]+(\.css)?$|^\.\.\/\.\.\/(store|store\/(editorSlice|uiSlice)|lib\/assets\/runtimeAssets|lib\/persistence\/(schema|projectStorage)|components\/ui\/NumberField)$|^\.\.\/canvas\/(DesignLayerNode|layerGeometry|viewport)$|^\.\.\/decomposition\/workspace\/workspace\.css$/;
+  const sharedAllowed = /^\.\/[a-zA-Z]+\.js$|^\.\.\/fonts\/catalog\.js$|^\.\.\/(index|text|canvasElement)\.js$|^\.\/designTemplates\/[a-zA-Z]+\.js$/;
+  const clientAllowed = /^(react|lucide-react|@frameflow\/shared)$|^konva\/lib\/|^react-konva\/lib\/|^\.\/[a-zA-Z]+(\.css)?$|^\.\.\/\.\.\/(store|store\/(editorSlice|uiSlice)|lib\/assets\/runtimeAssets|lib\/persistence\/(schema|projectStorage)|components\/ui\/NumberField)$|^\.\.\/fonts\/(FontPicker|useFonts)$|^\.\.\/canvas\/(DesignLayerNode|layerGeometry|viewport)$|^\.\.\/decomposition\/workspace\/workspace\.css$/;
   expect(shared().flatMap(({ file, text }) => imports(text).filter(name => !sharedAllowed.test(name)).map(name => `${file}: ${name}`))).toEqual([]);
   expect(sources(CLIENT).flatMap(({ file, text }) => imports(text).filter(name => !clientAllowed.test(name)).map(name => `${file}: ${name}`))).toEqual([]);
+});
+
+
+it('the on-demand font module has only the approved public font endpoint and no provider/API client', () => {
+  const fontSources = sources(join(CLIENT, '../fonts'));
+  const provider = /openai|@fal-ai|\bfal\b|seedream|gemini|cloudflare|layerize|\/api\//i;
+  expect(fontSources.flatMap(({file,text}) => text.split('\n').filter(line => provider.test(line)).map(line => `${file}: ${line}`))).toEqual([]);
+  const urls = fontSources.flatMap(({text}) => [...text.matchAll(/https?:\/\/([^/\s]+)/g)].map(match => match[1]));
+  expect(urls).toEqual(['fonts.googleapis.com']);
 });

@@ -1,3 +1,4 @@
+import { useFonts } from '../fonts/useFonts';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { Rect as KonvaRect } from 'konva/lib/shapes/Rect';
 import type { Text as KonvaText } from 'konva/lib/shapes/Text';
@@ -15,11 +16,12 @@ import { focusCanvas } from '../text/useTextActions';
 
 /** A text drawn without interaction (previews, comparisons), by the same display rules as the editable node. */
 export function StaticText({ element, name }: { element: TextElement; name: string }) {
-  const display = useMemo(() => textDisplay(element), [element]);
+  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text }]);
+  const display = useMemo(() => { void fonts.revision; return textDisplay(element); }, [element, fonts.revision]);
   if (element.visible === false) return null;
   return <>
     {display.box && <Rect x={element.x} y={element.y} rotation={display.rotation} {...display.box} listening={false} />}
-    <Text name={name} {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY} listening={false} />
+    <Text key={fonts.revision} name={name} {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY} listening={false} />
   </>;
 }
 
@@ -32,7 +34,8 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom, ra
   const transformerRef = useRef<KonvaTransformer>(null);
   const dispatch = useAppDispatch();
   // Free text: its own style. A fixed text box: wrapped, shrunk or cut for display by the shared overflow policy.
-  const display = useMemo(() => textDisplay(element), [element]);
+  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text }]);
+  const display = useMemo(() => { void fonts.revision; return textDisplay(element); }, [element, fonts.revision]);
   useLayoutEffect(() => {
     if (selected && nodeRef.current && transformerRef.current) {
       transformerRef.current.nodes([nodeRef.current]);
@@ -56,7 +59,7 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom, ra
   const followBox = (node: KonvaText) => { boxRef.current?.setAttrs({ x: node.x(), y: node.y(), width: node.width() }); };
   return <>
     {display.box && <Rect ref={boxRef} name="text-box" x={element.x} y={element.y} rotation={display.rotation} {...display.box} listening={false} />}
-    <Text ref={nodeRef} id={element.id} name="editable-text" {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY}
+    <Text key={fonts.revision} ref={nodeRef} id={element.id} name="editable-text" {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY}
       draggable onMouseDown={select} onTouchStart={select} onClick={select} onTap={select}
       onDragStart={select}
       onDragMove={(event) => { keepRecoverable(event.target as KonvaText); followBox(event.target as KonvaText); }}

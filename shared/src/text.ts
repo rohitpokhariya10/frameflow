@@ -1,3 +1,4 @@
+import { isCatalogFont } from './fonts/catalog.js';
 import type { CanvasSize, TextElement } from './index.js';
 
 export const TEXT_LIMITS = {
@@ -41,7 +42,7 @@ export function validTextChanges(changes: TextChanges): boolean {
   return Object.entries(changes).every(([key, value]) => {
     switch (key) {
       case 'text': return typeof value === 'string' && value.length <= TEXT_LIMITS.maxCharacters;
-      case 'fontFamily': return TEXT_FONTS.some((font) => font === value);
+      case 'fontFamily': return isCatalogFont(value);
       case 'fontSize': return typeof value === 'number' && Number.isFinite(value) && value >= TEXT_LIMITS.minFontSize && value <= TEXT_LIMITS.maxFontSize;
       case 'fontWeight': return TEXT_WEIGHTS.some((weight) => weight === value);
       case 'fill': return typeof value === 'string' && /^#[\da-f]{6}$/i.test(value);

@@ -105,6 +105,7 @@ export interface DesignVariant {
    * content is the canvas colour and the background artwork above).
    */
   template?: {
+    themeId?: string;
     templateId: string; templateVersion: number; creativeId?: string;
     background?: { id: string; name: string; fit: ImageFit; focalPoint: { x: number; y: number }; editable: EditableProperties };
   };
@@ -176,3 +177,7 @@ export * from './designTemplates/index.js';
 export * from './canvasEditorAdapter.js';
 
 export { nativePointer } from './decompositionCoordinates.js';
+
+export * from './fonts/catalog.js';
+export * from './designTemplates/themes.js';
+export * from './designTemplates/responsive.js';

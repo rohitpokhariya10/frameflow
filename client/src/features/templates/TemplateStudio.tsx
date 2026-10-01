@@ -45,9 +45,9 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
   /** Leaving unsaved work asks first. */
   const leave = (go: () => void) => { if (!dirty || window.confirm('Discard the unsaved changes?')) { setMessage(null); attempt(go); } };
 
-  const saveTemplate = () => attempt(() => {
+  const saveTemplate = (draft: DesignTemplate) => attempt(() => {
     if (view.kind !== 'author') return;
-    const result = saveDesignTemplate(library, view.draft, now());
+    const result = saveDesignTemplate(library, draft, now());
     if (result.outcome !== 'unchanged' && !persist(result.library)) return;
     setView({ kind: 'author', draft: result.template, baseline: JSON.stringify(result.template) });
     const pinned = creativesOf(result.library, result.template.id).filter(creative => creative.templateVersion !== result.template.version).length;

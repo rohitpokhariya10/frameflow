@@ -1,6 +1,7 @@
 import { Text } from 'konva/lib/shapes/Text';
-import { TEXT_FONTS, type TextElement } from '@frameflow/shared';
+import { isCatalogFont, type TextElement } from '@frameflow/shared';
 import { textNodeStyle } from '../../features/text/textGeometry';
+import { loadRequiredFonts } from '../../features/fonts/fontLoader';
 import type { TextMeasurement } from './autoLayout';
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -21,7 +22,9 @@ export function measureText(element: TextElement): TextMeasurement {
 }
 
 export async function ensureTextFont(element: TextElement) {
-  if (!TEXT_FONTS.includes(element.fontFamily as typeof TEXT_FONTS[number])) throw new Error('Unsupported editor font.');
+  if (!isCatalogFont(element.fontFamily)) throw new Error('Unsupported editor font.');
+  const ready = await loadRequiredFonts([{family:element.fontFamily,weight:element.fontWeight,text:element.text}]);
+  if (!ready) return; // The canvas and measurement both use the same readable fallback stack.
   const font = `${element.fontWeight} ${element.fontSize}px "${element.fontFamily}"`;
   const faces = await document.fonts.load(font);
   if (!faces.length || !document.fonts.check(font)) throw new Error('The selected font is not ready.');

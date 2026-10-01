@@ -4,12 +4,13 @@
  * network, no pixels stored.
  *
  * Geometry is canonical in NORMALIZED form: x, y, width and height are fractions (0..1) of the canvas width and height,
- * so the one layout drives every aspect ratio. Pixels exist only while rendering (geometry.ts). Sizes that are not
+ * with optional per-ratio layouts for themes. Pixels exist only while rendering (geometry.ts). Sizes that are not
  * boxes are normalized too: a font size is a fraction of the canvas short edge, letter spacing is in em, a corner
  * radius is a fraction of half the box's shorter side. Rotation is in degrees, about the box centre.
  */
 import { CANVAS_ELEMENT_TYPES, CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, type CanvasBackgroundElement, type CanvasElement, type CanvasElementType, type CanvasImageElement,
   type CanvasImageRole, type CanvasShapeElement, type CanvasShapeRole, type CanvasShapeStyle, type CanvasTextBehavior, type CanvasTextElement, type CanvasTextRole, type CanvasTextStyle, type NormalizedLayout } from '../canvasElement.js';
+import { isCatalogFont } from '../fonts/catalog.js';
 import { TEXT_FONTS, TEXT_WEIGHTS } from '../text.js';
 
 export const TEMPLATE_SCHEMA_VERSION = 1;
@@ -47,6 +48,7 @@ export type TemplateElementType = CanvasElementType;
 export interface DesignTemplate {
   schemaVersion: typeof TEMPLATE_SCHEMA_VERSION; id: string; name: string; version: number;
   supportedAspectRatios: DesignAspectRatio[]; canvas: { masterAspectRatio: DesignAspectRatio };
+  themeId?: string;
   elements: TemplateElement[]; createdAt: string; updatedAt: string;
 }
 
@@ -57,7 +59,7 @@ export class TemplateError extends Error {
 }
 
 export const DEFAULT_TEMPLATE_FONT = TEXT_FONTS[0];
-export const isTemplateFont = (value: unknown): value is typeof TEXT_FONTS[number] => TEXT_FONTS.some(font => font === value);
+export const isTemplateFont = isCatalogFont;
 /** The font to draw with: the element's own when it is available, else the default (validation warns about the miss). */
 export const usableFont = (fontFamily: string) => isTemplateFont(fontFamily) ? fontFamily : DEFAULT_TEMPLATE_FONT;
 export const isDesignAspectRatio = (value: unknown): value is DesignAspectRatio => DESIGN_ASPECT_RATIOS.some(ratio => ratio === value);
@@ -106,6 +108,14 @@ function elementIssues(element: unknown, path: string): TemplateIssue[] {
   if (!ROLES[type].includes(element.role as string)) error(`role ${JSON.stringify(element.role)} is not a ${type} role (${ROLES[type].join(', ')}).`);
   if (!Number.isInteger(element.zIndex)) error('zIndex must be a whole number.');
   for (const problem of layoutProblems(element.layout)) error(problem, `${path}.layout`);
+  if (element.themeRole !== undefined && (typeof element.themeRole !== 'string' || element.themeRole.length > 100)) error('themeRole must be short text.');
+  if (element.ratioLayouts !== undefined) {
+    if (!isRecord(element.ratioLayouts)) error('ratioLayouts must be an object.');
+    else for (const [ratio, layout] of Object.entries(element.ratioLayouts)) {
+      if (!isDesignAspectRatio(ratio)) error('Unknown ratio layout.');
+      for (const problem of layoutProblems(layout)) error(problem, `${path}.ratioLayouts.${ratio}`);
+    }
+  }
   if (element.visible !== undefined && typeof element.visible !== 'boolean') error('visible must be true or false.');
   if (!isRecord(element.editableProperties) || !EDITABLE_PROPERTIES.every(key => typeof (element.editableProperties as Record<string, unknown>)[key] === 'boolean')) {
     error(`editableProperties must say true or false for each of ${EDITABLE_PROPERTIES.join(', ')}.`);
@@ -158,6 +168,7 @@ export function templateIssues(value: unknown): TemplateIssue[] {
   const issues: TemplateIssue[] = [];
   const error = (path: string, message: string) => { issues.push({ severity: 'error', path, message }); };
   if (!isRecord(value)) return [{ severity: 'error', path: 'template', message: 'A template must be an object.' }];
+  if (value.themeId !== undefined && (typeof value.themeId !== 'string' || value.themeId.length > 100)) error('themeId', 'themeId must be short text.');
   if (value.schemaVersion !== TEMPLATE_SCHEMA_VERSION) error('schemaVersion', `Unsupported template schema version ${JSON.stringify(value.schemaVersion)}; this build reads version ${TEMPLATE_SCHEMA_VERSION}.`);
   if (!isId(value.id)) error('id', 'id must be a non-empty string.');
   if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > TEMPLATE_LIMITS.maxName) error('name', `name must be 1 to ${TEMPLATE_LIMITS.maxName} characters.`);

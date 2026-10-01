@@ -39,8 +39,8 @@ function useBitmap(assetId: string | null) {
 }
 
 /** A picture inside its fixed box: cropped (cover) or letterboxed (contain) around the focal point, never stretched. */
-function FittedImage({ assetId, width, height, fit, focalX, focalY, cornerRadius = 0, opacity = 1, placeholder }: {
-  assetId: string | null; width: number; height: number; fit: ImageFit; focalX: number; focalY: number; cornerRadius?: number; opacity?: number; placeholder?: string;
+function FittedImage({ assetId, width, height, fit, focalX, focalY, cornerRadius = 0, opacity = 1, placeholder, themed }: {
+  assetId: string | null; width: number; height: number; fit: ImageFit; focalX: number; focalY: number; cornerRadius?: number; opacity?: number; placeholder?: string; themed?: boolean;
 }) {
   const { image, missing } = useBitmap(assetId);
   if (image) {
@@ -49,14 +49,14 @@ function FittedImage({ assetId, width, height, fit, focalX, focalY, cornerRadius
   }
   if (!placeholder) return null;
   // An empty slot, or a picture that is not in this browser's storage: the slot is still drawn, at its place and size.
-  const size = Math.max(10, Math.min(width, height) * 0.12);
+  const size = themed ? Math.max(16, Math.min(24, Math.min(width, height) * 0.07)) : Math.max(10, Math.min(width, height) * 0.12);
   return <>
-    <Rect name="template-image-placeholder" width={width} height={height} fill="#EEF0EC" stroke="#9AA39D" strokeWidth={2} dash={[10, 8]} cornerRadius={cornerRadius} listening={false} />
-    <Text text={missing ? `${placeholder}\n(image missing)` : placeholder} width={width} height={height} align="center" verticalAlign="middle" fontFamily="Inter" fontSize={size} fill="#626C65" listening={false} />
+    <Rect name="template-image-placeholder" width={width} height={height} fill={themed ? "#B9AA8E22" : "#EEF0EC"} stroke={themed ? "#C6B99D" : "#9AA39D"} strokeWidth={2} dash={[10, 8]} cornerRadius={cornerRadius} listening={false} />
+    <Text text={missing ? `${placeholder}\n(image missing)` : placeholder} width={width} height={height} align="center" verticalAlign="middle" fontFamily="Inter" fontSize={size} fill={themed ? "#AB9B83" : "#626C65"} listening={false} />
   </>;
 }
 
-function ElementContent({ element, fit }: { element: ResolvedElement; fit?: TextFit }) {
+function ElementContent({ element, fit, fontRevision }: { element: ResolvedElement; fit?: TextFit; fontRevision: number }) {
   const { width, height } = element.box;
   switch (element.type) {
     case 'background': return <>
@@ -64,7 +64,7 @@ function ElementContent({ element, fit }: { element: ResolvedElement; fit?: Text
       <FittedImage assetId={element.assetId} width={width} height={height} fit={element.fit} focalX={element.focalX} focalY={element.focalY} />
     </>;
     case 'image': return <FittedImage assetId={element.assetId} width={width} height={height} fit={element.fit} focalX={element.focalX} focalY={element.focalY}
-      cornerRadius={element.cornerRadiusPx} opacity={element.opacity} placeholder={`${element.name} · ${element.fit}`} />;
+      cornerRadius={element.cornerRadiusPx} opacity={element.opacity} themed={!!element.themeRole} placeholder={element.themeRole ? element.name : `${element.name} · ${element.fit}`} />;
     case 'shape': {
       const stroke = element.stroke && element.strokeWidthPx > 0 ? { stroke: element.stroke, strokeWidth: element.strokeWidthPx } : {};
       // The same fill geometry the editor's shape layers use, so a gradient looks the same in both.
@@ -77,9 +77,10 @@ function ElementContent({ element, fit }: { element: ResolvedElement; fit?: Text
       // Without a measured fit (first paint), draw at the design size; the fit follows in the same frame.
       const drawn = fit ?? { fontPx: element.fontPx, lines: 1, visibleLines: 1, shrunk: false, truncated: false };
       const block = textBlock(element, drawn);
+      if (drawn.truncated && ["headline", "offer-value", "cta"].includes(element.themeRole ?? "")) return <Text text={`Shorten ${element.name.toLowerCase()} to fit`} width={width} height={height} align="center" verticalAlign="middle" fontFamily="Inter" fontSize={Math.min(width / 18, height / 3)} fill={element.color} listening={false} />;
       return <>
         {element.backgroundColor && <Rect width={width} height={height} fill={element.backgroundColor} cornerRadius={element.cornerRadiusPx} listening={false} />}
-        <Text name="template-text" {...templateTextProps(element, drawn.fontPx)} y={block.y} fill={element.color} listening={false}
+        <Text key={fontRevision} name="template-text" {...templateTextProps(element, drawn.fontPx)} y={block.y} fill={element.color} listening={false}
           // Cut text: exactly the lines that fit, the last one ending with an ellipsis.
           {...(drawn.truncated ? { height: block.height + 0.5, ellipsis: true } : {})} />
       </>;
@@ -88,7 +89,7 @@ function ElementContent({ element, fit }: { element: ResolvedElement; fit?: Text
 }
 
 interface Props {
-  elements: ResolvedElement[]; fits: Map<string, TextFit>; canvas: CanvasSize;
+  fontRevision?: number; elements: ResolvedElement[]; fits: Map<string, TextFit>; canvas: CanvasSize;
   selectedId: string | null; onSelect: (id: string | null) => void;
   allows: (element: ResolvedElement) => PointerPermission;
   /**
@@ -102,7 +103,7 @@ interface Props {
  * Draws resolved template elements with Konva, at the logical canvas size scaled to fit the available space. The
  * canvas only reports pixels; converting them to normalized layout is the caller's one step (shared editing.ts).
  */
-export function TemplateCanvas({ elements, fits, canvas, selectedId, onSelect, allows, onCommit }: Props) {
+export function TemplateCanvas({ fontRevision = 0, elements, fits, canvas, selectedId, onSelect, allows, onCommit }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const transformerRef = useRef<KonvaTransformer>(null);
   const nodes = useRef(new Map<string, KonvaGroup>());
@@ -162,7 +163,7 @@ export function TemplateCanvas({ elements, fits, canvas, selectedId, onSelect, a
               }}>
               {/* The whole box is the element's hit area and the frame the selection handles follow. */}
               <Rect width={box.width} height={box.height} fill="transparent" />
-              <ElementContent element={element} fit={fits.get(element.id)} />
+              <ElementContent fontRevision={fontRevision} element={element} fit={fits.get(element.id)} />
             </Group>;
           })}
           <Transformer ref={transformerRef} name="template-transformer" resizeEnabled={permission.resize} rotateEnabled={permission.rotate} keepRatio={false} flipEnabled={false} rotationSnaps={[-90, 0, 90, 180]}

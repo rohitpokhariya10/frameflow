@@ -1,3 +1,4 @@
+import { elementAtRatio } from './responsive.js';
 /**
  * Creatives: content-filled instances of a template. A creative holds a reference to one template version, an aspect
  * ratio and the content it changes, never a copy of the template's geometry:
@@ -124,7 +125,8 @@ export function applyCreative(template: DesignTemplate, creative: Creative): { e
   requireSameTemplate(creative, template);
   const ignored: TemplateIssue[] = [];
   for (const id of Object.keys(creative.contentOverrides)) if (!findElement(template, id)) ignored.push({ severity: 'warning', path: `contentOverrides.${id}`, message: `The template has no element "${id}"; its content is ignored.` });
-  const elements = template.elements.map(element => {
+  const elements = template.elements.map(source => {
+    const element = elementAtRatio(source, creative.aspectRatio);
     const override = creative.contentOverrides[element.id];
     if (!override) return element;
     const problems = overrideProblems(element, override);

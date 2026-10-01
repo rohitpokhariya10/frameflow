@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useRef, useState, type ReactNode } from 'react';
 import { isTemplateColor } from '@frameflow/shared';
 import { completeNumber } from '../../components/ui/NumberField';
 import { assets, decodeImage } from '../../lib/assets/runtimeAssets';
@@ -35,13 +35,16 @@ export function NumberInput({ label, value, min, max, step = 1, digits = 2, suff
   </span></Field>;
 }
 
+export const ThemePalette = createContext<readonly string[]>([]);
+
 export function ColorInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
-  return <Field label={label}><span className="tpl-color">
+  const palette = useContext(ThemePalette);
+  return <div className="theme-color-control">{palette.length > 0 && <div className="theme-swatches" aria-label={`${label} theme colours`}>{palette.map(color => <button key={color} type="button" aria-label={`${label} ${color}`} title={color} style={{background:color}} onClick={() => {setDraft(null);onChange(color);}} />)}</div>}<Field label={label}><span className="tpl-color">
     <input type="color" aria-label={`${label} picker`} value={value.toLowerCase()} onChange={event => { setDraft(null); onChange(event.target.value.toUpperCase()); }} />
     <input type="text" aria-label={`${label} hex`} value={draft ?? value} maxLength={7} onBlur={() => setDraft(null)}
       onChange={(event) => { setDraft(event.target.value); if (isTemplateColor(event.target.value)) onChange(event.target.value.toUpperCase()); }} />
-  </span></Field>;
+  </span></Field></div>;
 }
 
 export function Select<T extends string | number>({ label, value, options, onChange }: { label: string; value: T; options: readonly (T | { value: T; label: string })[]; onChange: (value: T) => void }) {

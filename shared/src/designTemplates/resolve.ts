@@ -4,15 +4,15 @@
  *
  *   normalized template (+ creative content)  →  resolveTemplate(canvas)  →  pixel boxes and sizes  →  Konva nodes
  *
- * Nothing here is ratio-specific: no per-ratio overrides, no rearranging. Switching the aspect ratio only changes the
- * canvas passed in.
+ * Theme ratio layouts are materialized before conversion. Legacy elements keep their single normalized layout.
  */
+import { elementAtRatio, ratioOfCanvas } from './responsive.js';
 import type { CanvasSize } from '../index.js';
 import { applyCreative, type Creative } from './creative.js';
 import { canvasShortEdge, cornerRadiusPixels, fontPixels, toPixels, type PixelBox } from './geometry.js';
 import { usableFont, type DesignTemplate, type ImageFit, type TemplateElement, type TemplateImageRole, type TemplateShapeRole, type TemplateTextRole, type TemplateTextBehavior, type TemplateTextStyle } from './schema.js';
 
-interface ResolvedBase { id: string; name: string; zIndex: number; box: PixelBox }
+interface ResolvedBase { themeRole?: string; id: string; name: string; zIndex: number; box: PixelBox }
 export interface ResolvedText extends ResolvedBase {
   type: 'text'; role: TemplateTextRole; text: string; fontFamily: string;
   /** The design size and the smallest size overflow may shrink to, in pixels of this canvas. */
@@ -37,7 +37,8 @@ export type ResolvedElement = ResolvedText | ResolvedImage | ResolvedShape | Res
 
 /** One element in the pixels of this canvas. */
 export function resolveElement(element: TemplateElement, canvas: CanvasSize): ResolvedElement {
-  const box = toPixels(element.layout, canvas), base = { id: element.id, name: element.name, zIndex: element.zIndex, box };
+  element = elementAtRatio(element, ratioOfCanvas(canvas));
+  const box = toPixels(element.layout, canvas), base = { themeRole: element.themeRole, id: element.id, name: element.name, zIndex: element.zIndex, box };
   switch (element.type) {
     case 'text': return { ...base, type: 'text', role: element.role, text: element.defaultContent.text, fontFamily: usableFont(element.style.fontFamily),
       fontPx: fontPixels(element.style.fontSize, canvas), minFontPx: fontPixels(Math.min(element.behavior.minFontSize, element.style.fontSize), canvas),

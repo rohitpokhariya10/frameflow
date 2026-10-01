@@ -1,3 +1,4 @@
+import { loadRequiredFonts } from '../fonts/fontLoader';
 import { CANVAS_PRESETS, paintOrder, validateCanvasSize, type CanvasSize, type DesignVariant } from '@frameflow/shared';
 import { Group } from 'konva/lib/Group';
 import { Rect } from 'konva/lib/shapes/Rect';
@@ -27,6 +28,7 @@ export async function exportPng(variant: DesignVariant): Promise<Blob> {
   try {
     try { await abortable(loadEditorFonts(), controller.signal); }
     catch { throw new Error('Fonts could not load for export. Check your connection and retry.'); }
+    await abortable(loadRequiredFonts(variant.elements.map(e => ({ family: e.fontFamily, weight: e.fontWeight, text: e.text }))), controller.signal);
     let image: HTMLImageElement | undefined;
     if (background) {
       try {

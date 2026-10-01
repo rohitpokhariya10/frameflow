@@ -1,10 +1,10 @@
 import { Text } from 'konva/lib/shapes/Text';
-import { isTextBox, recoverablePosition, textBlock, textBoxOf, type CanvasSize, type TextElement } from '@frameflow/shared';
+import { fontStack, isTextBox, recoverablePosition, textBlock, textBoxOf, type CanvasSize, type TextElement } from '@frameflow/shared';
 import { fitTemplateText, templateTextProps } from '../templates/templateText';
 
 export const textNodeStyle = (element: TextElement) => ({
   text: element.text, width: element.width, fontSize: element.fontSize,
-  fontFamily: element.fontFamily, fontStyle: String(element.fontWeight),
+  fontFamily: ['Inter', 'Lora'].includes(element.fontFamily) && !/[\u0900-\u097f]/u.test(element.text) ? element.fontFamily : fontStack(element.fontFamily), fontStyle: String(element.fontWeight),
   fill: element.fill, align: element.align, lineHeight: element.lineHeight,
   letterSpacing: element.letterSpacing, wrap: 'word' as const,
 });

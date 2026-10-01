@@ -45,3 +45,27 @@
 .tpl-ratios { width: 100%; margin-top: 6px; border-collapse: collapse; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .tpl-ratios th, .tpl-ratios td { padding: 3px 5px; border-bottom: 1px solid var(--color-line); text-align: right; }
 .tpl-ratios th:first-child, .tpl-ratios td:first-child { text-align: left; }
+
+/* Offer themes live in the existing inspector; no second canvas or library. */
+.theme-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; margin:12px 0; }
+.theme-card { padding:5px; border:1px solid #d8dfda; border-radius:9px; background:white; color:#24352d; text-align:left; cursor:pointer; min-width:0; }
+.theme-card.is-active { border-color:#275c48; outline:2px solid #275c48; }
+.theme-card svg { display:block; width:100%; border-radius:5px; margin-bottom:5px; }
+.theme-card strong,.theme-card small { display:block; }
+.theme-card strong { font-size:12px; }
+.theme-card small { font-size:10px; line-height:1.4; margin:3px 0; }
+.theme-swatches { display:flex; gap:5px; margin:6px 0; flex-wrap:wrap; }
+.theme-swatches i,.theme-swatches button { display:block; width:17px; height:17px; border:1px solid #0002; border-radius:50%; padding:0; }
+.theme-swatches button { width:23px; height:23px; cursor:pointer; }
+.theme-confirm { padding:12px; background:#fff8e8; border:1px solid #e7ce92; border-radius:8px; }
+.theme-confirm p { font-size:12px; line-height:1.5; }
+.theme-confirm button { margin:3px; }
+.theme-font-picker { margin:10px 0; }
+.theme-font-menu { padding:10px; border:1px solid #ccd6cf; border-radius:8px; background:#fff; }
+.theme-font-menu label,.theme-font-menu strong,.theme-font-menu small { display:block; margin:6px 0; }
+.theme-font-menu input { width:100%; box-sizing:border-box; }
+.theme-font-results { max-height:180px; overflow:auto; margin:7px 0; }
+.theme-font-results button { width:100%; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px; background:#fff; border:0; cursor:pointer; font:inherit; font-size:12px; }
+.theme-font-results button:hover { background:#eef5f0; }
+.theme-font-results small { font-size:9px; color:#48715a; }
+.tpl-layers { max-height:220px; overflow:auto; }

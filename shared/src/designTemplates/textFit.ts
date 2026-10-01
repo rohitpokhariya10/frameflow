@@ -54,8 +54,8 @@ export function fitText(input: TextFitInput, countLines: CountLines): TextFit {
 export const textFitInput = (element: ResolvedText): TextFitInput =>
   ({ boxHeight: element.box.height, fontPx: element.fontPx, minFontPx: element.minFontPx, lineHeight: element.lineHeight, maxLines: element.maxLines, overflow: element.overflow });
 /** The warning for a text that was cut, or undefined when the whole text is shown. */
-export const textFitWarning = (element: Pick<ResolvedText, 'name'>, fit: TextFit) => fit.truncated
-  ? `"${element.name}" does not fit its box${fit.shrunk ? ' even at the smallest font size' : ''}: ${fit.visibleLines} of ${fit.lines} lines are shown, ending with an ellipsis. Shorten the text; the layout is not changed.`
+export const textFitWarning = (element: Pick<ResolvedText, 'name' | 'themeRole'>, fit: TextFit) => fit.truncated
+  ? ["headline", "offer-value", "cta"].includes(element.themeRole ?? "") ? `"${element.name}" needs shorter text or a larger box. Correct it before saving this layout or opening it in the editor.` : `"${element.name}" does not fit its box${fit.shrunk ? ' even at the smallest font size' : ''}: ${fit.visibleLines} of ${fit.lines} lines are shown, ending with an ellipsis. Shorten the text; the layout is not changed.`
   : undefined;
 /** Where the drawn lines sit inside the box: the block's height, and its top relative to the box's top by vertical alignment. */
 export function textBlock(element: Pick<ResolvedText, 'box' | 'lineHeight' | 'verticalAlign'>, fit: Pick<TextFit, 'fontPx' | 'visibleLines'>): { y: number; height: number } {

@@ -1,9 +1,9 @@
 import { Text } from 'konva/lib/shapes/Text';
-import { fitText, textFitInput, type ResolvedElement, type ResolvedText, type TextFit } from '@frameflow/shared';
+import { fontStack, fitText, textFitInput, type ResolvedElement, type ResolvedText, type TextFit } from '@frameflow/shared';
 
 /** The Konva text configuration of a template text at a font size: the same for measuring and for drawing. */
 export const templateTextProps = (element: ResolvedText, fontPx: number) => ({
-  text: element.text, width: element.box.width, fontSize: fontPx, fontFamily: element.fontFamily, fontStyle: String(element.fontWeight),
+  text: element.text, width: element.box.width, fontSize: fontPx, fontFamily: fontStack(element.fontFamily), fontStyle: String(element.fontWeight),
   align: element.align, lineHeight: element.lineHeight, letterSpacing: element.letterSpacing * fontPx, wrap: 'word' as const,
 });
 

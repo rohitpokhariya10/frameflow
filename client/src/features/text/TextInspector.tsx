@@ -25,6 +25,7 @@ export function TextInspector({ element }: { element: TextElement }) {
         <h3>Typography</h3>
         <label className="control-label" htmlFor="font-family">Font family</label>
         <select id="font-family" value={element.fontFamily} onChange={(event) => actions.update(element.id, { fontFamily: event.target.value })}>
+          {!TEXT_FONTS.some(font => font === element.fontFamily) && <option value={element.fontFamily}>{element.fontFamily}</option>}
           {TEXT_FONTS.map((font) => <option key={font} value={font}>{font}{font === 'Lora' ? ' · Editorial serif' : ' · Sans serif'}</option>)}
         </select>
         <div className="inspector-row typography-row">

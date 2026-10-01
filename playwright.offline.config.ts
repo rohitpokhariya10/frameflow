@@ -9,7 +9,7 @@ export default defineConfig({
   projects: [
     { name: 'desktop', use: { browserName: 'chromium', viewport: { width: 1440, height: 900 } } },
     { name: 'laptop', use: { browserName: 'chromium', viewport: { width: 1366, height: 768 } } },
-    { name: 'wide', testMatch: ['e2e-image-templates/**/*.spec.ts'], use: { browserName: 'chromium', viewport: { width: 1920, height: 1080 } } },
+    { name: 'wide', testMatch: ['e2e-image-templates/**/*.spec.ts', 'e2e/themes.spec.ts'], use: { browserName: 'chromium', viewport: { width: 1920, height: 1080 } } },
   ],
   webServer: {
     command: 'node --conditions=development --import tsx tests/fixtures/imageTemplateOfflineServer.ts',

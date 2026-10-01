@@ -12,6 +12,7 @@
  * layer order is one explicit zIndex across every element type.
  */
 import type { TEXT_WEIGHTS } from './text.js';
+import type { DesignAspectRatio } from './designTemplates/schema.js';
 
 /** x, y, width, height: fractions of the canvas (0..1), the unrotated box. rotation: degrees about the box centre. */
 export interface NormalizedLayout { x: number; y: number; width: number; height: number; rotation: number }
@@ -38,6 +39,9 @@ export interface ImageBehavior { fit: ImageFit; focalX: number; focalY: number }
 
 interface CanvasElementBase {
   id: string; name: string;
+  /** Optional theme semantics. Old elements keep their single layout. Overrides belong to one ratio only. */
+  themeRole?: string;
+  ratioLayouts?: Partial<Record<DesignAspectRatio, NormalizedLayout>>;
   /** Back to front, across text, images and shapes alike. */
   zIndex: number;
   layout: NormalizedLayout;

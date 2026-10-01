@@ -35,7 +35,7 @@ export function listDesignTemplates(library: TemplateLibrary): DesignTemplate[] 
 export const creativesOf = (library: TemplateLibrary, templateId: string) => library.creatives.filter(creative => creative.templateId === templateId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
 /** What makes a version: the structure. The name, the version number and the dates are not part of it. */
-const structure = (template: DesignTemplate) => JSON.stringify({ supportedAspectRatios: template.supportedAspectRatios, canvas: template.canvas, elements: orderElements(template.elements) });
+const structure = (template: DesignTemplate) => JSON.stringify({ themeId: template.themeId, supportedAspectRatios: template.supportedAspectRatios, canvas: template.canvas, elements: orderElements(template.elements) });
 const cleanName = (name: string) => {
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > TEMPLATE_LIMITS.maxName) throw new TemplateError('INVALID_NAME', `A name must be 1 to ${TEMPLATE_LIMITS.maxName} characters.`);
@@ -155,6 +155,10 @@ export function parseLibrary(text: string): TemplateLibrary {
   if (!record || typeof record !== 'object' || record.schemaVersion !== TEMPLATE_SCHEMA_VERSION || !Array.isArray(record.templates) || !Array.isArray(record.creatives)) throw new TemplateError('INVALID_LIBRARY', 'The saved templates are not in a format this version can read.');
   const library = emptyLibrary(), rejected: RejectedEntry[] = [];
   for (const item of record.templates) {
+    // A missing legacy font means the original default, not an invalid whole library.
+    if (item && typeof item === 'object' && Array.isArray(item.elements)) for (const element of item.elements) {
+      if (element?.type === 'text' && element.style && typeof element.style === 'object' && element.style.fontFamily === undefined) element.style.fontFamily = 'Inter';
+    }
     const errors = templateErrors(item);
     if (!errors.length && library.templates.some(template => template.id === (item as DesignTemplate).id && template.version === (item as DesignTemplate).version)) errors.push({ severity: 'error', path: 'id', message: 'The same template version is stored twice.' });
     if (errors.length) rejected.push({ kind: 'template', value: item, problems: errors.map(issue => `${issue.path}: ${issue.message}`) });

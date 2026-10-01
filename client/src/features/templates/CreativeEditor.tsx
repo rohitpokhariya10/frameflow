@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react';
 import {
-  TEXT_FONTS, applyCreative, designCanvasSize, editablePropertiesOf, findElement, pixelChangeToNormalized, resolveElements, roundNormalized, setCreativeAspectRatio, setCreativeOverride, textFitWarning, toPixels,
+  offerTheme, themeFonts, themeColors, applyCreative, designCanvasSize, editablePropertiesOf, findElement, pixelChangeToNormalized, resolveElements, roundNormalized, setCreativeAspectRatio, setCreativeOverride, textFitWarning, toPixels,
   type Creative, type DesignTemplate, type DesignVariant, type ElementOverride, type NormalizedLayout, type PixelBox, type ResolvedElement, type ResolvedText, type TemplateElement,
 } from '@frameflow/shared';
+import { FontPicker } from '../fonts/FontPicker';
+import { useFonts } from '../fonts/useFonts';
+import { ThemePalette } from './templateUi';
 import { assets } from '../../lib/assets/runtimeAssets';
 import { LOCKED_POINTER, TemplateCanvas } from './TemplateCanvas';
 import { copyAsset } from './slotImage';
 import { fitTemplateTexts } from './templateText';
-import { ColorInput, Field, ImagePicker, NumberInput, Section, Select } from './templateUi';
+import { ColorInput, Field, ImagePicker, NumberInput, Section } from './templateUi';
 import { creativeToVariant } from './toDesignVariant';
 
 interface Props {
@@ -34,7 +37,9 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
   const canvas = useMemo(() => designCanvasSize(creative.aspectRatio), [creative.aspectRatio]);
   const applied = useMemo(() => applyCreative(template, creative), [template, creative]);
   const resolved = useMemo(() => resolveElements(applied.elements, canvas), [applied, canvas]);
-  const fits = useMemo(() => fitTemplateTexts(resolved), [resolved]);
+  const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
+  const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const warnings = [...applied.ignored.map(issue => issue.message), ...resolved.filter((element): element is ResolvedText => element.type === 'text').flatMap(element => textFitWarning(element, fits.get(element.id)!) ?? [])];
 
   const change = (edit: () => Creative) => {
@@ -62,7 +67,7 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
     const newId = () => crypto.randomUUID();
     try {
       // The complete elements (template structure + this creative's content), still normalized, go to the editor through the shared adapter.
-      const variant = await creativeToVariant(applied.elements, canvas, { name: creative.name, templateId: template.id, templateVersion: template.version, creativeId: creative.id },
+      const variant = await creativeToVariant(applied.elements, canvas, { name: creative.name, templateId: template.id, templateVersion: template.version, creativeId: creative.id, themeId: template.themeId },
         { newId, copyAsset: id => copyAsset(id, newId), deleteAsset: id => assets.deleteAsset(id) });
       const refused = onOpenInEditor(variant);
       if (refused) {
@@ -76,7 +81,7 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
   const ordered = [...template.elements].sort((a, b) => Number(a.type === 'background') - Number(b.type === 'background') || a.layout.y - b.layout.y || a.layout.x - b.layout.x);
   const editable = ordered.filter(element => editablePropertiesOf(element).length), locked = ordered.filter(element => !editablePropertiesOf(element).length);
 
-  return <div className="tpl-main">
+  return <ThemePalette.Provider value={themeColors(offerTheme(template.themeId))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
       <span><strong>Template:</strong> {template.name} <span className="ws-muted">(version {template.version})</span></span>
       <label className="tpl-row"><strong>Creative name</strong>
@@ -88,7 +93,7 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
       </div>
       <span className="tpl-row" style={{ marginLeft: 'auto' }}>
         <button type="button" className="ws-btn ws-btn-primary" disabled={!dirty && saved} onClick={onSave}>{saved && !dirty ? 'Saved' : 'Save Creative'}</button>
-        <button type="button" className="ws-btn" disabled={opening} onClick={() => void openInEditor()}>{opening ? 'Opening…' : 'Open in editor'}</button>
+        <button type="button" className="ws-btn" disabled={opening || criticalOverflow || fonts.loading} onClick={() => void openInEditor()}>{opening ? 'Opening…' : 'Open in editor'}</button>
       </span>
       {newerVersion !== undefined && <div className="ws-notice" style={{ flexBasis: '100%' }}>This creative uses version {template.version} of the template and stays on it. Version {newerVersion} exists.{' '}
         <button type="button" className="ws-btn" onClick={onUpgrade}>Update this creative to version {newerVersion}</button></div>}
@@ -96,24 +101,26 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
     </div>
     <div className="tpl-work is-creative">
       <aside className="tpl-panel" aria-label="Editable content">
+        {fonts.loading && <p role="status" className="ws-muted">Loading selected fonts…</p>}
+        {fonts.failed && <p role="status" className="ws-warn">Some fonts could not load. Your selections are kept; readable fallbacks are shown.</p>}
         <Section title="Editable content" note="(set by the template)">
           {!editable.length && <p className="ws-muted">This template locks everything; there is nothing to change.</p>}
-          {editable.map(element => <CreativeFields key={element.id} element={element} shown={applied.elements.find(item => item.id === element.id) ?? element} override={creative.contentOverrides[element.id]}
+          {editable.map(element => <CreativeFields key={element.id} themeId={template.themeId} element={element} shown={applied.elements.find(item => item.id === element.id) ?? element} override={creative.contentOverrides[element.id]}
             selected={element.id === selectedId} onSelect={() => setSelectedId(element.id)} change={values => override(element.id, values)} />)}
         </Section>
         {locked.length > 0 && <Section title="Locked by the template"><p className="ws-muted">{locked.map(element => element.name || element.role).join(', ')}</p></Section>}
         {warnings.length > 0 && <Section title="Warnings">{warnings.map(warning => <p key={warning} className="ws-warn">{warning}</p>)}</Section>}
       </aside>
       <div className="tpl-stage">
-        <TemplateCanvas elements={resolved} fits={fits} canvas={canvas} selectedId={selectedId} onSelect={setSelectedId} allows={allows} onCommit={commit} />
+        <TemplateCanvas fontRevision={fonts.revision} elements={resolved} fits={fits} canvas={canvas} selectedId={selectedId} onSelect={setSelectedId} allows={allows} onCommit={commit} />
       </div>
     </div>
-  </div>;
+  </div></ThemePalette.Provider>;
 }
 
 /** The fields of one element: one control per property the template lets a creative change. */
-function CreativeFields({ element, shown, override, selected, onSelect, change }: {
-  element: TemplateElement; shown: TemplateElement; override?: ElementOverride; selected: boolean; onSelect: () => void; change: (values: ElementOverride) => void;
+function CreativeFields({ themeId, element, shown, override, selected, onSelect, change }: {
+  themeId?: string; element: TemplateElement; shown: TemplateElement; override?: ElementOverride; selected: boolean; onSelect: () => void; change: (values: ElementOverride) => void;
 }) {
   const can = element.editableProperties;
   const geometry = GEOMETRY.filter(property => can[property]);
@@ -123,7 +130,7 @@ function CreativeFields({ element, shown, override, selected, onSelect, change }
     {shown.type === 'text' && can.content && <Field label="Text"><textarea rows={2} value={shown.defaultContent.text} maxLength={5000} onChange={event => change({ text: event.target.value })} /></Field>}
     {shown.type === 'text' && can.color && <ColorInput label="Text colour" value={shown.style.color} onChange={color => change({ color })} />}
     {shown.type === 'text' && can.backgroundColor && shown.style.backgroundColor !== null && <ColorInput label="Box colour" value={shown.style.backgroundColor} onChange={backgroundColor => change({ backgroundColor })} />}
-    {shown.type === 'text' && can.fontFamily && <Select label="Font" value={shown.style.fontFamily} options={TEXT_FONTS.includes(shown.style.fontFamily as typeof TEXT_FONTS[number]) ? TEXT_FONTS : [...TEXT_FONTS, shown.style.fontFamily]} onChange={fontFamily => change({ fontFamily })} />}
+    {shown.type === 'text' && can.fontFamily && <FontPicker value={shown.style.fontFamily} recommended={offerTheme(themeId) ? themeFonts(offerTheme(themeId)!, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${offerTheme(themeId)?.name ?? "text"}`} onChange={fontFamily => change({ fontFamily })} />}
     {shown.type === 'shape' && can.color && <ColorInput label="Colour" value={shown.style.fill} onChange={color => change({ color })} />}
     {shown.type === 'background' && can.color && <ColorInput label="Colour" value={shown.defaultContent.color} onChange={color => change({ color })} />}
     {(shown.type === 'image' || shown.type === 'background') && can.image && <>

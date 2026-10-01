@@ -6,7 +6,7 @@ export interface VariantDeps {
   copyAsset: (assetId: string) => Promise<string | undefined>;
   deleteAsset: (assetId: string) => Promise<unknown>;
 }
-export interface CreativeSource { name: string; templateId: string; templateVersion: number; creativeId: string }
+export interface CreativeSource { themeId?: string; name: string; templateId: string; templateVersion: number; creativeId: string }
 
 /**
  * A creative as a design for the existing editor. `elements` are the template's CanvasElements with the creative's
@@ -30,7 +30,7 @@ export async function creativeToVariant(elements: readonly CanvasElement[], canv
       copies[assetId] = copy;
     }
     return canvasElementsToVariant(elements, canvas, { id: `template-${deps.newId()}`, name: source.name.slice(0, 200) || 'Creative', assets: copies,
-      template: { templateId: source.templateId, templateVersion: source.templateVersion, creativeId: source.creativeId } });
+      template: { ...(source.themeId ? { themeId: source.themeId } : {}), templateId: source.templateId, templateVersion: source.templateVersion, creativeId: source.creativeId } });
   } catch (error) {
     await Promise.all(Object.values(copies).map(id => deps.deleteAsset(id).catch(() => undefined)));
     throw error instanceof Error ? error : new Error('The creative could not be opened in the editor.');

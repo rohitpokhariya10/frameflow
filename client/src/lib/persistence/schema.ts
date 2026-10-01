@@ -1,4 +1,4 @@
-import { CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, LAYER_LIMITS, TEMPLATE_LIMITS, TEXT_FONTS, TEXT_LIMITS, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
+import { CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, LAYER_LIMITS, TEMPLATE_LIMITS, isCatalogFont, TEXT_LIMITS, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
 
 type Check = (value: unknown) => boolean;
 const string: Check = (v) => typeof v === 'string' && v.length <= 10_000;
@@ -25,7 +25,7 @@ const text = object({
   id, type: choice('text'), role: choice('eyebrow', 'title', 'date', 'venue', 'body', 'custom', ...CANVAS_TEXT_ROLES),
   text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters,
   x: finite, y: finite, width: range(TEXT_LIMITS.minWidth, TEXT_LIMITS.maxWidth),
-  fontFamily: choice(...TEXT_FONTS), fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
+  fontFamily: isCatalogFont, fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
   fontWeight: choice(400, 600, 700), fill: color, align: choice('left', 'center', 'right'),
   lineHeight: (v) => finite(v) && (v as number) > 0, letterSpacing: finite,
 }, {
@@ -50,7 +50,7 @@ const variant = object({
   elements: (v) => array(text, TEXT_LIMITS.maxElements)(v) && uniqueIds(v),
 }, {
   background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint }),
-  template: object({ templateId: id, templateVersion: (v) => Number.isSafeInteger(v) && (v as number) >= 1 }, { creativeId: id,
+  template: object({ templateId: id, templateVersion: (v) => Number.isSafeInteger(v) && (v as number) >= 1 }, { themeId: id, creativeId: id,
     background: object({ id, name: string, fit: choice('cover', 'contain'), focalPoint, editable }) }),
   sourceVariantId: id,
   decomposition: object({ jobId: id, mode: choice('blank', 'original') }),
