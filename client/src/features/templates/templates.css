@@ -81,3 +81,4 @@
 .theme-font-picker > strong { display:block; margin-bottom:7px; }
 
 .tpl-element-properties { display:grid; gap:14px; }
+.tpl-history button:disabled { pointer-events: none; } /* Let canvas drag-end bubble through the wrapper when released here. */

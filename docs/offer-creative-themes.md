@@ -13,7 +13,7 @@ The original starter themes extend **Create Own Template**, the existing Vite/Re
 
 `themeId` on a template and `themeRole` / `ratioLayouts` on its elements are optional additions to the existing schema version 1. Geometry remains normalized. Old templates without these additions retain their single-layout behavior. Template-library restore supplies Inter when a legacy text's font family is missing; malformed data is otherwise still preserved in the library's rejected entries.
 
-The existing versioned localStorage library handles save, edit, duplicate, rename, delete and creative pinning. Image bytes remain in the local asset store. There is no new history framework: applying a theme is one existing `onChange` action. Existing editor undo continues to work for edits made after handoff.
+The existing versioned localStorage library handles save, edit, duplicate, rename, delete and creative pinning. Image bytes remain in the local asset store. Template and creative editing now have [session-only undo/redo](template-history.md): applying a theme is one atomic history action. Existing editor undo continues to work independently for edits made after handoff.
 
 ## Initial designs
 
@@ -94,7 +94,7 @@ git diff --check
 
 Offline browser tests inject a bundled font-face fixture and test failure behavior deterministically. The separate visual run uses real Google Fonts; no AI/generation request is permitted. Screenshots and test logs stay outside the commit.
 
-Known limits: fonts need network availability on first use; unavailable fonts affect visual metrics; existing weight controls are 400/600/700 with no italic UI; no new undo in template authoring; custom reset freezes one layout; library/images remain browser-local; editor handoff is an independent design, not a live link back to its template. Catalog refresh is manual so deployed behavior is stable. Google font files are not prefetched for search results.
+Known limits: fonts need network availability on first use; unavailable fonts affect visual metrics; existing weight controls are 400/600/700 with no italic UI; undo history resets between editing sessions; custom reset freezes one layout; library/images remain browser-local; editor handoff is an independent design, not a live link back to its template. Catalog refresh is manual so deployed behavior is stable. Google font files are not prefetched for search results.
 
 ### Existing baseline failures
 

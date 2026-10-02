@@ -67,7 +67,7 @@ Designer: choose curated design or generate/apply an AI draft → refine busines
 
 SPOC: Use Template → change allowed headline/offer/CTA/product/logo content → Save Creative → Open in editor. The creative stays pinned to an immutable template version, so it cannot mutate the base. Handoff copies local assets, including built-in SVG ornaments, into independently owned editor assets. Text, shapes, gradients and images remain separate editor layers. Export uses the existing editor workflow.
 
-Library, asset storage and editor remain browser-local. Clearing browser storage removes user templates/assets. Handoff is an independent design, not a live template link. Existing authoring has no new undo/history mechanism. Google font first-use loading requires network, with readable fallbacks. Curated card thumbnails use interface typography. No mandatory generated background or arbitrary image-prompt canvas engine is included.
+Library, asset storage and editor remain browser-local. Clearing browser storage removes user templates/assets. Handoff is an independent design, not a live template link. Authoring and derived creatives have session-only [undo/redo history](template-history.md). Google font first-use loading requires network, with readable fallbacks. Curated card thumbnails use interface typography. No mandatory generated background or arbitrary image-prompt canvas engine is included.
 
 ## Extending the gallery
 

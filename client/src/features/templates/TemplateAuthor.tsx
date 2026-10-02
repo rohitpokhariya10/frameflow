@@ -10,6 +10,7 @@ import { useFonts } from '../fonts/useFonts';
 import { ThemePalette } from './templateUi';
 import { TemplateCanvas } from './TemplateCanvas';
 import { fitTemplateTexts } from './templateText';
+import { TemplateHistoryButtons, type TemplateHistoryControls } from './useTemplateHistory';
 import { ColorInput, Field, ImagePicker, NumberInput, Section, Select, percent } from './templateUi';
 
 const ADDABLE: { group: string; roles: [TemplateElementRole, string][] }[] = [
@@ -32,6 +33,7 @@ const FIXED = () => ({ move: false, resize: false, rotate: false });
 
 interface Props {
   template: DesignTemplate;
+  history: TemplateHistoryControls;
   /** Already in the library (an edit) or not yet saved (a new template). */
   saved: boolean; dirty: boolean;
   onChange: (template: DesignTemplate) => void; onSave: (draft: DesignTemplate) => void;
@@ -41,7 +43,7 @@ interface Props {
  * Template authoring uses normalized geometry, with optional themed layouts for each ratio.
  * Preview changes are view state; transforms edit the selected ratio when an element has adaptive layouts.
  */
-export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Props) {
+export function TemplateAuthor({ template, history, saved, dirty, onChange, onSave }: Props) {
   // Previewing writes nothing. Saving a themed template makes this ratio the default for new creatives.
   const [ratio, setRatio] = useState<DesignAspectRatio>(template.canvas.masterAspectRatio);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
   const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const selected = selectedId ? findElement(templateAtRatio(template, ratio), selectedId) : undefined;
+  if (selectedId && !selected) setSelectedId(null);
   const warnings = [
     ...templateIssues(template).map(issue => issue.message),
     ...resolved.filter((element): element is ResolvedText => element.type === 'text').flatMap(element => textFitWarning(element, fits.get(element.id)!) ?? []),
@@ -87,6 +90,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
 
   return <ThemePalette.Provider value={themeColors((offerTemplateTheme(template) ?? offerTheme(template.themeId)))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
+      <TemplateHistoryButtons history={history} />
       <label className="tpl-row"><strong>Template name</strong>
         <input type="text" aria-label="Template name" value={template.name} maxLength={200} onChange={event => onChange({ ...template, name: event.target.value })} style={{ width: 220 }} /></label>
       <div className="tpl-row" role="group" aria-label="Aspect preview"><strong>Aspect preview</strong>
@@ -128,6 +132,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
         </Section>
         {warnings.length > 0 && <Section title="Warnings">{warnings.map(warning => <p key={warning} className="ws-warn">{warning}</p>)}</Section>}
         {selected ? <div ref={inspector} className="tpl-element-properties"><ElementProperties key={selected.id} element={selected} template={template} ratio={ratio} edit={patch => edit(selected.id, patch)} layout={values => layout(selected.id, values)}
+          duplicate={() => { const id = `el-${crypto.randomUUID()}`; if (change(current => addElement(current, { ...structuredClone(findElement(current, selected.id)!), id, name: `${selected.name} copy`.slice(0, 200) }))) setSelectedId(id); }}
           reorder={move => change(current => reorderElement(current, selected.id, move))} remove={() => remove(selected.id)} /></div>
           : <p className="ws-muted">Select an element on the canvas or in the layer list to edit its content, style, editable properties and layout.</p>}
       </aside>
@@ -139,9 +144,9 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
 const patchOf = (part: 'style' | 'behavior' | 'defaultContent' | 'editableProperties', values: Record<string, unknown>) =>
   (element: TemplateElement) => ({ ...element, [part]: { ...element[part], ...values } }) as TemplateElement;
 
-function ElementProperties({ element, template, ratio, edit, layout, reorder, remove }: {
+function ElementProperties({ element, template, ratio, edit, layout, reorder, remove, duplicate }: {
   element: TemplateElement; template: DesignTemplate; ratio: DesignAspectRatio; edit: (patch: (element: TemplateElement) => TemplateElement) => void;
-  layout: (values: Partial<NormalizedLayout>) => void; reorder: (move: 'forward' | 'backward' | 'front' | 'back') => void; remove: () => void;
+  layout: (values: Partial<NormalizedLayout>) => void; reorder: (move: 'forward' | 'backward' | 'front' | 'back') => void; remove: () => void; duplicate: () => void;
 }) {
   const style = (values: Record<string, unknown>) => edit(patchOf('style', values));
   const behavior = (values: Record<string, unknown>) => edit(patchOf('behavior', values));
@@ -247,6 +252,7 @@ function ElementProperties({ element, template, ratio, edit, layout, reorder, re
       </details>
     </Section>
 
+    {!isBackground && <button type="button" className="ws-btn" onClick={duplicate}>Duplicate element</button>}
     <button type="button" className="ws-btn ws-btn-danger" onClick={remove}>Remove element</button>
   </>;
 }

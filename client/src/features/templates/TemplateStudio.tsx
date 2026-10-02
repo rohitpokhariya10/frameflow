@@ -13,12 +13,14 @@ import './templates.css';
 import { CreativeEditor } from './CreativeEditor';
 import { TemplateAuthor } from './TemplateAuthor';
 import { loadTemplateLibrary, saveTemplateLibrary } from './templateStorage';
+import { useTemplateHistory } from './useTemplateHistory';
+import { historyKey } from '../editor/selectionKeyboard';
 
-/** `baseline`: the JSON of what was last saved or opened, to tell whether there are unsaved changes. */
-type View = { kind: 'author'; draft: DesignTemplate; baseline: string } | { kind: 'creative'; creative: Creative; baseline: string };
+type View = { kind: 'author'; draft: DesignTemplate } | { kind: 'creative'; creative: Creative };
+const documentOf = (view: View) => view.kind === 'author' ? view.draft : view.creative;
 const storage = () => window.localStorage;
 const now = () => new Date().toISOString();
-const newDraft = (): View => { const draft = createTemplateDraft(`tpl-${crypto.randomUUID()}`, now()); return { kind: 'author', draft, baseline: JSON.stringify(draft) }; };
+const newDraft = (): View => ({ kind: 'author', draft: createTemplateDraft(`tpl-${crypto.randomUUID()}`, now()) });
 const problemText = (problem: unknown) => problem instanceof TemplateError || problem instanceof Error ? problem.message : 'That did not work.';
 
 /**
@@ -31,9 +33,13 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
   const [loaded] = useState(() => loadTemplateLibrary(storage));
   const [library, setLibrary] = useState<TemplateLibrary>(loaded.library);
   // Opens on the authoring editor with a new template; the library beside it lists the existing ones.
-  const [view, setView] = useState<View>(newDraft);
+  const history = useTemplateHistory<View>(newDraft);
+  const view = history.present;
+  // The last saved state is independent of undo: undoing a saved edit correctly becomes dirty again.
+  const [baseline, setBaseline] = useState(() => JSON.stringify(documentOf(view)));
+  const setView = (next: View) => { history.reset(next); setBaseline(JSON.stringify(documentOf(next))); };
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(loaded.warning ? { text: loaded.warning, error: true } : null);
-  const dirty = JSON.stringify(view.kind === 'author' ? view.draft : view.creative) !== view.baseline;
+  const dirty = JSON.stringify(documentOf(view)) !== baseline;
   const templates = listDesignTemplates(library);
 
   /** Writes the library to storage first; the screen only moves on when that worked. */
@@ -49,7 +55,7 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
     if (view.kind !== 'author') return;
     const result = saveDesignTemplate(library, draft, now());
     if (result.outcome !== 'unchanged' && !persist(result.library)) return;
-    setView({ kind: 'author', draft: result.template, baseline: JSON.stringify(result.template) });
+    history.replace({ kind: 'author', draft: result.template }); setBaseline(JSON.stringify(result.template));
     const pinned = creativesOf(result.library, result.template.id).filter(creative => creative.templateVersion !== result.template.version).length;
     setMessage({ text: { created: `Saved "${result.template.name}" as version 1.`, renamed: `Renamed to "${result.template.name}". The structure is unchanged, so it is still version ${result.template.version}.`, unchanged: 'Nothing to save.',
       'new-version': `Saved as version ${result.template.version}.${pinned ? ` ${pinned} existing creative${pinned === 1 ? '' : 's'} stay${pinned === 1 ? 's' : ''} on the earlier version and ${pinned === 1 ? 'is' : 'are'} unchanged.` : ''}` }[result.outcome] });
@@ -58,16 +64,16 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
     if (view.kind !== 'creative') return;
     const result = saveCreative(library, view.creative, now());
     if (!persist(result.library)) return;
-    setView({ kind: 'creative', creative: result.creative, baseline: JSON.stringify(result.creative) });
+    history.replace({ kind: 'creative', creative: result.creative }); setBaseline(JSON.stringify(result.creative));
     setMessage({ text: `Saved creative "${result.creative.name}".` });
   });
-  const edit = (id: string) => leave(() => { const draft = latestDesignTemplate(library, id)!; setView({ kind: 'author', draft, baseline: JSON.stringify(draft) }); });
+  const edit = (id: string) => leave(() => { const draft = latestDesignTemplate(library, id)!; setView({ kind: 'author', draft }); });
   const use = (id: string) => leave(() => {
     const template = latestDesignTemplate(library, id)!;
     const creative = createCreative(template, { id: `creative-${crypto.randomUUID()}`, name: `${template.name} creative ${creativesOf(library, id).length + 1}`.slice(0, 200), now: now() });
-    setView({ kind: 'creative', creative, baseline: JSON.stringify(creative) });
+    setView({ kind: 'creative', creative });
   });
-  const openCreative = (creative: Creative) => leave(() => setView({ kind: 'creative', creative, baseline: JSON.stringify(creative) }));
+  const openCreative = (creative: Creative) => leave(() => setView({ kind: 'creative', creative }));
   const duplicate = (id: string) => attempt(() => {
     const result = duplicateDesignTemplate(library, id, `tpl-${crypto.randomUUID()}`, now());
     if (persist(result.library)) setMessage({ text: `Duplicated as "${result.template.name}", a separate template.` });
@@ -78,7 +84,7 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
     const next = renameDesignTemplate(library, template.id, name, now());
     if (next === library || !persist(next)) return;
     // The open draft of this template takes the new name too, without becoming an unsaved change.
-    if (view.kind === 'author' && view.draft.id === template.id) { const renamed = { ...view.draft, name: name.trim() }; setView({ kind: 'author', draft: renamed, baseline: JSON.stringify({ ...JSON.parse(view.baseline), name: name.trim() }) }); }
+    if (view.kind === 'author' && view.draft.id === template.id) { const renamed = { ...view.draft, name: name.trim() }; history.reset({ kind: 'author', draft: renamed }); setBaseline(JSON.stringify({ ...JSON.parse(baseline), name: name.trim() })); }
   });
   const removeTemplate = (template: DesignTemplate) => attempt(() => {
     if (!window.confirm(`Delete the template "${template.name}"? This cannot be undone.`)) return;
@@ -94,7 +100,7 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
     if (view.kind !== 'creative') return;
     const latest = latestDesignTemplate(library, view.creative.templateId)!;
     const result = upgradeCreative(view.creative, latest, now());
-    setView({ ...view, creative: result.creative });
+    history.edit({ ...view, creative: result.creative });
     setMessage({ text: `Now on version ${latest.version}; save the creative to keep it.${result.dropped.length ? ` Not carried over: ${result.dropped.join(' ')}` : ''}`, error: result.dropped.length > 0 });
   });
   /** Adds the rendered creative to the editor as a new version, the same way other imports do, and closes the studio. */
@@ -110,7 +116,20 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
 
   const pinnedTemplate = view.kind === 'creative' ? designTemplateVersion(library, view.creative.templateId, view.creative.templateVersion) : undefined;
   const newest = view.kind === 'creative' ? latestDesignTemplate(library, view.creative.templateId)?.version : undefined;
-  return <div className="ws-backdrop"><div className="ws" role="dialog" aria-modal="true" aria-labelledby="tpl-title" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}>
+  // Creative ratio is persisted, but browsing it is not an edit. Keep the current ratio when travelling history
+  // unless undoing a version upgrade restores a template that does not support it.
+  const restore = (next: View, current: View): View => {
+    if (next.kind !== 'creative' || current.kind !== 'creative') return next;
+    const source = designTemplateVersion(library, next.creative.templateId, next.creative.templateVersion);
+    return source?.supportedAspectRatios.includes(current.creative.aspectRatio) ? { ...next, creative: { ...next.creative, aspectRatio: current.creative.aspectRatio } } : next;
+  };
+  const controls = { canUndo: history.canUndo, canRedo: history.canRedo,
+    undo: () => { history.undo(restore); setMessage(null); }, redo: () => { history.redo(restore); setMessage(null); } };
+  return <div className="ws-backdrop"><div className="ws" role="dialog" aria-modal="true" aria-labelledby="tpl-title" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}
+    {...history.fieldEvents} onKeyDown={event => {
+      const command = historyKey(event);
+      if (command) { event.preventDefault(); event.stopPropagation(); controls[command](); }
+    }}>
     <header className="ws-header" style={{ gridTemplateColumns: '1fr auto' }}>
       <h2 id="tpl-title" style={{ fontSize: 15, fontWeight: 600 }}>{view.kind === 'author' ? 'Create Own Template' : 'Use Template'} <span className="ws-muted">· local templates · optional AI planner</span></h2>
       <button className="ws-icon-button" aria-label="Close" onClick={() => leave(onClose)}><X size={18} /></button>
@@ -142,11 +161,11 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
         })}
       </nav>
       {view.kind === 'author'
-        ? <TemplateAuthor key={view.draft.id} template={view.draft} saved={!!latestDesignTemplate(library, view.draft.id)} dirty={dirty} onSave={saveTemplate} onChange={draft => setView({ ...view, draft })} />
+        ? <TemplateAuthor key={`${history.session}-${view.draft.id}`} template={view.draft} history={controls} saved={!!latestDesignTemplate(library, view.draft.id)} dirty={dirty} onSave={saveTemplate} onChange={draft => history.edit({ ...view, draft })} />
         : pinnedTemplate
-          ? <CreativeEditor key={view.creative.id} template={pinnedTemplate} creative={view.creative} saved={library.creatives.some(creative => creative.id === view.creative.id)} dirty={dirty}
+          ? <CreativeEditor key={`${history.session}-${view.creative.id}`} template={pinnedTemplate} creative={view.creative} history={controls} saved={library.creatives.some(creative => creative.id === view.creative.id)} dirty={dirty}
               newerVersion={newest !== undefined && newest > view.creative.templateVersion ? newest : undefined}
-              onChange={creative => setView({ ...view, creative })} onSave={saveCurrentCreative} onUpgrade={upgrade} onOpenInEditor={openInEditor} />
+              onChange={creative => history.edit({ ...view, creative })} onRatioChange={creative => history.replace({ ...view, creative })} onSave={saveCurrentCreative} onUpgrade={upgrade} onOpenInEditor={openInEditor} />
           : <p role="alert" className="ws-warn" style={{ margin: 16 }}>The template version this creative was made with is no longer in this browser, so it cannot be shown.</p>}
     </div></div>
   </div></div>;

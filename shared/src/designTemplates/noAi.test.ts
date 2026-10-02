@@ -27,7 +27,7 @@ it('the template source imports only local code: the shared module, React, Konva
   const sharedAllowed = /^\.\/[a-zA-Z]+\.js$|^\.\.\/fonts\/catalog\.js$|^\.\.\/(index|text|canvasElement)\.js$|^\.\/designTemplates\/[a-zA-Z]+\.js$/;
   const clientAllowed = /^(react|lucide-react|@frameflow\/shared)$|^konva\/lib\/|^react-konva\/lib\/|^\.\/[a-zA-Z]+(\.css)?$|^\.\.\/\.\.\/(store|store\/(editorSlice|uiSlice)|lib\/assets\/runtimeAssets|lib\/persistence\/(schema|projectStorage)|components\/ui\/NumberField)$|^\.\.\/aiThemes\/AIThemePanel$|^\.\.\/fonts\/(FontPicker|useFonts)$|^\.\.\/canvas\/(DesignLayerNode|layerGeometry|viewport)$|^\.\.\/decomposition\/workspace\/workspace\.css$/;
   expect(shared().flatMap(({ file, text }) => imports(text).filter(name => !sharedAllowed.test(name)).map(name => `${file}: ${name}`))).toEqual([]);
-  expect(sources(CLIENT).flatMap(({ file, text }) => imports(text).filter(name => !clientAllowed.test(name)).map(name => `${file}: ${name}`))).toEqual([]);
+  expect(sources(CLIENT).flatMap(({ file, text }) => imports(text).filter(name => !clientAllowed.test(name) && name !== '../editor/selectionKeyboard').map(name => `${file}: ${name}`))).toEqual([]);
 });
 
 

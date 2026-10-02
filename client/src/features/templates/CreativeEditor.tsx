@@ -12,10 +12,13 @@ import { copyAsset } from './slotImage';
 import { fitTemplateTexts } from './templateText';
 import { ColorInput, Field, ImagePicker, NumberInput, Section } from './templateUi';
 import { creativeToVariant } from './toDesignVariant';
+import { TemplateHistoryButtons, type TemplateHistoryControls } from './useTemplateHistory';
 
 interface Props {
   /** The template version this creative is pinned to. */
   template: DesignTemplate; creative: Creative;
+  history: TemplateHistoryControls;
+  onRatioChange: (creative: Creative) => void;
   /** The newest version of the template, when that is a later one than the creative uses. */
   newerVersion?: number;
   saved: boolean; dirty: boolean;
@@ -30,12 +33,13 @@ const GEOMETRY_FIELDS: Record<typeof GEOMETRY[number], (keyof NormalizedLayout)[
  * Use Template: fill a template with content. Only what the template author marked editable can be changed; the
  * geometry comes from the template and is locked here unless the author opened it for an element.
  */
-export function CreativeEditor({ template, creative, newerVersion, saved, dirty, onChange, onSave, onUpgrade, onOpenInEditor }: Props) {
+export function CreativeEditor({ template, creative, history, onRatioChange, newerVersion, saved, dirty, onChange, onSave, onUpgrade, onOpenInEditor }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
   const canvas = useMemo(() => designCanvasSize(creative.aspectRatio), [creative.aspectRatio]);
   const applied = useMemo(() => applyCreative(template, creative), [template, creative]);
+  if (selectedId && !applied.elements.some(element => element.id === selectedId)) setSelectedId(null);
   const resolved = useMemo(() => resolveElements(applied.elements, canvas), [applied, canvas]);
   const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
@@ -83,12 +87,13 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
 
   return <ThemePalette.Provider value={themeColors((offerTemplateTheme(template) ?? offerTheme(template.themeId)))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
+      <TemplateHistoryButtons history={history} />
       <span><strong>Template:</strong> {template.name} <span className="ws-muted">(version {template.version})</span></span>
       <label className="tpl-row"><strong>Creative name</strong>
         <input type="text" aria-label="Creative name" value={creative.name} maxLength={200} onChange={event => onChange({ ...creative, name: event.target.value })} style={{ width: 220 }} /></label>
       <div className="tpl-row" role="group" aria-label="Aspect ratio"><strong>Ratio</strong>
         {template.supportedAspectRatios.map(item => <button key={item} type="button" className={`ws-btn ${item === creative.aspectRatio ? 'ws-btn-primary' : ''}`} aria-pressed={item === creative.aspectRatio}
-          onClick={() => change(() => setCreativeAspectRatio(creative, template, item, new Date().toISOString()))}>{item}</button>)}
+          onClick={() => onRatioChange(setCreativeAspectRatio(creative, template, item, new Date().toISOString()))}>{item}</button>)}
         <span className="ws-muted">{canvas.width} × {canvas.height} px</span>
       </div>
       <span className="tpl-row" style={{ marginLeft: 'auto' }}>
