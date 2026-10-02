@@ -69,3 +69,15 @@
 .theme-font-results button:hover { background:#eef5f0; }
 .theme-font-results small { font-size:9px; color:#48715a; }
 .tpl-layers { max-height:220px; overflow:auto; }
+
+.diwali-gallery summary,.ai-theme-panel summary,.legacy-themes summary { cursor:pointer; font-weight:600; padding:9px 0; }
+.diwali-cards { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.diwali-cards .theme-card { padding:7px; }
+.diwali-cards .theme-card strong { font-size:12px; margin-top:7px; }
+.ai-theme-panel { padding:8px 10px; border:1px solid #d8dfda; border-radius:8px; background:#f5f8f5; }
+.ai-theme-panel label,.ai-theme-panel textarea { display:block; width:100%; box-sizing:border-box; }
+.ai-theme-panel p { line-height:1.5; }
+.ai-theme-panel button { margin-top:8px; }
+.theme-font-picker > strong { display:block; margin-bottom:7px; }
+
+.tpl-element-properties { display:grid; gap:14px; }

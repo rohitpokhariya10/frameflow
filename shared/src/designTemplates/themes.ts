@@ -8,7 +8,7 @@ export interface OfferTheme {
   palette: { background: string; surface: string; gold: string; accent: string; ink: string; muted: string };
   extraColors?: readonly string[];
   typography: { heading: string; body: string; offer: string; headingWeight?: 400 | 600 | 700 };
-  recommendations: { headings: readonly string[]; body: readonly string[] };
+  recommendations: { offers?: readonly string[]; headings: readonly string[]; body: readonly string[] };
   content: Record<ThemeTextRole, string>;
   ratioLayouts: Record<DesignAspectRatio, Record<string, NormalizedLayout>>;
 }
@@ -55,8 +55,8 @@ export const OFFER_THEMES: readonly OfferTheme[] = [
     content: { eyebrow:'HOLI SPECIAL', headline:'Color Your Cart\nWith Savings', subheading:'Bright offers for a\nbrighter celebration', 'offer-value':'FLAT 30% OFF', cta:'Grab The Offer  →', terms:'*T&C apply' }, ratioLayouts: layouts },
 ];
 export const offerTheme = (id?: string) => OFFER_THEMES.find(theme => theme.id === id);
-export const themeColors = (theme?: OfferTheme): string[] => theme ? [...Object.values(theme.palette), ...(theme.extraColors ?? [])] : [];
-export function themeFonts(theme: OfferTheme, role?: string) { return ['headline','offer-value','heading','offer'].includes(role ?? '') ? theme.recommendations.headings : theme.recommendations.body; }
+export const themeColors = (theme?: OfferTheme): string[] => theme ? [...new Set([...Object.values(theme.palette), ...(theme.extraColors ?? [])])] : [];
+export function themeFonts(theme: OfferTheme, role?: string) { if (['offer-value','offer-prefix','offer-suffix','offer'].includes(role ?? '') && theme.recommendations.offers) return theme.recommendations.offers; return ['headline','offer-value','heading','offer'].includes(role ?? '') ? theme.recommendations.headings : theme.recommendations.body; }
 const textToken = (theme: OfferTheme, role: ThemeTextRole) => ({
   fontFamily: role === 'headline' ? theme.typography.heading : role === 'offer-value' ? theme.typography.offer : theme.typography.body,
   fontSize: ({ eyebrow:.018, headline:.074, subheading:.024, 'offer-value':.051, cta:.026, terms:.016 })[role],
@@ -140,16 +140,18 @@ export function buildThemeStarter(theme: OfferTheme): TemplateElement[] {
   }
   return orderElements(elements);
 }
-const decoration = (e:TemplateElement) => !!e.themeRole && (e.themeRole.startsWith('theme-decoration-') || e.themeRole==='hero-stage');
+const decoration = (e:TemplateElement) => !!e.themeRole && (/^(theme-decoration-|decoration-|background-decoration|frame-|arch-)/.test(e.themeRole) || ['hero-stage','premium-frame','product-stage','event-ticket'].includes(e.themeRole));
 /** Styling preserves IDs, content, assets, user layers and ratio geometry. Only theme-owned ornaments are replaced. */
 export function applyOfferTheme(template: DesignTemplate, themeId: string, mode:'style'|'replace'): DesignTemplate {
   const theme=offerTheme(themeId); if (!theme) throw new TemplateError('UNKNOWN_THEME','Choose an available theme.');
   if (template.themeId===themeId && mode==='style') return template;
+  const {offerTemplate:_offer,...legacy}=template; void _offer; template=legacy;
   const starter=buildThemeStarter(theme);
   if (mode==='replace' || !template.elements.length) return {...template,themeId,elements:starter};
   const source=new Map(starter.map(e=>[e.themeRole,e]));
   const kept=template.elements.filter(e=>!decoration(e)).map(e=> {
-    const match=source.get(e.themeRole);
+    const aliases:Record<string,string>={background:'theme-background',logo:'logo-slot',product:'hero-image-slot',subheadline:'subheading','offer-prefix':'eyebrow','offer-suffix':'eyebrow',date:'subheading',location:'subheading'};
+    const match=source.get(aliases[e.themeRole ?? ''] ?? e.themeRole);
     if (match && match.type===e.type) return {...e,style:{...match.style},...(e.type==='background'?{defaultContent:{...e.defaultContent,color:theme.palette.background}}:{})} as TemplateElement;
     return e; // Unrelated custom elements are deliberately not restyled.
   });
@@ -159,7 +161,7 @@ export function applyOfferTheme(template: DesignTemplate, themeId: string, mode:
 }
 /** Freeze the currently previewed layout; retain every layer, copy, asset and font, and relinquish theme ownership. */
 export function clearOfferTheme(template:DesignTemplate, ratio:DesignAspectRatio):DesignTemplate {
-  const {themeId:_theme,...rest}=template; void _theme;
+  const {themeId:_theme,offerTemplate:_offer,...rest}=template; void _theme; void _offer;
   return {...rest,elements:template.elements.map(e=> {const {themeRole:_role,...element}=elementAtRatio(e,ratio);void _role;return element as TemplateElement;})};
 }
 export function applyThemePairing(template:DesignTemplate):DesignTemplate {

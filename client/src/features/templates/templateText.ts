@@ -9,6 +9,7 @@ export const templateTextProps = (element: ResolvedText, fontPx: number) => ({
 
 /** The overflow policy (shared textFit.ts) with real line counts: Konva wraps the text with the loaded fonts, as it will draw it. */
 export function fitTemplateText(element: ResolvedText): TextFit {
+  if (!element.text.trim()) return { fontPx: element.fontPx, lines: 0, visibleLines: 0, shrunk: false, truncated: false };
   const node = new Text(templateTextProps(element, element.fontPx));
   try {
     return fitText(textFitInput(element), (fontPx) => {

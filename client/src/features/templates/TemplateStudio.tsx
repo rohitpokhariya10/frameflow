@@ -23,7 +23,7 @@ const problemText = (problem: unknown) => problem instanceof TemplateError || pr
 
 /**
  * Create Own Template: author reusable templates, then make creatives from them. Everything here is local: templates
- * and creatives are kept in this browser, pictures in its asset store, and nothing calls a server or an AI service.
+ * and creatives are kept in this browser, pictures in its asset store, and only explicit AI planning calls the server; curated selection and reuse stay local.
  */
 export function TemplateStudio({ onClose }: { onClose: () => void }) {
   const dispatch = useAppDispatch();
@@ -112,7 +112,7 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
   const newest = view.kind === 'creative' ? latestDesignTemplate(library, view.creative.templateId)?.version : undefined;
   return <div className="ws-backdrop"><div className="ws" role="dialog" aria-modal="true" aria-labelledby="tpl-title" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}>
     <header className="ws-header" style={{ gridTemplateColumns: '1fr auto' }}>
-      <h2 id="tpl-title" style={{ fontSize: 15, fontWeight: 600 }}>{view.kind === 'author' ? 'Create Own Template' : 'Use Template'} <span className="ws-muted">· local only, no AI</span></h2>
+      <h2 id="tpl-title" style={{ fontSize: 15, fontWeight: 600 }}>{view.kind === 'author' ? 'Create Own Template' : 'Use Template'} <span className="ws-muted">· local templates · optional AI planner</span></h2>
       <button className="ws-icon-button" aria-label="Close" onClick={() => leave(onClose)}><X size={18} /></button>
     </header>
     <div className="ws-body"><div className="tpl">

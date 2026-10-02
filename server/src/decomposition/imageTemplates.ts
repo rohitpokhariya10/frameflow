@@ -22,7 +22,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import busboy from 'busboy';
 import express, { type Request, type Router } from 'express';
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
+import { createOpenAIClient } from '../services/openAIClient.js';
 import sharp from 'sharp';
 import { GENERATION_TEMPLATE_KEYS, generationVariantId, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
   IMAGE_ANALYSIS_LIMITS, IMAGE_ANALYSIS_SCHEMA, buildImageTemplatePrompt, parseImageAnalysisResponse, type ImageVisualAnalysis,
@@ -173,7 +174,7 @@ export function createOpenAIImagePromptWriter(options: { apiKey?: string; model:
   const { model } = options;
   return { model, describe: async (image, mime) => {
     if (!options.client && !options.apiKey?.trim()) throw new ImagePromptError('PROMPT_NOT_CONFIGURED', 'Set OPENAI_API_KEY in server/.env.');
-    const client = options.client ?? new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: 120_000 });
+    const client = options.client ?? createOpenAIClient(options.apiKey);
     const request = {
       model, reasoning: { effort: 'low' as const }, store: false, instructions: imagePromptInstruction(),
       input: [{ role: 'user' as const, content: [

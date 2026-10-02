@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { OFFER_THEMES, applyOfferTheme, applyThemePairing, clearOfferTheme, offerTheme, type OfferTheme, type DesignTemplate, type DesignAspectRatio } from '@frameflow/shared';
+import { DIWALI_TEMPLATES, applyCuratedOffer, OFFER_THEMES, applyOfferTheme, applyThemePairing, clearOfferTheme, offerTheme, type OfferTheme, type DesignTemplate, type DesignAspectRatio } from '@frameflow/shared';
+import { OfferPreview } from './OfferPreview';
+import { AIThemePanel } from '../aiThemes/AIThemePanel';
 import { Section } from './templateUi';
 
 /** Small local previews use native vector marks and UI type; browsing themes never downloads fonts. */
@@ -20,6 +22,7 @@ function ThemePreview({ theme }: { theme: OfferTheme }) {
   </svg>;
 }
 export function ThemePanel({ template, ratio, onChange }: { template: DesignTemplate; ratio: DesignAspectRatio; onChange: (next: DesignTemplate) => void }) {
+  const [curated,setCurated] = useState<string>();
   const [pending,setPending] = useState<OfferTheme>();
   const [error,setError] = useState('');
   const active=offerTheme(template.themeId);
@@ -28,12 +31,21 @@ export function ThemePanel({ template, ratio, onChange }: { template: DesignTemp
     catch(problem){setError(problem instanceof Error ? problem.message : 'The theme could not be applied.');}
   };
   return <Section title="Themes" note="(editable offer creatives)">
-    <button type="button" className={`ws-btn ${!active?'ws-btn-primary':''}`} aria-pressed={!active} onClick={()=>{onChange(clearOfferTheme(template,ratio));setPending(undefined);}}>Custom / No Theme</button>
+    <button type="button" className={`ws-btn ${!template.themeId?'ws-btn-primary':''}`} aria-pressed={!template.themeId} onClick={()=>{onChange(clearOfferTheme(template,ratio));setPending(undefined);setCurated(undefined);}}>Custom / No Theme</button>
+    <details className="diwali-gallery" open={!template.elements.length || undefined}><summary>Diwali Templates · 5 curated designs</summary>
+      <p className="ws-hint">Ready-made, editable campaigns. Instant loading, no AI.</p>
+      <div className="diwali-cards">{DIWALI_TEMPLATES.map(item=><button type="button" key={item.id} className={`theme-card ${template.themeId===item.id?'is-active':''}`} aria-label={`Use ${item.name} template`} onClick={()=>{setPending(undefined);if(template.elements.length)setCurated(item.id);else onChange(applyCuratedOffer(template,item.id));}}>
+        <OfferPreview id={item.id}/><strong>{item.name}</strong><small>{item.category}</small><small>{item.description}</small><span className="theme-swatches">{Object.values(item.spec.palette).map(color=><i key={color} style={{background:color}}/>)}</span>
+      </button>)}</div>
+    </details>
+    {curated&&<div className="theme-confirm" role="group" aria-label="Replace with curated template"><strong>Replace current canvas with {DIWALI_TEMPLATES.find(d=>d.id===curated)?.name}?</strong><p>Your saved templates stay unchanged.</p><button type="button" className="ws-btn ws-btn-primary" onClick={()=>{onChange(applyCuratedOffer(template,curated));setCurated(undefined);}}>Replace canvas</button><button type="button" className="ws-btn" onClick={()=>setCurated(undefined)}>Cancel replacement</button></div>}
+    <AIThemePanel key={template.id} template={template} onChange={next=>{setPending(undefined);setCurated(undefined);onChange(next);}}/>
+    <details className="legacy-themes" open><summary>More festival starters</summary>
     <div className="theme-cards">{OFFER_THEMES.map(theme=><button key={theme.id} type="button" className={`theme-card ${active?.id===theme.id?'is-active':''}`} aria-label={`Apply ${theme.name} theme`} aria-pressed={active?.id===theme.id}
-      onClick={()=>{setError('');if(active?.id===theme.id)return;if(template.elements.length)setPending(theme);else apply(theme,'replace');}}>
+      onClick={()=>{setCurated(undefined);setError('');if(active?.id===theme.id)return;if(template.elements.length)setPending(theme);else apply(theme,'replace');}}>
       <ThemePreview theme={theme}/><strong>{theme.name}{active?.id===theme.id?' ✓':''}</strong><small>{theme.description}</small>
       <span className="theme-swatches">{Object.values(theme.palette).slice(0,5).map(color=><i key={color} style={{background:color}}/>)}</span>
-    </button>)}</div>
+    </button>)}</div></details>
     {pending&&<div className="theme-confirm" role="group" aria-label={`Apply ${pending.name} theme options`}>
       <strong>Apply {pending.name}</strong><p>Styling keeps your text, images and custom layers. Replacing removes the current canvas and starts again.</p>
       <button type="button" className="ws-btn ws-btn-primary" onClick={()=>apply(pending,'style')}>Apply styling only</button>

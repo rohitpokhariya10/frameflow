@@ -1,6 +1,6 @@
 # Offer creative themes and fonts
 
-This feature extends **Create Own Template**, the existing Vite/React/Konva template studio. It does not use a generator, planner, decomposition provider, server endpoint, remote artwork, or another canvas/store. Google Fonts are the only new network resource, loaded when needed.
+The original starter themes extend **Create Own Template**, the existing Vite/React/Konva template studio, with local presets and on-demand Google Fonts. The professional Diwali upgrade adds five local curated campaigns and a separate explicit AI planner action; see [Editable Diwali offer creatives](diwali-offer-templates.md). Curated selection and saved-template reuse still make zero provider calls. The sections below document the original starter behavior.
 
 ## Data and rendering
 

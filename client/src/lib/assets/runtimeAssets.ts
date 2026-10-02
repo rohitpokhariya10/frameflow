@@ -1,6 +1,10 @@
-import { AI_LIMITS, type ImageResponse } from '@frameflow/shared';
+import { AI_LIMITS, builtinDiwaliAsset, type ImageResponse } from '@frameflow/shared';
 import { createAssetRepository } from './assetRepository';
-export const assets = createAssetRepository();
+const repository = createAssetRepository();
+export const assets = { ...repository, async getAsset(id: string) {
+  const svg = builtinDiwaliAsset(id);
+  return svg ? { id, blob: new Blob([svg], { type: 'image/svg+xml' }), mimeType: 'image/svg+xml', createdAt: '2026-10-01T00:00:00.000Z' } : repository.getAsset(id);
+}, async hasAsset(id: string) { return !!builtinDiwaliAsset(id) || repository.hasAsset(id); } };
 /** Leave loading promptly even if browser decoding/storage does not settle. */
 export async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   let cancel: (() => void) | undefined;

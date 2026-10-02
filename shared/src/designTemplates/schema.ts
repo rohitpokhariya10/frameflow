@@ -10,6 +10,7 @@
  */
 import { CANVAS_ELEMENT_TYPES, CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, type CanvasBackgroundElement, type CanvasElement, type CanvasElementType, type CanvasImageElement,
   type CanvasImageRole, type CanvasShapeElement, type CanvasShapeRole, type CanvasShapeStyle, type CanvasTextBehavior, type CanvasTextElement, type CanvasTextRole, type CanvasTextStyle, type NormalizedLayout } from '../canvasElement.js';
+import { parseThemeSpec, type OfferTemplateMetadata } from './themeSpec.js';
 import { isCatalogFont } from '../fonts/catalog.js';
 import { TEXT_FONTS, TEXT_WEIGHTS } from '../text.js';
 
@@ -48,7 +49,7 @@ export type TemplateElementType = CanvasElementType;
 export interface DesignTemplate {
   schemaVersion: typeof TEMPLATE_SCHEMA_VERSION; id: string; name: string; version: number;
   supportedAspectRatios: DesignAspectRatio[]; canvas: { masterAspectRatio: DesignAspectRatio };
-  themeId?: string;
+  themeId?: string; offerTemplate?: OfferTemplateMetadata;
   elements: TemplateElement[]; createdAt: string; updatedAt: string;
 }
 
@@ -169,6 +170,10 @@ export function templateIssues(value: unknown): TemplateIssue[] {
   const error = (path: string, message: string) => { issues.push({ severity: 'error', path, message }); };
   if (!isRecord(value)) return [{ severity: 'error', path: 'template', message: 'A template must be an object.' }];
   if (value.themeId !== undefined && (typeof value.themeId !== 'string' || value.themeId.length > 100)) error('themeId', 'themeId must be short text.');
+  if (value.offerTemplate !== undefined) {
+    try { const m = value.offerTemplate as OfferTemplateMetadata; if (!m || m.version !== 1 || !['curated','ai'].includes(m.source) || m.festival !== 'diwali' || !isId(m.definitionId)) throw new Error(); parseThemeSpec(m.spec); }
+    catch { error('offerTemplate', 'Invalid offer template metadata.'); }
+  }
   if (value.schemaVersion !== TEMPLATE_SCHEMA_VERSION) error('schemaVersion', `Unsupported template schema version ${JSON.stringify(value.schemaVersion)}; this build reads version ${TEMPLATE_SCHEMA_VERSION}.`);
   if (!isId(value.id)) error('id', 'id must be a non-empty string.');
   if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > TEMPLATE_LIMITS.maxName) error('name', `name must be 1 to ${TEMPLATE_LIMITS.maxName} characters.`);

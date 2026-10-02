@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DESIGN_ASPECT_RATIOS, TEMPLATE_IMAGE_ROLES, TEMPLATE_SHAPE_ROLES, TEMPLATE_TEXT_ROLES, TEXT_WEIGHTS, addElement, commitPixelBox, createTemplateElement, designCanvasSize, findElement,
-  removeElement, reorderElement, resolveElements, roundNormalized, setRatioLayout, templateAtRatio, elementAtRatio, pixelChangeToNormalized, offerTheme, themeFonts, themeColors, templateIssues, textFitWarning, toPixels, updateElement,
+  removeElement, reorderElement, resolveElements, roundNormalized, setRatioLayout, templateAtRatio, elementAtRatio, pixelChangeToNormalized, offerTemplateTheme, offerTheme, themeFonts, themeColors, templateIssues, textFitWarning, toPixels, updateElement,
   type DesignAspectRatio, type DesignTemplate, type EditableProperty, type NormalizedLayout, type PixelBox, type ResolvedText, type TemplateElement, type TemplateElementRole,
 } from '@frameflow/shared';
 import { ThemePanel } from './ThemePanel';
@@ -46,11 +46,13 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
   const [ratio, setRatio] = useState<DesignAspectRatio>(template.canvas.masterAspectRatio);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const inspector = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (selectedId) inspector.current?.scrollIntoView({ block: 'start' }); }, [selectedId]);
   const canvas = useMemo(() => designCanvasSize(ratio), [ratio]);
   const resolved = useMemo(() => resolveElements(template.elements, canvas), [template.elements, canvas]);
   const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
-  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const selected = selectedId ? findElement(templateAtRatio(template, ratio), selectedId) : undefined;
   const warnings = [
     ...templateIssues(template).map(issue => issue.message),
@@ -83,7 +85,7 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
   const save = () => onSave(template.themeId ? { ...template, canvas: { ...template.canvas, masterAspectRatio: ratio }, supportedAspectRatios: DESIGN_ASPECT_RATIOS.filter(item => item === ratio || template.supportedAspectRatios.includes(item)) } : template);
   const hasBackground = template.elements.some(element => element.type === 'background');
 
-  return <ThemePalette.Provider value={themeColors(offerTheme(template.themeId))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
+  return <ThemePalette.Provider value={themeColors((offerTemplateTheme(template) ?? offerTheme(template.themeId)))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
       <label className="tpl-row"><strong>Template name</strong>
         <input type="text" aria-label="Template name" value={template.name} maxLength={200} onChange={event => onChange({ ...template, name: event.target.value })} style={{ width: 220 }} /></label>
@@ -125,8 +127,8 @@ export function TemplateAuthor({ template, saved, dirty, onChange, onSave }: Pro
             : <p className="ws-muted">No elements yet.</p>}
         </Section>
         {warnings.length > 0 && <Section title="Warnings">{warnings.map(warning => <p key={warning} className="ws-warn">{warning}</p>)}</Section>}
-        {selected ? <ElementProperties key={selected.id} element={selected} template={template} ratio={ratio} edit={patch => edit(selected.id, patch)} layout={values => layout(selected.id, values)}
-          reorder={move => change(current => reorderElement(current, selected.id, move))} remove={() => remove(selected.id)} />
+        {selected ? <div ref={inspector} className="tpl-element-properties"><ElementProperties key={selected.id} element={selected} template={template} ratio={ratio} edit={patch => edit(selected.id, patch)} layout={values => layout(selected.id, values)}
+          reorder={move => change(current => reorderElement(current, selected.id, move))} remove={() => remove(selected.id)} /></div>
           : <p className="ws-muted">Select an element on the canvas or in the layer list to edit its content, style, editable properties and layout.</p>}
       </aside>
     </div>
@@ -174,7 +176,7 @@ function ElementProperties({ element, template, ratio, edit, layout, reorder, re
 
     <Section title="Style">
       {element.type === 'text' && <>
-        <FontPicker value={element.style.fontFamily} recommended={offerTheme(template.themeId) ? themeFonts(offerTheme(template.themeId)!, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${offerTheme(template.themeId)?.name ?? "text"}`} onChange={fontFamily => style({ fontFamily })} />
+        <FontPicker value={element.style.fontFamily} recommended={(offerTemplateTheme(template) ?? offerTheme(template.themeId)) ? themeFonts((offerTemplateTheme(template) ?? offerTheme(template.themeId))!, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${(offerTemplateTheme(template) ?? offerTheme(template.themeId))?.name ?? "text"}`} onChange={fontFamily => style({ fontFamily })} />
         {/* Font sizes are fractions of the canvas short edge, shown as a percentage of it. */}
         <NumberInput label="Font size" suffix="% of short edge" min={0.75} max={45} step={0.25} value={element.style.fontSize * 100}
           onChange={value => edit(current => current.type === 'text' ? { ...current, style: { ...current.style, fontSize: fraction(value) }, behavior: { ...current.behavior, minFontSize: Math.min(current.behavior.minFontSize, fraction(value)) } } : current)} />

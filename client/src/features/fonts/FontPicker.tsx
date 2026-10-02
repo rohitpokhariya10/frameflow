@@ -6,7 +6,8 @@ export function FontPicker({value,onChange,recommended=[],recommendationLabel='R
   const results=useMemo(()=>searchFonts(query),[query]);
   const select=(font:string)=>{onChange(font);setOpen(false);};
   return <div className="theme-font-picker">
-    <button type="button" className="ws-btn" aria-label="Choose font" aria-expanded={open} onClick={()=>setOpen(!open)}>{value} ▾</button>
+    <strong>Font Family</strong>
+    <button type="button" className="ws-btn" aria-label="Choose font" aria-expanded={open} onClick={()=>setOpen(!open)}>{value} · Search fonts… ▾</button>
     {fontLoader.state(value)==='failed'&&<small role="status">Font unavailable. A readable fallback is shown; your selection is kept.</small>}
     {open&&<div className="theme-font-menu">
       <label>Search fonts<input type="search" aria-label="Search fonts" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search all Google Fonts…" /></label>

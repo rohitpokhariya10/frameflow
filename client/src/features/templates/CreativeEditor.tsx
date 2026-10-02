@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  offerTheme, themeFonts, themeColors, applyCreative, designCanvasSize, editablePropertiesOf, findElement, pixelChangeToNormalized, resolveElements, roundNormalized, setCreativeAspectRatio, setCreativeOverride, textFitWarning, toPixels,
+  offerTemplateTheme, offerTheme, themeFonts, themeColors, applyCreative, designCanvasSize, editablePropertiesOf, findElement, pixelChangeToNormalized, resolveElements, roundNormalized, setCreativeAspectRatio, setCreativeOverride, textFitWarning, toPixels,
   type Creative, type DesignTemplate, type DesignVariant, type ElementOverride, type NormalizedLayout, type PixelBox, type ResolvedElement, type ResolvedText, type TemplateElement,
 } from '@frameflow/shared';
 import { FontPicker } from '../fonts/FontPicker';
@@ -39,7 +39,7 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
   const resolved = useMemo(() => resolveElements(applied.elements, canvas), [applied, canvas]);
   const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
-  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const warnings = [...applied.ignored.map(issue => issue.message), ...resolved.filter((element): element is ResolvedText => element.type === 'text').flatMap(element => textFitWarning(element, fits.get(element.id)!) ?? [])];
 
   const change = (edit: () => Creative) => {
@@ -81,7 +81,7 @@ export function CreativeEditor({ template, creative, newerVersion, saved, dirty,
   const ordered = [...template.elements].sort((a, b) => Number(a.type === 'background') - Number(b.type === 'background') || a.layout.y - b.layout.y || a.layout.x - b.layout.x);
   const editable = ordered.filter(element => editablePropertiesOf(element).length), locked = ordered.filter(element => !editablePropertiesOf(element).length);
 
-  return <ThemePalette.Provider value={themeColors(offerTheme(template.themeId))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
+  return <ThemePalette.Provider value={themeColors((offerTemplateTheme(template) ?? offerTheme(template.themeId)))}><div className="tpl-main" data-fonts-state={fonts.loading ? "loading" : fonts.failed ? "failed" : "ready"}>
     <div className="tpl-toolbar">
       <span><strong>Template:</strong> {template.name} <span className="ws-muted">(version {template.version})</span></span>
       <label className="tpl-row"><strong>Creative name</strong>

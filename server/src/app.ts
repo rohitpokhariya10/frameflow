@@ -3,6 +3,8 @@ import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { randomUUID } from 'node:crypto';
 import { ADAPT_LIMITS, validAdaptRequest, validGenerateRequest, type ImageProvider } from '@frameflow/shared';
+import { createThemeRouter } from './themes/router.js';
+import type { ThemePlanner } from './themes/planner.js';
 import { geminiProvider } from './providers/geminiProvider.js';
 import { cloudflareImageProvider, cloudflareAdaptProvider, CLOUDFLARE_IMAGE_MODEL } from './providers/cloudflareImageProvider.js';
 import { AiError, generateArtwork, adaptArtwork, type GenerateImage, type AdaptImage } from './services/aiService.js';
@@ -25,7 +27,7 @@ export function readConfig(env = process.env): ServerConfig {
   }
   return { ...common, provider, apiKey: env.GEMINI_API_KEY?.trim(), model: env.GEMINI_IMAGE_MODEL?.trim() || 'gemini-3.1-flash-image' };
 }
-export function createApp(config: ServerConfig, provider?: GenerateImage, log: (event: object) => void = console.info, adaptationProvider?: AdaptImage, decompositionRouter?: Router, layerizeExperimentRouter?: Router) {
+export function createApp(config: ServerConfig, provider?: GenerateImage, log: (event: object) => void = console.info, adaptationProvider?: AdaptImage, decompositionRouter?: Router, layerizeExperimentRouter?: Router, themePlanner?: ThemePlanner) {
   const app = express();
   app.disable('x-powered-by'); app.set('trust proxy', config.trustProxyHops);
   const origins = new Set(['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3001', 'http://127.0.0.1:3001', ...(config.clientOrigin ? [config.clientOrigin.replace(/\/$/, '')] : [])]);
@@ -46,6 +48,7 @@ export function createApp(config: ServerConfig, provider?: GenerateImage, log: (
   app.get('/api/health', (_req, res) => res.json({ status: 'ok', aiConfigured: configured, aiAvailable: configured, provider: config.provider }));
   app.use('/api/ai/adapt', express.json({ limit: ADAPT_LIMITS.requestBytes, strict: true }));
   app.use(express.json({ limit: '24kb', strict: true }));
+  app.use('/api/themes', createThemeRouter({ planner: themePlanner, apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_THEME_MODEL }));
   const generate = provider ?? (configured ? config.provider === 'cloudflare'
     ? cloudflareImageProvider(config.accountId!, config.apiKey!, config.model) : geminiProvider(config.apiKey!, config.model) : undefined);
   const adapt = adaptationProvider ?? (configured && config.provider === 'cloudflare' ? cloudflareAdaptProvider(config.accountId!, config.apiKey!, config.model) : undefined);

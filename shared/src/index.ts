@@ -181,3 +181,7 @@ export { nativePointer } from './decompositionCoordinates.js';
 export * from './fonts/catalog.js';
 export * from './designTemplates/themes.js';
 export * from './designTemplates/responsive.js';
+
+export * from './designTemplates/themeSpec.js';
+export * from './designTemplates/offerTemplates.js';
+export * from './designTemplates/diwaliAssets.js';
