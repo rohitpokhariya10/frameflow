@@ -1,8 +1,10 @@
 import { memo, useMemo } from 'react';
-import { applyCuratedOffer, builtinDiwaliAsset, createTemplateDraft, type TemplateElement } from '@frameflow/shared';
-/** Thumbnail from the actual saved element definition, with local ornaments and no font/network dependency. */
+import { applyCuratedOffer, builtinDiwaliAsset, PREMIUM_DIWALI_TEMPLATES, createTemplateDraft, type TemplateElement } from '@frameflow/shared';
+/** Premium thumbnails are actual canvas renders; existing curated previews keep their original renderer. */
 export const OfferPreview = memo(function OfferPreview({id}:{id:string}) {
-  const elements=useMemo(()=>applyCuratedOffer(createTemplateDraft('preview','2026-10-01T00:00:00Z'),id).elements,[id]);
+  const premium=PREMIUM_DIWALI_TEMPLATES.some(d=>d.id===id);
+  const elements=useMemo(()=>premium?[]:applyCuratedOffer(createTemplateDraft('preview','2026-10-01T00:00:00Z'),id).elements,[id,premium]);
+  if(premium)return <img src={`/assets/diwali-premium/previews/${id}.webp`} loading="lazy" decoding="async" width="420" height="420" alt=""/>;
   const draw=(e:TemplateElement)=>{
     const {x,y,width:w,height:h}=e.layout,box={x:x*400,y:y*400,width:w*400,height:h*400};
     if(e.type==='background')return <rect {...box} fill={e.defaultContent.color}/>;

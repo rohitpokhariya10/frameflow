@@ -1,7 +1,10 @@
 /** Curated definitions and planned themes compile to the existing CanvasElement model. */
 import { createTemplateElement, orderElements } from './editing.js';
 import { DESIGN_ASPECT_RATIOS, assertDesignTemplate, type DesignTemplate, type DesignAspectRatio, type NormalizedLayout, type TemplateElement, type TemplateTextElement } from './schema.js';
-import { parseThemeSpec, type ThemeSpec, type OfferTemplateMetadata } from './themeSpec.js';
+import { isPremiumLayout, parseThemeSpec, type ThemeSpec, type OfferTemplateMetadata } from './themeSpec.js';
+import { PREMIUM_DIWALI_TEMPLATES } from './premiumDefinitions.js';
+import { compilePremiumTemplate } from './premiumCompiler.js';
+import { premiumLayout } from './premiumLayouts.js';
 import type { OfferTheme } from './themes.js';
 export interface OfferTemplateDefinition { id: string; name: string; festival: 'diwali'; category: string; description: string; spec: ThemeSpec }
 const base: ThemeSpec = {
@@ -21,6 +24,7 @@ const b=(x:number,y:number,width:number,height:number):NormalizedLayout=>({x,y,w
 type Boxes=Record<string,NormalizedLayout>;
 /** Geometry is deliberately authored by campaign archetype and canvas class; never scaled from another output. */
 export function offerLayout(spec:ThemeSpec,ratio:DesignAspectRatio):Boxes {
+  if(isPremiumLayout(spec.layout.archetype))return premiumLayout(spec.layout.archetype,ratio);
   const wide=ratio==='16:9', story=ratio==='9:16', portrait=ratio==='4:5'||ratio==='3:4', tall=story||portrait;
   const type=spec.layout.heroPlacement==='center' && ['OFFER_LEFT_PRODUCT_RIGHT','SPLIT_LAYOUT'].includes(spec.layout.archetype) ? 'CENTERED_SALE' : spec.layout.archetype;
   let boxes:Boxes={
@@ -64,11 +68,13 @@ export const offerFonts = {offers:['Poppins','Baloo 2','Fredoka'],headings:['Yat
 /** Inspector palette/font adapter; old starter theme shape remains compatible. */
 export function offerTemplateTheme(template:DesignTemplate):OfferTheme|undefined {
   const spec=template.offerTemplate?.spec;if(!spec)return;
-  return {id:template.themeId!,name:spec.templateName,description:'Editable Diwali campaign',motif:'lights',palette:{background:spec.palette.background,surface:spec.palette.primary,gold:spec.palette.accent,accent:spec.palette.accent,ink:spec.palette.text,muted:spec.palette.text},typography:{heading:spec.typography.headline,offer:spec.typography.offer,body:spec.typography.body},recommendations:offerFonts,content:{eyebrow:spec.content.eyebrow,headline:spec.content.headline,subheading:spec.content.subheadline,'offer-value':spec.content.offerValue,cta:spec.content.cta,terms:spec.content.terms},ratioLayouts:Object.fromEntries(DESIGN_ASPECT_RATIOS.map(r=>[r,offerLayout(spec,r)])) as OfferTheme['ratioLayouts']};
+  return {id:template.themeId!,name:spec.templateName,description:'Editable Diwali campaign',motif:'lights',palette:{background:spec.palette.background,surface:spec.palette.primary,gold:spec.palette.accent,accent:spec.palette.accent,ink:spec.palette.text,muted:spec.palette.text},typography:{heading:spec.typography.headline,offer:spec.typography.offer,body:spec.typography.body},recommendations:isPremiumLayout(spec.layout.archetype)?{headings:[spec.typography.headline,'Cormorant Garamond','DM Serif Display','Cinzel','Montserrat','Noto Sans Devanagari'],offers:['Montserrat','Poppins','Hind'],body:['Poppins','DM Sans','Hind','Noto Sans Devanagari']}:offerFonts,content:{eyebrow:spec.content.eyebrow,headline:spec.content.headline,subheading:spec.content.subheadline,'offer-value':spec.content.offerValue,cta:spec.content.cta,terms:spec.content.terms},ratioLayouts:Object.fromEntries(DESIGN_ASPECT_RATIOS.map(r=>[r,offerLayout(spec,r)])) as OfferTheme['ratioLayouts']};
 }
 const readable=(color:string)=>{const rgb=[1,3,5].map(i=>parseInt(color.slice(i,i+2),16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722>.4?'#21151C':'#FFF8E9';};
 export function compileOfferTemplate(template:DesignTemplate,input:ThemeSpec,source:OfferTemplateMetadata['source'],definitionId:string):DesignTemplate {
-  const spec=parseThemeSpec(input),p=spec.palette,elements:TemplateElement[]=[];
+  const spec=parseThemeSpec(input);
+  if(isPremiumLayout(spec.layout.archetype))return compilePremiumTemplate(template,spec,source,definitionId);
+  const p=spec.palette,elements:TemplateElement[]=[];
   const layouts=Object.fromEntries(DESIGN_ASPECT_RATIOS.map(r=>[r,offerLayout(spec,r)])) as Record<DesignAspectRatio,Boxes>;
   const add=(element:TemplateElement,role:string,name:string,positions:Record<DesignAspectRatio,NormalizedLayout>)=>elements.push({...element,id:`offer-${role}`,name,themeRole:role,zIndex:elements.length,layout:positions['1:1'],ratioLayouts:positions});
   const same=(box:NormalizedLayout)=>Object.fromEntries(DESIGN_ASPECT_RATIOS.map(r=>[r,box])) as Record<DesignAspectRatio,NormalizedLayout>;
@@ -112,6 +118,6 @@ export function compileOfferTemplate(template:DesignTemplate,input:ThemeSpec,sou
   return assertDesignTemplate({...template,name:spec.templateName,themeId:definitionId,supportedAspectRatios:[...DESIGN_ASPECT_RATIOS],offerTemplate:{version:1,source,definitionId,festival:'diwali',spec},elements:orderElements(elements)});
 }
 export function applyCuratedOffer(template:DesignTemplate,id:string):DesignTemplate {
-  const definition=DIWALI_TEMPLATES.find(d=>d.id===id);if(!definition)throw new Error('Unknown Diwali template.');
+  const definition=[...DIWALI_TEMPLATES,...PREMIUM_DIWALI_TEMPLATES].find(d=>d.id===id);if(!definition)throw new Error('Unknown Diwali template.');
   return compileOfferTemplate(template,definition.spec,'curated',definition.id);
 }

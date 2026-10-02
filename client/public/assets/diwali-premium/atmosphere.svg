@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<!-- Original FrameFlow light study: no imported artwork. Transparent and independently removable. -->
+<defs><radialGradient id="warm"><stop stop-color="#ffc477" stop-opacity=".34"/><stop offset="1" stop-color="#ffbc6d" stop-opacity="0"/></radialGradient><radialGradient id="vignette"><stop offset=".30" stop-color="#120c19" stop-opacity="0"/><stop offset="1" stop-color="#120c19" stop-opacity=".68"/></radialGradient><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".64" numOctaves="3" seed="24" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".06"/></feComponentTransfer></filter><filter id="soft"><feGaussianBlur stdDeviation="9"/></filter></defs>
+<ellipse cx="600" cy="670" rx="560" ry="600" fill="url(#warm)"/>
+<g fill="#ffdc96" filter="url(#soft)" opacity=".24"><circle cx="98" cy="405" r="20"/><circle cx="1075" cy="633" r="32"/><circle cx="1020" cy="683" r="18"/><circle cx="913" cy="103" r="16"/><circle cx="160" cy="962" r="36"/></g>
+<rect width="1200" height="1200" fill="url(#vignette)"/><rect width="1200" height="1200" filter="url(#grain)"/>
+</svg>

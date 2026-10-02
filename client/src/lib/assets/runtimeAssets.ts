@@ -1,10 +1,24 @@
-import { AI_LIMITS, builtinDiwaliAsset, type ImageResponse } from '@frameflow/shared';
+import { AI_LIMITS, builtinDiwaliAsset, premiumAssetPath, type ImageResponse } from '@frameflow/shared';
 import { createAssetRepository } from './assetRepository';
 const repository = createAssetRepository();
+// Known same-origin static files. Cache bytes in memory; editor handoff takes its own persistent copy.
+const premiumLoads = new Map<string, Promise<{ id:string; blob:Blob; mimeType:string; createdAt:string }>>();
+async function premiumAsset(id:string, path:string) {
+  if(!premiumLoads.has(id)) premiumLoads.set(id,(async()=>{
+    const response=await fetch(path,{signal:AbortSignal.timeout(10_000)});
+    if(!response.ok)throw new Error('The bundled template image could not load.');
+    const blob=await response.blob();
+    if(!['image/webp','image/svg+xml'].includes(blob.type)||blob.size>2_000_000)throw new Error('Invalid bundled template image.');
+    return {id,blob,mimeType:blob.type,createdAt:'2026-10-02T00:00:00.000Z'};
+  })().catch(error=>{premiumLoads.delete(id);throw error;}));
+  return premiumLoads.get(id)!;
+}
 export const assets = { ...repository, async getAsset(id: string) {
+  const path = premiumAssetPath(id);
+  if(path)return premiumAsset(id,path);
   const svg = builtinDiwaliAsset(id);
   return svg ? { id, blob: new Blob([svg], { type: 'image/svg+xml' }), mimeType: 'image/svg+xml', createdAt: '2026-10-01T00:00:00.000Z' } : repository.getAsset(id);
-}, async hasAsset(id: string) { return !!builtinDiwaliAsset(id) || repository.hasAsset(id); } };
+}, async hasAsset(id: string) { return !!builtinDiwaliAsset(id) || !!premiumAssetPath(id) || repository.hasAsset(id); } };
 /** Leave loading promptly even if browser decoding/storage does not settle. */
 export async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   let cancel: (() => void) | undefined;

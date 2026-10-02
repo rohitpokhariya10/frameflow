@@ -185,3 +185,7 @@ export * from './designTemplates/responsive.js';
 export * from './designTemplates/themeSpec.js';
 export * from './designTemplates/offerTemplates.js';
 export * from './designTemplates/diwaliAssets.js';
+
+export * from './designTemplates/premiumDefinitions.js';
+export * from './designTemplates/premiumAssets.js';
+export * from './designTemplates/premiumLayouts.js';

@@ -1,5 +1,7 @@
 # Editable Diwali offer creatives
 
+The separate six-family photographic collection is documented in [Premium reference-inspired Diwali templates](premium-diwali-templates.md). The five curated definitions described below remain unchanged.
+
 ## Product and architecture
 
 The Diwali gallery contains five locally registered `OfferTemplateDefinition` entries in `shared/src/designTemplates/offerTemplates.ts`. A definition includes identity, festival, use case, description, and a bounded `ThemeSpec` with palette, fonts, default copy, composition and ornament tokens. `compileOfferTemplate` creates the existing `DesignTemplate` / `CanvasElement[]` model. Curated selection and AI planning share this compiler and the existing renderer, library, creative overrides and editor adapter. There is no second canvas model or generated poster background.

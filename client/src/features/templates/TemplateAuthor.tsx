@@ -54,7 +54,7 @@ export function TemplateAuthor({ template, history, saved, dirty, onChange, onSa
   const resolved = useMemo(() => resolveElements(template.elements, canvas), [template.elements, canvas]);
   const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
-  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location", "second-offer-value", "second-offer-label", "time", "dress-code"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const selected = selectedId ? findElement(templateAtRatio(template, ratio), selectedId) : undefined;
   if (selectedId && !selected) setSelectedId(null);
   const warnings = [

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DIWALI_TEMPLATES } from '@frameflow/shared';
+import { DIWALI_TEMPLATES, PREMIUM_DIWALI_TEMPLATES } from '@frameflow/shared';
 import { createThemePlanner } from './planner.js';
 const spec=DIWALI_TEMPLATES[0].spec;
 const fixture=(response:unknown)=>{const create=vi.fn().mockResolvedValue(response);return {create,planner:createThemePlanner({client:{responses:{create}} as never})};};
@@ -17,4 +17,22 @@ describe('theme planner, fake Responses client only',()=>{
     const planner=createThemePlanner({client:{responses:{create}} as never});await expect(planner('test',new AbortController().signal)).rejects.toThrow();expect(create).toHaveBeenCalledTimes(1);
   });
   it('missing key makes zero requests',async()=>{await expect(createThemePlanner({apiKey:''})('test',new AbortController().signal)).rejects.toThrow('not configured');});
+});
+
+it.each(PREMIUM_DIWALI_TEMPLATES)('plans $id using one fake request and native premium fields',async definition=>{
+  const {create,planner}=fixture({status:'completed',output:[],output_text:JSON.stringify(definition.spec)});
+  expect(await planner('Premium campaign',new AbortController().signal)).toEqual(definition.spec);
+  expect(create).toHaveBeenCalledTimes(1);expect(create.mock.calls[0][1].maxRetries).toBe(0);
+});
+it.each([
+  {layout:{...spec.layout,archetype:'RUN_SCRIPT'}},
+  {palette:{...spec.palette,primary:'red'}},
+  {content:{...spec.content,secondOfferValue:'<script>run()</script>'}},
+  {content:{...spec.content,dressCode:'https://evil.test/asset'}},
+  {content:{...spec.content,time:'x'.repeat(121)}},
+  {content:{...spec.content,location:'x'.repeat(121)}},
+  {svg:'<svg/>'},
+])('rejects unsafe premium output with zero retries',async change=>{
+  const {create,planner}=fixture({status:'completed',output:[],output_text:JSON.stringify({...spec,...change})});
+  await expect(planner('Premium campaign',new AbortController().signal)).rejects.toThrow();expect(create).toHaveBeenCalledTimes(1);
 });

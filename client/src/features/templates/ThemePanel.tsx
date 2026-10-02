@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DIWALI_TEMPLATES, applyCuratedOffer, OFFER_THEMES, applyOfferTheme, applyThemePairing, clearOfferTheme, offerTheme, type OfferTheme, type DesignTemplate, type DesignAspectRatio } from '@frameflow/shared';
+import { DIWALI_TEMPLATES, PREMIUM_DIWALI_TEMPLATES, applyCuratedOffer, OFFER_THEMES, applyOfferTheme, applyThemePairing, clearOfferTheme, offerTheme, type OfferTheme, type DesignTemplate, type DesignAspectRatio } from '@frameflow/shared';
 import { OfferPreview } from './OfferPreview';
 import { AIThemePanel } from '../aiThemes/AIThemePanel';
 import { Section } from './templateUi';
@@ -32,13 +32,19 @@ export function ThemePanel({ template, ratio, onChange }: { template: DesignTemp
   };
   return <Section title="Themes" note="(editable offer creatives)">
     <button type="button" className={`ws-btn ${!template.themeId?'ws-btn-primary':''}`} aria-pressed={!template.themeId} onClick={()=>{onChange(clearOfferTheme(template,ratio));setPending(undefined);setCurated(undefined);}}>Custom / No Theme</button>
-    <details className="diwali-gallery" open={!template.elements.length || undefined}><summary>Diwali Templates · 5 curated designs</summary>
+    <details className="diwali-gallery" open={!template.elements.length || undefined}><summary>Curated Diwali Templates · 5 designs</summary>
       <p className="ws-hint">Ready-made, editable campaigns. Instant loading, no AI.</p>
       <div className="diwali-cards">{DIWALI_TEMPLATES.map(item=><button type="button" key={item.id} className={`theme-card ${template.themeId===item.id?'is-active':''}`} aria-label={`Use ${item.name} template`} onClick={()=>{setPending(undefined);if(template.elements.length)setCurated(item.id);else onChange(applyCuratedOffer(template,item.id));}}>
         <OfferPreview id={item.id}/><strong>{item.name}</strong><small>{item.category}</small><small>{item.description}</small><span className="theme-swatches">{Object.values(item.spec.palette).map(color=><i key={color} style={{background:color}}/>)}</span>
       </button>)}</div>
     </details>
-    {curated&&<div className="theme-confirm" role="group" aria-label="Replace with curated template"><strong>Replace current canvas with {DIWALI_TEMPLATES.find(d=>d.id===curated)?.name}?</strong><p>Your saved templates stay unchanged.</p><button type="button" className="ws-btn ws-btn-primary" onClick={()=>{onChange(applyCuratedOffer(template,curated));setCurated(undefined);}}>Replace canvas</button><button type="button" className="ws-btn" onClick={()=>setCurated(undefined)}>Cancel replacement</button></div>}
+    <details className="premium-gallery" open={!template.elements.length || undefined}><summary>Premium Reference-Inspired Diwali Templates · 6 designs</summary>
+      <p className="ws-hint">Photographic scenes with editable copy, logo and hero images.</p>
+      <div className="diwali-cards">{PREMIUM_DIWALI_TEMPLATES.map(item=><button type="button" key={item.id} className={`theme-card ${template.themeId===item.id?'is-active':''}`} aria-label={`Use ${item.name} template`} onClick={()=>{setPending(undefined);if(template.elements.length)setCurated(item.id);else onChange(applyCuratedOffer(template,item.id));}}>
+        <OfferPreview id={item.id}/><strong>{item.name}</strong><small>{item.category}</small><small>{item.description}</small>
+      </button>)}</div>
+    </details>
+    {curated&&<div className="theme-confirm" role="group" aria-label="Replace with curated template"><strong>Replace current canvas with {[...DIWALI_TEMPLATES,...PREMIUM_DIWALI_TEMPLATES].find(d=>d.id===curated)?.name}?</strong><p>Your saved templates stay unchanged.</p><button type="button" className="ws-btn ws-btn-primary" onClick={()=>{onChange(applyCuratedOffer(template,curated));setCurated(undefined);}}>Replace canvas</button><button type="button" className="ws-btn" onClick={()=>setCurated(undefined)}>Cancel replacement</button></div>}
     <AIThemePanel key={template.id} template={template} onChange={next=>{setPending(undefined);setCurated(undefined);onChange(next);}}/>
     <details className="legacy-themes" open><summary>More festival starters</summary>
     <div className="theme-cards">{OFFER_THEMES.map(theme=><button key={theme.id} type="button" className={`theme-card ${active?.id===theme.id?'is-active':''}`} aria-label={`Apply ${theme.name} theme`} aria-pressed={active?.id===theme.id}

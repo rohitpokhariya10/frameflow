@@ -1,14 +1,17 @@
 /** Bounded design input. This is data, never executable markup, geometry or an asset address. */
 import { isCatalogFont } from '../fonts/catalog.js';
 export const THEME_STYLES = ['sale', 'premium', 'product', 'greeting', 'event'] as const;
-export const THEME_LAYOUTS = ['OFFER_LEFT_PRODUCT_RIGHT', 'CENTERED_SALE', 'PRODUCT_CENTER', 'EDITORIAL_GREETING', 'EVENT_PROMO', 'SPLIT_LAYOUT'] as const;
+export const PREMIUM_LAYOUTS = ['PREMIUM_JEWELLERY_OFFER', 'PREMIUM_ECOMMERCE_SALE', 'ELEGANT_GREETING', 'LANTERN_NIGHT', 'PREMIUM_EVENT', 'PREMIUM_PRODUCT_GIFT'] as const;
+export type PremiumLayout = typeof PREMIUM_LAYOUTS[number];
+export const isPremiumLayout = (value: string): value is PremiumLayout => (PREMIUM_LAYOUTS as readonly string[]).includes(value);
+export const THEME_LAYOUTS = ['OFFER_LEFT_PRODUCT_RIGHT', 'CENTERED_SALE', 'PRODUCT_CENTER', 'EDITORIAL_GREETING', 'EVENT_PROMO', 'SPLIT_LAYOUT', ...PREMIUM_LAYOUTS] as const;
 export const THEME_DECORATIONS = ['DIYA', 'LANTERN', 'RANGOLI_CORNER', 'SPARKLES', 'ARCH', 'GOLD_RING', 'BOKEH', 'FLOWER_ACCENT'] as const;
 export const THEME_BACKGROUNDS = ['SOLID', 'GRADIENT', 'RADIAL_GLOW', 'FESTIVE_PATTERN', 'DARK_PREMIUM'] as const;
 export interface ThemeSpec {
   templateName: string; style: typeof THEME_STYLES[number];
   palette: { background: string; primary: string; accent: string; text: string };
   typography: { headline: string; offer: string; body: string; cta: string };
-  content: { eyebrow: string; headline: string; subheadline: string; offerPrefix: string; offerValue: string; offerSuffix: string; cta: string; terms: string; date: string; location: string };
+  content: { eyebrow: string; headline: string; subheadline: string; offerPrefix: string; offerValue: string; offerSuffix: string; cta: string; terms: string; date: string; location: string; secondOfferValue?: string; secondOfferLabel?: string; time?: string; dressCode?: string };
   layout: { archetype: typeof THEME_LAYOUTS[number]; heroPlacement: 'left' | 'right' | 'center'; textAlignment: 'left' | 'center' };
   background: typeof THEME_BACKGROUNDS[number]; decorations: (typeof THEME_DECORATIONS[number])[];
   slots: { logo: boolean; product: boolean; heroImage: boolean };
@@ -36,7 +39,7 @@ export function parseThemeSpec(value: unknown): ThemeSpec {
   const p = object(v.palette), t = object(v.typography), c = object(v.content), l = object(v.layout), s = object(v.slots ?? {});
   const exact = (record: Record<string, unknown>, allowed: string[]) => { if (Object.keys(record).some(k=>!allowed.includes(k))) throw new ThemeSpecError('Unknown theme property.'); };
   exact(p,['background','primary','accent','text']); exact(t,['headline','offer','body','cta']);
-  exact(c,['eyebrow','headline','subheadline','offerPrefix','offerValue','offerSuffix','cta','terms','date','location']);
+  exact(c,['eyebrow','headline','subheadline','offerPrefix','offerValue','offerSuffix','cta','terms','date','location','secondOfferValue','secondOfferLabel','time','dressCode']);
   exact(l,['archetype','heroPlacement','textAlignment']); exact(s,['logo','product','heroImage']);
   const color = (key: string) => { if (typeof p[key] !== 'string' || !/^#[\da-f]{6}$/i.test(p[key])) throw new ThemeSpecError(`Invalid ${key} color.`); return p[key] as string; };
   const font = (key: string) => { if (!isCatalogFont(t[key])) throw new ThemeSpecError(`Unsupported ${key} font.`); return t[key] as string; };
@@ -47,7 +50,8 @@ export function parseThemeSpec(value: unknown): ThemeSpec {
     templateName: text(v.templateName,'template name',100,true), style: choice(v.style,THEME_STYLES,'creative type'),
     palette: { background:color('background'),primary:color('primary'),accent:color('accent'),text:color('text') },
     typography: { headline:font('headline'),offer:font('offer'),body:font('body'),cta:font('cta') },
-    content: { eyebrow:text(c.eyebrow,'eyebrow',60),headline:text(c.headline,'headline',140,true),subheadline:text(c.subheadline,'support copy',240),offerPrefix:text(c.offerPrefix,'offer prefix',40),offerValue:text(c.offerValue,'offer',160),offerSuffix:text(c.offerSuffix,'offer suffix',50),cta:text(c.cta,'CTA',60,true),terms:text(c.terms,'terms',240),date:text(c.date,'date',80),location:text(c.location,'location',120) },
+    content: { eyebrow:text(c.eyebrow,'eyebrow',60),headline:text(c.headline,'headline',140,true),subheadline:text(c.subheadline,'support copy',240),offerPrefix:text(c.offerPrefix,'offer prefix',40),offerValue:text(c.offerValue,'offer',160),offerSuffix:text(c.offerSuffix,'offer suffix',50),cta:text(c.cta,'CTA',60,true),terms:text(c.terms,'terms',240),date:text(c.date,'date',80),location:text(c.location,'location',120),
+      ...Object.fromEntries(['secondOfferValue','secondOfferLabel','time','dressCode'].filter(key=>c[key]!==undefined).map(key=>[key,text(c[key],key,120)])) },
     layout: { archetype:choice(l.archetype,THEME_LAYOUTS,'layout'),heroPlacement:choice(l.heroPlacement,['left','right','center'],'product position'),textAlignment:choice(l.textAlignment,['left','center'],'alignment') },
     background:choice(v.background,THEME_BACKGROUNDS,'background'),decorations:[...new Set(decorations.map(d=>choice(d,THEME_DECORATIONS,'decoration')))],
     slots:{logo:slot('logo',true),product:slot('product',true),heroImage:slot('heroImage',false)},
@@ -60,7 +64,7 @@ const record = (properties: Record<string, unknown>) => ({type:'object',properti
 export const THEME_SPEC_SCHEMA = record({
   templateName:str,style:enumeration(THEME_STYLES),palette:record({background:str,primary:str,accent:str,text:str}),
   typography:record({headline:str,offer:str,body:str,cta:str}),
-  content:record(Object.fromEntries(['eyebrow','headline','subheadline','offerPrefix','offerValue','offerSuffix','cta','terms','date','location'].map(k=>[k,str]))),
+  content:record(Object.fromEntries(['eyebrow','headline','subheadline','offerPrefix','offerValue','offerSuffix','cta','terms','date','location','secondOfferValue','secondOfferLabel','time','dressCode'].map(k=>[k,str]))),
   layout:record({archetype:enumeration(THEME_LAYOUTS),heroPlacement:enumeration(['left','right','center']),textAlignment:enumeration(['left','center'])}),
   background:enumeration(THEME_BACKGROUNDS),decorations:{type:'array',items:enumeration(THEME_DECORATIONS),maxItems:6},
   slots:record({logo:{type:'boolean'},product:{type:'boolean'},heroImage:{type:'boolean'}}),

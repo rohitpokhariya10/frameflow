@@ -82,3 +82,6 @@
 
 .tpl-element-properties { display:grid; gap:14px; }
 .tpl-history button:disabled { pointer-events: none; } /* Let canvas drag-end bubble through the wrapper when released here. */
+
+.premium-gallery summary { cursor:pointer; font-weight:600; padding:12px 0; border-top:1px solid #d8ded5; margin-top:12px; }
+.premium-gallery .theme-card img { width:100%; display:block; aspect-ratio:1; object-fit:contain; }

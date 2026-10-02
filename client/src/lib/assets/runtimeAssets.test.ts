@@ -94,3 +94,17 @@ describe('generated artwork runtime resource lifecycle', () => {
     expect(revoke).toHaveBeenCalledOnce();
   });
 });
+
+describe('bundled premium scene assets',()=>{
+  it('loads only allowlisted same-origin files once and shares bytes with editor handoff',async()=>{
+    const fetcher=vi.fn().mockResolvedValue(new Response(new Blob(['photo'],{type:'image/webp'}),{status:200}));vi.stubGlobal('fetch',fetcher);
+    const [a,b]=await Promise.all([assets.getAsset('premium-photo-night'),assets.getAsset('premium-photo-night')]);
+    expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0][0]).toBe('/assets/diwali-premium/night.webp');
+    expect(a).toBe(b);expect(a?.blob.type).toBe('image/webp');expect(await assets.hasAsset('premium-photo-night')).toBe(true);
+  });
+  it('does not cache a failed or invalid response and permits explicit reload',async()=>{
+    const fetcher=vi.fn().mockResolvedValueOnce(new Response('not a photo',{status:200,headers:{'content-type':'text/html'}})).mockResolvedValueOnce(new Response(new Blob(['photo'],{type:'image/webp'})));vi.stubGlobal('fetch',fetcher);
+    await expect(assets.getAsset('premium-photo-city')).rejects.toThrow('Invalid bundled');
+    expect((await assets.getAsset('premium-photo-city'))?.mimeType).toBe('image/webp');expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});

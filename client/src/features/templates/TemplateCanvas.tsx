@@ -77,7 +77,7 @@ function ElementContent({ element, fit, fontRevision }: { element: ResolvedEleme
       // Without a measured fit (first paint), draw at the design size; the fit follows in the same frame.
       const drawn = fit ?? { fontPx: element.fontPx, lines: 1, visibleLines: 1, shrunk: false, truncated: false };
       const block = textBlock(element, drawn);
-      if (drawn.truncated && ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(element.themeRole ?? "")) return <Text text={`Shorten ${element.name.toLowerCase()} to fit`} width={width} height={height} align="center" verticalAlign="middle" fontFamily="Inter" fontSize={Math.min(width / 18, height / 3)} fill={element.color} listening={false} />;
+      if (drawn.truncated && ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location", "second-offer-value", "second-offer-label", "time", "dress-code"].includes(element.themeRole ?? "")) return <Text text={`Shorten ${element.name.toLowerCase()} to fit`} width={width} height={height} align="center" verticalAlign="middle" fontFamily="Inter" fontSize={Math.min(width / 18, height / 3)} fill={element.color} listening={false} />;
       return <>
         {element.backgroundColor && <Rect width={width} height={height} fill={element.backgroundColor} cornerRadius={element.cornerRadiusPx} listening={false} />}
         <Text key={fontRevision} name="template-text" {...templateTextProps(element, drawn.fontPx)} y={block.y} fill={element.color} listening={false}

@@ -1,0 +1,161 @@
+{
+  "reviewedOn": "2026-10-02",
+  "sourceRecord": "docs/premium-diwali-assets.md",
+  "totalBytes": 1908105,
+  "assets": [
+    {
+      "file": "atmosphere.svg",
+      "width": 1200,
+      "height": 1200,
+      "bytes": 1242,
+      "sha256": "3eb8b5c38d4ee37d268ab8f05514dad28c7e85c7fa4b98f8afcfc1520f7ee908"
+    },
+    {
+      "file": "city-left.webp",
+      "width": 510,
+      "height": 740,
+      "bytes": 167486,
+      "sha256": "972f8bb2c688ed2ffe563f4e2b920de6f12034c1f5af60f7da2302fd316913fd"
+    },
+    {
+      "file": "city-right.webp",
+      "width": 530,
+      "height": 740,
+      "bytes": 220388,
+      "sha256": "bd47fe43779a141af074904f94d39ad2ac40bd212f001f79622a5315ca3b4581"
+    },
+    {
+      "file": "city.webp",
+      "width": 1230,
+      "height": 780,
+      "bytes": 303642,
+      "sha256": "42e98e7fdd5c0e7a71e0a13df6d350ccda2168530172068e7c59a0a35e6f5679"
+    },
+    {
+      "file": "floral.webp",
+      "width": 640,
+      "height": 412,
+      "bytes": 38320,
+      "sha256": "8549e0a0f640dd423367fd424b0a9bb0a46c0dc2ee191188d02422a9168d8065"
+    },
+    {
+      "file": "gift-stage.webp",
+      "width": 880,
+      "height": 1000,
+      "bytes": 161176,
+      "sha256": "d37049736c95ee3dbde5bb1fa5c00b63279e555a7b1cf93baad842043c0f849a"
+    },
+    {
+      "file": "greeting.webp",
+      "width": 1203,
+      "height": 1100,
+      "bytes": 111548,
+      "sha256": "0864f4606037a7449f548f8f17939e282ad0d834bdb48aee0a9bb09ad6376490"
+    },
+    {
+      "file": "hanging-lantern.webp",
+      "width": 125,
+      "height": 330,
+      "bytes": 7400,
+      "sha256": "d4ac0d00ecbf2ee9a0bacbfe56fd35778209b0f88d8c37ff7e43a3802a9fdeaa"
+    },
+    {
+      "file": "lamps.webp",
+      "width": 1440,
+      "height": 960,
+      "bytes": 137132,
+      "sha256": "e879bb485185c33203db6f62acd4c2ffb1ee670d22ce365dc540f5a9b1fd726a"
+    },
+    {
+      "file": "lantern-people.webp",
+      "width": 725,
+      "height": 1000,
+      "bytes": 45920,
+      "sha256": "b20bcc9f74c33fb444cfdb2f8b4263bff482b32f74900dcb31f9222423e7e3bf"
+    },
+    {
+      "file": "lanterns.webp",
+      "width": 1440,
+      "height": 960,
+      "bytes": 238470,
+      "sha256": "24ebe9587828a673a8ee64fe58dc5d70afe7c71b67b8928a324b1797829fbe3b"
+    },
+    {
+      "file": "night-veil.svg",
+      "width": 1200,
+      "height": 1200,
+      "bytes": 585,
+      "sha256": "e7b503c16aadc39b5f10bd52a31066c4c5d020db2213455d535d92276fb15de8"
+    },
+    {
+      "file": "night.webp",
+      "width": 1440,
+      "height": 960,
+      "bytes": 92866,
+      "sha256": "6b0e5ef70281130f0972e7e5bbe95b9eed475caadddf06a4f5b3ca17f39396c5"
+    },
+    {
+      "file": "previews/premium-ecommerce.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 19858,
+      "sha256": "59bc711f15c08ea77e6cb973b439917ba0c4e752f60328150eb81117b2096419"
+    },
+    {
+      "file": "previews/premium-event.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 25636,
+      "sha256": "b7b2be33d7e022254f963380e9ae66645662eb113e344a2a94e8d35b6fb565fa"
+    },
+    {
+      "file": "previews/premium-gift.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 20612,
+      "sha256": "a64bba4dcc22b50860329ff3c560bf6af6533430830ef0a44b15db146b6fab0f"
+    },
+    {
+      "file": "previews/premium-greeting.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 13542,
+      "sha256": "de748c3f680ff16cbe2543633975a8b2aa54195e1bd3ef37ca0f3e02d121e453"
+    },
+    {
+      "file": "previews/premium-jewellery.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 18992,
+      "sha256": "6da550dc3d84ab34c92aa4b57494cfc003360dc34bf4dde6361a0baa50888a49"
+    },
+    {
+      "file": "previews/premium-lantern.webp",
+      "width": 420,
+      "height": 420,
+      "bytes": 17132,
+      "sha256": "efe80d796d825b98e4919f4fa4a808f3446e8f5cfedf723bfea689eea8f36374"
+    },
+    {
+      "file": "product.webp",
+      "width": 196,
+      "height": 541,
+      "bytes": 30988,
+      "sha256": "411aa32d51848c42c1a63c5feb5b298ea2a4563ea410546c081488892f003374"
+    },
+    {
+      "file": "products.webp",
+      "width": 1400,
+      "height": 649,
+      "bytes": 161354,
+      "sha256": "b20069fe1b0c63675b630aacdf5a972754e408e418e6833895c1ee00dd5981fe"
+    },
+    {
+      "file": "sparks.svg",
+      "width": 1200,
+      "height": 1200,
+      "bytes": 73816,
+      "sha256": "5507759ac767cd4eb5bec8c47f5813f1c2743ce105d80a0ce913d8053fe749f0"
+    }
+  ]
+}

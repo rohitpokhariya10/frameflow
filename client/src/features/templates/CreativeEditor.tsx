@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   offerTemplateTheme, offerTheme, themeFonts, themeColors, applyCreative, designCanvasSize, editablePropertiesOf, findElement, pixelChangeToNormalized, resolveElements, roundNormalized, setCreativeAspectRatio, setCreativeOverride, textFitWarning, toPixels,
-  type Creative, type DesignTemplate, type DesignVariant, type ElementOverride, type NormalizedLayout, type PixelBox, type ResolvedElement, type ResolvedText, type TemplateElement,
+  type OfferTheme, type Creative, type DesignTemplate, type DesignVariant, type ElementOverride, type NormalizedLayout, type PixelBox, type ResolvedElement, type ResolvedText, type TemplateElement,
 } from '@frameflow/shared';
 import { FontPicker } from '../fonts/FontPicker';
 import { useFonts } from '../fonts/useFonts';
@@ -43,7 +43,7 @@ export function CreativeEditor({ template, creative, history, onRatioChange, new
   const resolved = useMemo(() => resolveElements(applied.elements, canvas), [applied, canvas]);
   const fonts = useFonts(resolved.flatMap(e => e.type === 'text' ? [{family:e.fontFamily,weight:e.fontWeight,text:e.text}] : []));
   const fits = useMemo(() => { void fonts.revision; return fitTemplateTexts(resolved); }, [resolved, fonts.revision]);
-  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
+  const criticalOverflow = resolved.some(e => ["headline", "offer-value", "cta", "offer-prefix", "offer-suffix", "date", "location", "second-offer-value", "second-offer-label", "time", "dress-code"].includes(e.themeRole ?? "") && fits.get(e.id)?.truncated);
   const warnings = [...applied.ignored.map(issue => issue.message), ...resolved.filter((element): element is ResolvedText => element.type === 'text').flatMap(element => textFitWarning(element, fits.get(element.id)!) ?? [])];
 
   const change = (edit: () => Creative) => {
@@ -110,7 +110,7 @@ export function CreativeEditor({ template, creative, history, onRatioChange, new
         {fonts.failed && <p role="status" className="ws-warn">Some fonts could not load. Your selections are kept; readable fallbacks are shown.</p>}
         <Section title="Editable content" note="(set by the template)">
           {!editable.length && <p className="ws-muted">This template locks everything; there is nothing to change.</p>}
-          {editable.map(element => <CreativeFields key={element.id} themeId={template.themeId} element={element} shown={applied.elements.find(item => item.id === element.id) ?? element} override={creative.contentOverrides[element.id]}
+          {editable.map(element => <CreativeFields key={element.id} theme={offerTemplateTheme(template) ?? offerTheme(template.themeId)} element={element} shown={applied.elements.find(item => item.id === element.id) ?? element} override={creative.contentOverrides[element.id]}
             selected={element.id === selectedId} onSelect={() => setSelectedId(element.id)} change={values => override(element.id, values)} />)}
         </Section>
         {locked.length > 0 && <Section title="Locked by the template"><p className="ws-muted">{locked.map(element => element.name || element.role).join(', ')}</p></Section>}
@@ -124,8 +124,8 @@ export function CreativeEditor({ template, creative, history, onRatioChange, new
 }
 
 /** The fields of one element: one control per property the template lets a creative change. */
-function CreativeFields({ themeId, element, shown, override, selected, onSelect, change }: {
-  themeId?: string; element: TemplateElement; shown: TemplateElement; override?: ElementOverride; selected: boolean; onSelect: () => void; change: (values: ElementOverride) => void;
+function CreativeFields({ theme, element, shown, override, selected, onSelect, change }: {
+  theme?: OfferTheme; element: TemplateElement; shown: TemplateElement; override?: ElementOverride; selected: boolean; onSelect: () => void; change: (values: ElementOverride) => void;
 }) {
   const can = element.editableProperties;
   const geometry = GEOMETRY.filter(property => can[property]);
@@ -135,7 +135,7 @@ function CreativeFields({ themeId, element, shown, override, selected, onSelect,
     {shown.type === 'text' && can.content && <Field label="Text"><textarea rows={2} value={shown.defaultContent.text} maxLength={5000} onChange={event => change({ text: event.target.value })} /></Field>}
     {shown.type === 'text' && can.color && <ColorInput label="Text colour" value={shown.style.color} onChange={color => change({ color })} />}
     {shown.type === 'text' && can.backgroundColor && shown.style.backgroundColor !== null && <ColorInput label="Box colour" value={shown.style.backgroundColor} onChange={backgroundColor => change({ backgroundColor })} />}
-    {shown.type === 'text' && can.fontFamily && <FontPicker value={shown.style.fontFamily} recommended={offerTheme(themeId) ? themeFonts(offerTheme(themeId)!, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${offerTheme(themeId)?.name ?? "text"}`} onChange={fontFamily => change({ fontFamily })} />}
+    {shown.type === 'text' && can.fontFamily && <FontPicker value={shown.style.fontFamily} recommended={theme ? themeFonts(theme, element.themeRole ?? element.role) : []} recommendationLabel={`Recommended for ${theme?.name ?? "text"}`} onChange={fontFamily => change({ fontFamily })} />}
     {shown.type === 'shape' && can.color && <ColorInput label="Colour" value={shown.style.fill} onChange={color => change({ color })} />}
     {shown.type === 'background' && can.color && <ColorInput label="Colour" value={shown.defaultContent.color} onChange={color => change({ color })} />}
     {(shown.type === 'image' || shown.type === 'background') && can.image && <>
