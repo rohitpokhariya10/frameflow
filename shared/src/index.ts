@@ -189,3 +189,5 @@ export * from './designTemplates/diwaliAssets.js';
 export * from './designTemplates/premiumDefinitions.js';
 export * from './designTemplates/premiumAssets.js';
 export * from './designTemplates/premiumLayouts.js';
+
+export * from './referenceCreative.js';

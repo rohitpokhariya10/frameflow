@@ -1,6 +1,6 @@
 # Create Template from Image
 
-Open **OpenAI + Seedream test → Create Template from Image**. The existing bottom launchers and zoom controls retain their positions. This feature is separate from the local **Create Own Template** authoring flow.
+Open **OpenAI + Seedream test → Create Template from Image**. The existing bottom launchers and zoom controls retain their positions. This standalone feature remains available alongside the integrated [Create from Reference Image](REFERENCE_CREATIVE.md) panel inside **Create Own Template**, which reuses its generation and decomposition services.
 
 ## Structured analysis and local prompt compilation
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ReferenceCreative } from '../referenceCreatives/ReferenceCreative';
 import { X } from 'lucide-react';
 import {
   TemplateError, createCreative, createTemplateDraft, creativesOf, deleteCreative, deleteDesignTemplate, designTemplateVersion, duplicateDesignTemplate, latestDesignTemplate, listDesignTemplates,
@@ -25,10 +26,12 @@ const problemText = (problem: unknown) => problem instanceof TemplateError || pr
 
 /**
  * Create Own Template: author reusable templates, then make creatives from them. Everything here is local: templates
- * and creatives are kept in this browser, pictures in its asset store, and only explicit AI planning calls the server; curated selection and reuse stay local.
+ * and creatives are kept in this browser, pictures in its asset store. Explicit AI planning and the reference campaign
+ * panel use server services; curated selection and reuse stay local.
  */
 export function TemplateStudio({ onClose }: { onClose: () => void }) {
   const dispatch = useAppDispatch();
+  const [referenceOpen, setReferenceOpen] = useState(false);
   const variantCount = useAppSelector(state => state.editor.document.variants.length);
   const [loaded] = useState(() => loadTemplateLibrary(storage));
   const [library, setLibrary] = useState<TemplateLibrary>(loaded.library);
@@ -125,7 +128,8 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
   };
   const controls = { canUndo: history.canUndo, canRedo: history.canRedo,
     undo: () => { history.undo(restore); setMessage(null); }, redo: () => { history.redo(restore); setMessage(null); } };
-  return <div className="ws-backdrop"><div className="ws" role="dialog" aria-modal="true" aria-labelledby="tpl-title" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}
+  const associated = view.kind === 'author' ? view.draft : pinnedTemplate;
+  return <><div className="ws-backdrop" style={referenceOpen ? { display: 'none' } : undefined}><div className="ws" role="dialog" aria-modal="true" aria-labelledby="tpl-title" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}
     {...history.fieldEvents} onKeyDown={event => {
       const command = historyKey(event);
       if (command) { event.preventDefault(); event.stopPropagation(); controls[command](); }
@@ -138,6 +142,8 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
       <nav className="tpl-sidebar" aria-label="Templates">
         <button type="button" className="ws-btn ws-btn-primary" onClick={() => leave(() => setView(newDraft()))}>Create Own Template</button>
         {message && <p role={message.error ? 'alert' : 'status'} className={message.error ? 'ws-warn' : 'ws-notice'}>{message.text}</p>}
+        {view.kind === 'author' && <button id="reference-entry" type="button" className="ws-btn" onClick={() => setReferenceOpen(true)}>{associated?.referenceSetId ? 'Open reference campaign' : 'Create from Reference Image'}</button>}
+        <p className="ws-hint">Keep a reference style, change your product or festival, and create three sizes.</p>
         <h3>Existing templates</h3>
         {!templates.length && <p className="ws-muted">None yet. Build one and press Save Template.</p>}
         {templates.map((template) => {
@@ -168,5 +174,12 @@ export function TemplateStudio({ onClose }: { onClose: () => void }) {
               onChange={creative => history.edit({ ...view, creative })} onRatioChange={creative => history.replace({ ...view, creative })} onSave={saveCurrentCreative} onUpgrade={upgrade} onOpenInEditor={openInEditor} />
           : <p role="alert" className="ws-warn" style={{ margin: 16 }}>The template version this creative was made with is no longer in this browser, so it cannot be shown.</p>}
     </div></div>
-  </div></div>;
+  </div></div>
+    {referenceOpen && <ReferenceCreative templateId={associated!.id} templateName={associated!.name} linkedSetId={associated?.referenceSetId}
+      onAssociate={id => {
+        if (view.kind === 'author') history.edit({ ...view, draft: { ...view.draft, referenceSetId: id } });
+        else setMessage({ text: 'Open Edit Template to save this reference association.', error: true });
+      }}
+      onClose={() => { setReferenceOpen(false); requestAnimationFrame(() => document.getElementById('reference-entry')?.focus()); }} onEditor={onClose} />}
+  </>;
 }

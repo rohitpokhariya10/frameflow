@@ -25,11 +25,12 @@ import express, { type Request, type Router } from 'express';
 import type OpenAI from 'openai';
 import { createOpenAIClient } from '../services/openAIClient.js';
 import sharp from 'sharp';
-import { GENERATION_TEMPLATE_KEYS, generationVariantId, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
+import { createReferenceCreative, parseReferenceCreative, validateReferenceGeneration, validateImageTemplateRequestPrompt, type ReferenceCreativeDraft,
+  GENERATION_TEMPLATE_KEYS, generationVariantId, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
   IMAGE_ANALYSIS_LIMITS, IMAGE_ANALYSIS_SCHEMA, buildImageTemplatePrompt, parseImageAnalysisResponse, type ImageVisualAnalysis,
   IMAGE_TEMPLATE_VERSION, imageTemplateVariantPrompt, isImageTemplateRatio, resolveImageTemplateName, resolveImageTemplatePrompt, resolveImageTemplateRatios, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
 import { plannerModel } from './aiModels.js';
-import { allowOnly, generateVariant, queueVariant, recordDecomposition, variantImage, type GenerationConfig, type GenerationVariant, type VariantDecomposition } from './generationGroups.js';
+import { allowOnly, supportsProductReference, generateVariant, queueVariant, recordDecomposition, variantImage, type GenerationConfig, type GenerationVariant, type VariantDecomposition } from './generationGroups.js';
 import { createRun, executeRun, MAX_UPLOAD_BYTES, readRun, resumeRun, RunError, validRunId, type RunnerDeps, type RunRecord } from './layerizeExperiment.js';
 import type { PlannerUsage } from './layerizePlanner.js';
 import { requireTemplate, suggestedLayerCount, TEMPLATES } from './layerizeTemplates.js';
@@ -60,8 +61,12 @@ export type ImageTemplateVariant = GenerationVariant & { decompositions: (Varian
 export type ImageTemplate = {
   id: string; kind: 'image-template'; version: string; createdAt: string; updatedAt: string;
   name: string;
+  workflow?: 'offer-reference'; referenceCreative?: ReferenceCreativeDraft;
+  productReference?: ImageTemplate['reference'];
+  originTemplate?: { id: string; name: string };
+  generationSnapshot?: { id: string; referenceSha256: string; blueprintVersion: 1; settings: ReferenceCreativeDraft; analysis: ImageVisualAnalysis; productSha256?: string; model: string; instruction: string; aspectRatios: ImageTemplateRatio[] };
   /** The uploaded reference, kept exactly as uploaded. */
-  reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number; sha256: string };
+  reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number; sha256: string; hasAlpha?: boolean; warnings?: string[] };
   promptGeneration?: PromptGeneration;
   /** Normalized visual evidence and the locally compiled editable prompt. Older records may omit analysis. */
   analysis?: ImageVisualAnalysis;
@@ -112,14 +117,22 @@ function update(root: string, id: string, change: (template: ImageTemplate) => v
   return template;
 }
 
-/** A new draft: the reference saved untouched. Only a single-frame PNG, JPEG or WebP is accepted; nothing is sent anywhere. */
-export async function createImageTemplate(root: string, bytes: Buffer, input: { name?: unknown; originalName?: string; mimeType?: string; aspectRatios?: unknown } = {}): Promise<ImageTemplate> {
+/** Decode and validate both reference and optional product uploads before persisting any file. */
+export async function validateReferenceUpload(bytes: Buffer, input: { originalName?: string; mimeType?: string; checkExtension?: boolean } = {}) {
   if (bytes.length > MAX_UPLOAD_BYTES) throw new RunError('UPLOAD_TOO_LARGE', `Images must be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`);
   let meta: Awaited<ReturnType<ReturnType<typeof sharp>['metadata']>>;
   try { meta = await sharp(bytes, { failOn: 'error' }).metadata(); } catch { throw new RunError('UNSUPPORTED_IMAGE', 'Upload a PNG, JPEG or WebP image.'); }
   if (!['png', 'jpeg', 'webp'].includes(meta.format ?? '') || (meta.pages ?? 1) > 1 || !meta.width || !meta.height) throw new RunError('UNSUPPORTED_IMAGE', 'Upload a single-frame PNG, JPEG or WebP image.');
   if (input.mimeType && input.mimeType !== `image/${meta.format}`) throw new RunError('UNSUPPORTED_IMAGE', 'The upload MIME type must match its PNG, JPEG or WebP bytes.');
   try { await referenceForPrompt(bytes); } catch { throw new RunError('UNSUPPORTED_IMAGE', 'The image could not be fully decoded. Upload a valid PNG, JPEG or WebP image.'); }
+  const extension = input.originalName?.split('.').at(-1)?.toLowerCase();
+  if (input.checkExtension && input.originalName?.includes('.') && !(({ png: ['png'], jpeg: ['jpg', 'jpeg'], webp: ['webp'] } as Record<string, string[]>)[meta.format!] ?? []).includes(extension!)) throw new RunError('UNSUPPORTED_IMAGE', 'The filename extension must match the image format.');
+  return meta;
+}
+
+/** A new draft: the reference saved untouched. Only a single-frame PNG, JPEG or WebP is accepted; nothing is sent anywhere. */
+export async function createImageTemplate(root: string, bytes: Buffer, input: { name?: unknown; originalName?: string; mimeType?: string; aspectRatios?: unknown; checkExtension?: boolean } = {}): Promise<ImageTemplate> {
+  const meta = await validateReferenceUpload(bytes, input);
   // A draft may be unnamed for now (the prompt request suggests a name); a name that is given must fit.
   const name = input.name === undefined ? { name: '' } : resolveImageTemplateName(input.name);
   if (name.error && (name.name || typeof input.name !== 'string')) throw new RunError('INVALID_NAME', name.error);
@@ -130,7 +143,7 @@ export async function createImageTemplate(root: string, bytes: Buffer, input: { 
   const now = new Date().toISOString(), id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`, dir = join(root, id), ext = meta.format === 'jpeg' ? 'jpg' : meta.format!;
   const template: ImageTemplate = { id, kind: 'image-template', version: IMAGE_TEMPLATE_VERSION, createdAt: now, updatedAt: now, name: name.name,
     reference: { file: `reference.${ext}`, ...(input.originalName ? { originalName: input.originalName.slice(0, 200) } : {}), mimeType: `image/${meta.format}`, width: turned ? meta.height : meta.width, height: turned ? meta.width : meta.height,
-      bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+      bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), hasAlpha: meta.hasAlpha ?? false, warnings: Math.min(meta.width!, meta.height!) < 256 ? ['This reference is small; fine product details and text may be difficult to read.'] : [] },
     prompt: '', promptEdited: false, aspectRatios: ratios.ratios, variants: [] };
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, template.reference.file), bytes);
@@ -156,6 +169,7 @@ Use short factual phrases, not paragraphs or repetitive adjectives. Respect ever
 - composition: framing/crop, foreground/midground/background, negative space and visual hierarchy.
 - palette, lighting, materials, backgroundTreatment: concise colors, light direction/softness, material/texture, shadow/reflection and background treatment.
 - visibleText: true/false/null for visible text/logos/branding; short legible wording and placement only, never guess illegible text.
+- design: summarize the offer creative design language; subjectMode is single, collection, none or unclear. Record panel/card geometry, typography mood, photographic/graphic/illustrative treatment, shadows, depth, focal point, festival/theme and decor. Give approximate headline/offer/CTA/logo/product zones as short spatial phrases, empty if absent. Report general scenes honestly; do not invent a product or offer zone.
 - preservationRules: only distinctive image-specific constraints; local code already says do not add/remove objects, change product design, invent text/logos/branding or change visual hierarchy.
 This schema covers photography, illustrations, 3D renders, products, people, animals, interiors, food, posters and sparse or complex layouts. Missing hero is acceptable for a scene; describe sceneType and its objects instead.
 "suggested_name": a short 2–5 word name. "reason": one short phrase for the layer-style choice.
@@ -234,6 +248,7 @@ export async function describeReference(root: string, id: string, writer: ImageP
       draft.promptGeneration = { status: 'done', model: result.model, attempts, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - started, ...(result.responseId ? { responseId: result.responseId } : {}),
         ...(result.usage ? { usage: result.usage } : {}), requestFile: PROMPT_REQUEST, responseFile: PROMPT_RESPONSE };
       draft.analysis = result.analysis;
+      if (draft.workflow === 'offer-reference' && result.analysis) draft.referenceCreative = createReferenceCreative(result.analysis);
       draft.generatedPrompt = draft.prompt = result.prompt;
       draft.promptEdited = false;
       draft.detected = { templateKey: result.templateKey, reason: result.reason };
@@ -258,8 +273,21 @@ export async function describeReference(root: string, id: string, writer: ImageP
  * chosen ratios only before generation. Over-long values are refused, never cut.
  */
 export function changeImageTemplate(root: string, id: string, body: Record<string, unknown>): ImageTemplate {
-  allowOnly(body, ['name', 'prompt', 'aspectRatios', 'decomposeWith'], 'A template');
+  allowOnly(body, ['name', 'prompt', 'aspectRatios', 'decomposeWith', 'referenceCreative', 'originTemplate'], 'A template');
   return update(root, id, (template) => {
+    if (body.originTemplate !== undefined) {
+      const origin = body.originTemplate as { id?: unknown; name?: unknown };
+      if (!origin || typeof origin.id !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(origin.id) || typeof origin.name !== 'string' || origin.name.length > 200) throw new RunError('INVALID_REQUEST', 'Invalid template association.');
+      template.originTemplate = { id: origin.id, name: origin.name };
+    }
+    if (body.referenceCreative !== undefined) {
+      if (template.generatedAt) throw new RunError('ALREADY_GENERATED', 'Generation settings are fixed. Start a new draft to change them.');
+      if (!template.analysis) throw new RunError('INVALID_REQUEST', 'Analyze the reference first.');
+      try { template.referenceCreative = parseReferenceCreative(body.referenceCreative); }
+      catch (error) { throw new RunError('INVALID_REQUEST', (error as Error).message); }
+      template.prompt = template.referenceCreative.prompt;
+      template.promptEdited = template.referenceCreative.mode === 'custom';
+    }
     if (body.name !== undefined) {
       const name = resolveImageTemplateName(body.name);
       if (name.error && (name.name || template.generatedAt || typeof body.name !== 'string')) throw new RunError('INVALID_NAME', name.error);
@@ -291,11 +319,21 @@ export function changeImageTemplate(root: string, id: string, body: Record<strin
  * creates every offered ratio with its exact prompt. Returns the ratios to generate now. Nothing is sent here.
  */
 export function startImageTemplateGeneration(root: string, id: string, body: Record<string, unknown>, config: Pick<GenerationConfig, 'model' | 'referenceRatios'>, promptInProgress: boolean): { template: ImageTemplate; requested: string[] } {
-  allowOnly(body, ['name', 'prompt', 'aspectRatios'], 'Generating a template');
+  allowOnly(body, ['name', 'prompt', 'aspectRatios', 'referenceCreative'], 'Generating a template');
   let requested: string[] = [];
   const template = update(root, id, (draft) => {
     if (draft.generatedAt) throw new RunError('ALREADY_GENERATED', 'This template has already been generated. Start a new template to generate it again.');
+    if (draft.productReference && !supportsProductReference(config.model)) throw new RunError('INVALID_REQUEST', 'This configured model does not support a second reference image. Remove the product image or select a compatible model.');
     if (promptInProgress) throw new RunError('PROMPT_IN_PROGRESS', 'The prompt is still being generated from the image. Wait for it, then generate.');
+    if (draft.workflow === 'offer-reference') {
+      if (!draft.analysis || draft.promptGeneration?.status !== 'done') throw new RunError('INVALID_REQUEST', 'Analyze the reference before generating.');
+      try { draft.referenceCreative = validateReferenceGeneration(body.referenceCreative ?? draft.referenceCreative, draft.analysis); }
+      catch (error) { throw new RunError('INVALID_PROMPT', (error as Error).message); }
+      if (body.prompt !== undefined && body.prompt !== draft.referenceCreative.prompt) throw new RunError('INVALID_PROMPT', 'Prompt differs from the generation settings.');
+      draft.prompt = draft.referenceCreative.prompt;
+      const selected = resolveImageTemplateRatios(body.aspectRatios ?? draft.aspectRatios);
+      if (selected.ratios.length !== 3) throw new RunError('INVALID_ASPECT_RATIO', 'Generate all three campaign ratios: 1:1, 4:5 and 16:9.');
+    } else if (body.referenceCreative !== undefined) throw new RunError('INVALID_REQUEST', 'Guided settings require an offer reference draft.');
     const name = resolveImageTemplateName(body.name ?? draft.name), prompt = resolveImageTemplatePrompt(body.prompt ?? draft.prompt), ratios = resolveImageTemplateRatios(body.aspectRatios ?? draft.aspectRatios);
     const problems = [name.error, prompt.error, ratios.error].filter(Boolean);
     if (problems.length) throw new RunError(name.error ? 'INVALID_NAME' : prompt.error ? 'INVALID_PROMPT' : 'INVALID_ASPECT_RATIO', problems.join(' '));
@@ -306,11 +344,21 @@ export function startImageTemplateGeneration(root: string, id: string, body: Rec
     } catch (error) { throw new RunError('INVALID_PROMPT', `${error instanceof Error ? error.message : String(error)} Shorten the prompt.`); }
     Object.assign(draft, { name: name.name, prompt: prompt.prompt, promptEdited: prompt.prompt !== (draft.generatedPrompt ?? '').trim(), aspectRatios: ratios.ratios, generatedAt: new Date().toISOString(), variants,
       ratioStrategy: 'uploaded-reference' as const });
+    const instruction = referenceInstruction(draft);
+    if (draft.referenceCreative && draft.analysis) draft.generationSnapshot = { id: draft.id, referenceSha256: draft.reference.sha256, blueprintVersion: 1, settings: structuredClone(draft.referenceCreative), analysis: structuredClone(draft.analysis), ...(draft.productReference ? { productSha256: draft.productReference.sha256 } : {}), model: config.model, instruction, aspectRatios: [...ratios.ratios] };
+    try { for (const variant of variants) validateImageTemplateRequestPrompt(`${variant.prompt} ${instruction}`); }
+    catch (error) { throw new RunError('INVALID_PROMPT', (error as Error).message); }
     draft.decomposeWith ??= FALLBACK_LAYER_STYLE;
     requested = ratios.ratios.map(generationVariantId);
   });
   return { template, requested };
 }
+// Stay within the existing 2,000-character editable / 3,000-character request budgets, even with two images.
+const referenceInstruction = (template: ImageTemplate) => template.workflow === 'offer-reference' || template.productReference
+  ? 'Use original image 1 for every ratio, never generated outputs. Explicit changes and allowed adaptations override preservation.'
+    + (template.productReference ? ' Image 2 is the replacement product: its design overrides the original subject; ignore its backdrop.' : '')
+  : IMAGE_TEMPLATE_REFERENCE_INSTRUCTION;
+
 /** A ratio not chosen at first, asked for later: it joins the template's ratios. */
 export function addRatio(root: string, id: string, variantId: string): ImageTemplate {
   return update(root, id, (template) => {
@@ -409,7 +457,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   };
   const enqueue = (id: string, variantIds: string[]) => {
     const config = ctx.generation();
-    const { reference } = readImageTemplate(root, id);
+    const record = readImageTemplate(root, id), { reference, productReference } = record;
     for (const variantId of variantIds) {
       const key = `${id}/${variantId}`;
       queueVariant(root, id, variantId, generating.has(key));
@@ -417,12 +465,13 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       update(root, id, template => {
         const variant = variantOf(template, variantId), ratio = variant.aspectRatio as ImageTemplateRatio;
         variant.framing = IMAGE_TEMPLATE_FRAMING[ratio];
-        variant.prompt = imageTemplateVariantPrompt(template.prompt, ratio);
+        if (!template.generationSnapshot) variant.prompt = imageTemplateVariantPrompt(template.prompt, ratio);
         template.ratioStrategy = 'uploaded-reference';
       });
       generating.add(key);
-      ctx.enqueueImage(key, () => generateVariant(root, id, variantId, config, {
-        sourceReference: { file: reference.file, sha256: reference.sha256, instruction: IMAGE_TEMPLATE_REFERENCE_INSTRUCTION },
+      ctx.enqueueImage(key, () => generateVariant(root, id, variantId, { ...config, model: record.generationSnapshot?.model ?? config.model }, {
+        sourceReference: { file: reference.file, sha256: reference.sha256, instruction: record.generationSnapshot?.instruction ?? referenceInstruction(record) },
+        ...(productReference ? { productReference: { file: productReference.file, sha256: productReference.sha256 } } : {}),
       }), () => generating.delete(key));
     }
   };
@@ -436,7 +485,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
     try {
       const config = ctx.generation();
       res.json({ ratios: IMAGE_TEMPLATE_RATIOS.map(ratio => ({ ratio, name: IMAGE_TEMPLATE_RATIO_NAMES[ratio], ...IMAGE_TEMPLATE_SIZES[ratio] })), limits: IMAGE_TEMPLATE_LIMITS,
-        imageModel: config.model, promptModel: ctx.promptWriter().model, ratioReference: true,
+        productReferenceSupported: supportsProductReference(config.model), imageModel: config.model, promptModel: ctx.promptWriter().model, ratioReference: true,
         layerStyles: LAYER_STYLES.map(template => ({ key: template.key, name: template.name, summary: LAYER_STYLE_SUMMARIES[template.key as GenerationTemplateKey] })) });
     } catch (error) { next(error); }
   });
@@ -456,7 +505,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   });
   // A new draft from an uploaded reference (multipart: image, and optionally name), and its prompt asked for at once:
   // one OpenAI request. Answers at once; the prompt follows.
-  router.post(at, async (req, res, next) => {
+  const uploadRoute = (deferred: boolean): express.RequestHandler => async (req, res, next) => {
     try {
       const upload = await readReference(req);
       let aspectRatios: unknown;
@@ -464,10 +513,37 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
         try { aspectRatios = JSON.parse(upload.aspectRatios); } catch { throw new RunError('INVALID_ASPECT_RATIO', 'Sizes must be a JSON array.'); }
         if (!Array.isArray(aspectRatios)) throw new RunError('INVALID_ASPECT_RATIO', 'Sizes must be a JSON array.');
       }
-      const template = await createImageTemplate(root, upload.bytes, { mimeType: upload.mimeType, ...(upload.name !== undefined ? { name: upload.name } : {}), ...(upload.fileName ? { originalName: upload.fileName } : {}), ...(aspectRatios !== undefined ? { aspectRatios } : {}) });
-      void describe(template.id);
-      res.status(202).json(shown(readImageTemplate(root, template.id)));
+      const template = await createImageTemplate(root, upload.bytes, { checkExtension: deferred, mimeType: upload.mimeType, ...(upload.name !== undefined ? { name: upload.name } : {}), ...(upload.fileName ? { originalName: upload.fileName } : {}), ...(aspectRatios !== undefined ? { aspectRatios } : {}) });
+      if (deferred) update(root, template.id, draft => { draft.workflow = 'offer-reference'; });
+      else void describe(template.id);
+      res.status(deferred ? 201 : 202).json(shown(readImageTemplate(root, template.id)));
     } catch (error) { next(error); }
+  };
+  router.post(at, uploadRoute(false));
+  router.post(`${at}/draft`, uploadRoute(true));
+  router.get(`${at}/:id/product-reference`, (req, res, next) => {
+    try { const t = readImageTemplate(root, req.params.id); if (!t.productReference) throw notFound(); res.setHeader('Cache-Control', 'no-store'); res.sendFile(join(root, t.id, t.productReference.file)); }
+    catch (error) { next(error); }
+  });
+  router.post(`${at}/:id/product-reference`, async (req, res, next) => {
+    try {
+      const t = readImageTemplate(root, req.params.id);
+      if (t.generatedAt) throw new RunError('ALREADY_GENERATED', 'The product reference is fixed for this generated set.');
+      if (!supportsProductReference(ctx.generation().model)) throw new RunError('INVALID_REQUEST', 'This configured model does not support a second reference image. Use a product description.');
+      const upload = await readReference(req), meta = await validateReferenceUpload(upload.bytes, { checkExtension: true, originalName: upload.fileName, mimeType: upload.mimeType });
+      const file = `product-${randomBytes(6).toString('hex')}.${meta.format === 'jpeg' ? 'jpg' : meta.format}`;
+      const result = update(root, t.id, draft => {
+        if (draft.generatedAt) throw new RunError('ALREADY_GENERATED', 'Generation has started; the product reference is fixed.');
+        writeFileSync(join(root, t.id, file), upload.bytes);
+        const turned = (meta.orientation ?? 1) >= 5;
+        draft.productReference = { file, originalName: upload.fileName, mimeType: `image/${meta.format}`, width: turned ? meta.height! : meta.width!, height: turned ? meta.width! : meta.height!, bytes: upload.bytes.length, sha256: createHash('sha256').update(upload.bytes).digest('hex'), hasAlpha: meta.hasAlpha ?? false };
+      });
+      res.json(shown(result));
+    } catch (error) { next(error); }
+  });
+  router.delete(`${at}/:id/product-reference`, (req, res, next) => {
+    try { res.json(shown(update(root, req.params.id, draft => { if (draft.generatedAt) throw new RunError('ALREADY_GENERATED', 'Generation settings are fixed.'); delete draft.productReference; }))); }
+    catch (error) { next(error); }
   });
   // The prompt asked for again (one OpenAI request). It replaces the working prompt, edits included. Drafts only.
   router.post(`${at}/:id/prompt`, (req, res, next) => {
@@ -483,7 +559,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   router.patch(`${at}/:id`, express.json({ limit: '16kb' }), (req, res, next) => {
     try {
       const body = bodyOf(req);
-      if (body.prompt !== undefined && describing.has(req.params.id)) throw new RunError('BUSY', 'Wait for the prompt to finish before editing it.');
+      if ((body.prompt !== undefined || body.referenceCreative !== undefined) && describing.has(req.params.id)) throw new RunError('BUSY', 'Wait for the prompt to finish before editing it.');
       res.json(shown(changeImageTemplate(root, req.params.id, body)));
     } catch (error) { next(error); }
   });

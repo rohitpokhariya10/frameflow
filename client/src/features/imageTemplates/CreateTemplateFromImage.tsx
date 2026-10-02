@@ -295,7 +295,7 @@ function LayerStyle({ template, info, disabled, onChange }: { template: ImageTem
 }
 
 /** A generated template: what it was made from, and one card per size with its status and its next step. */
-function TemplateResults({ template, info, busy, onRename, onLayerStyle, onGenerateRatio, onDecompose, onResume, onOpen }: {
+export function TemplateResults({ template, info, busy, onRename, onLayerStyle, onGenerateRatio, onDecompose, onResume, onOpen }: {
   template: ImageTemplate; info?: ImageTemplateInfo; busy: string; onRename: (name: string) => void; onLayerStyle: (key: GenerationTemplateKey) => void;
   onGenerateRatio: (variant: ImageTemplateVariant) => void; onDecompose: (list: ImageTemplateVariant[]) => void; onResume: (variant: ImageTemplateVariant) => void; onOpen: (variant: ImageTemplateVariant) => void;
 }) {

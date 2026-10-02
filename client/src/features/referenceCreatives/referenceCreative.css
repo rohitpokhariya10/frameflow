@@ -1,0 +1,61 @@
+.reference-creative { grid-template-rows: auto minmax(0,1fr); color: #253d35; }
+.reference-header { grid-template-columns: 1fr auto; gap: 24px; }
+.reference-header h2 { margin: 0; font-size: 20px; }
+.reference-header p { margin: 5px 0 0; color: #68766f; font-size: 13px; }
+.reference-scroll { overflow: auto; padding: 24px 32px 40px; background: #f5f6f2; }
+.reference-topline { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+.reference-topline p { margin: 0; font-size: 13px; }
+.reference-topline label { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.reference-topline select { max-width: 330px; padding: 9px; border: 1px solid #d5ded6; border-radius: 8px; background: white; color: inherit; }
+.reference-grid { display: grid; grid-template-columns: minmax(250px, .78fr) minmax(560px, 1.8fr); gap: 26px; max-width: 1540px; margin: auto; align-items: start; }
+.reference-source, .reference-controls { border: 1px solid #dfe5dc; border-radius: 14px; padding: 22px; background: #fff; min-width: 0; }
+.reference-grid h3 { margin: 0 0 18px; font-size: 16px; }
+.reference-source > p { font-size: 12px; overflow-wrap: anywhere; line-height: 1.6; }
+.reference-preview { border-radius: 10px; overflow: hidden; background: repeating-conic-gradient(#e8e9e5 0% 25%, #fafbf8 0% 50%) 50% / 16px 16px; }
+.reference-preview img { display: block; object-fit: contain; width: 100%; height: 270px; }
+.reference-empty { background: #f5f7f2; border: 1px dashed #ced6cb; border-radius: 10px; padding: 34px 18px; text-align: center; color: #657469; font-size: 14px; line-height: 1.7; }
+.reference-upload { display: block; padding: 12px; margin: 12px 0 8px; border: 1px solid #8ca797; color: #204f3f; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; text-align: center; }
+.reference-upload input { display: block; width: 100%; margin-top: 10px; font-size: 12px; font-weight: 400; }
+.reference-detected { border-top: 1px solid #e1e6df; padding-top: 22px; margin-top: 22px; font-size: 13px; line-height: 1.6; }
+.reference-detected h3 { margin-bottom: 10px; }
+.reference-detected > span { display: inline-block; background: #edf3ec; padding: 4px 8px; border-radius: 6px; font-size: 12px; }
+.reference-detected details { margin-top: 16px; }
+.reference-detected summary, .reference-advanced summary { cursor: pointer; font-weight: 600; }
+.reference-detected dt { font-weight: 600; text-transform: capitalize; }
+.reference-detected dd { margin: 0 0 9px; color: #64736a; }
+.reference-field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 600; min-width: 0; }
+.reference-field input, .reference-field textarea { padding: 11px 12px; background: #fff; border: 1px solid #cdd8ce; border-radius: 7px; color: #243d33; font: inherit; font-size: 13px; font-weight: 400; min-width: 0; width: 100%; box-sizing: border-box; }
+.reference-field input::placeholder { color: #7b857f; }
+.reference-field textarea { resize: vertical; line-height: 1.6; min-height: 130px; }
+.reference-preserve, .reference-changes { border: 0; border-top: 1px solid #e0e6dc; padding: 16px 0 0; margin: 25px 0 0; min-width: 0; }
+.reference-preserve legend, .reference-changes legend { font-weight: 650; font-size: 14px; padding-right: 12px; }
+.reference-preserve { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+.reference-preserve label { font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.reference-preserve input { accent-color: #295a45; }
+.reference-changes > p { margin: 0 0 14px; font-size: 12px; color: #667469; line-height: 1.6; }
+.reference-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.reference-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.reference-product { background: #f7f8f4; border-radius: 9px; padding: 14px; margin-top: 18px; }
+.reference-product img { width: 90px; height: 90px; object-fit: contain; vertical-align: middle; margin-top: 8px; }
+.reference-summary { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.reference-advanced { border: 1px solid #dce3d9; border-radius: 8px; padding: 14px; margin-top: 20px; font-size: 13px; }
+.reference-advanced > p { font-size: 12px; line-height: 1.6; color: #657269; }
+.reference-prompt-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; }
+.reference-prompt-tools > span { margin-right: auto; }
+.reference-generate { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; border-top: 1px solid #e0e6dc; margin-top: 22px; padding-top: 20px; }
+.reference-generate > div { flex: 1 1 100%; }
+.reference-generate strong { font-size: 14px; }
+.reference-generate p { margin: 8px 0; font-size: 13px; }
+.reference-generate small { font-size: 12px; color: #69776f; }
+.reference-error, .reference-notice { border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.6; }
+.reference-error { background: #fff0eb; color: #9a351f; border: 1px solid #f0cbbb; }
+.reference-notice { background: #eef3e9; color: #40513b; border: 1px solid #d8e3cf; }
+.reference-output { max-width: 1540px; margin: 26px auto 0; border: 1px solid #dfe5dc; border-radius: 14px; background: white; }
+.reference-use { display: flex; align-items: center; justify-content: space-between; padding: 22px 28px; gap: 20px; border-bottom: 1px solid #e1e6de; }
+.reference-use h3 { margin: 0 0 6px; font-size: 17px; }
+.reference-use p { margin: 0; font-size: 13px; }
+.reference-output .cti-inner { max-width: none; }
+.reference-creative button:focus-visible, .reference-creative input:focus-visible, .reference-creative summary:focus-visible, .reference-creative select:focus-visible, .reference-creative textarea:focus-visible { outline: 2px solid #46785e; outline-offset: 3px; }
+.reference-creative input:disabled, .reference-creative textarea:disabled { background: #f7f8f5; color: #626b65; }
+@media (max-width: 1100px) { .reference-scroll { padding: 20px; } .reference-grid { grid-template-columns: minmax(220px, .7fr) minmax(450px, 1.5fr); gap: 18px; } }
+@media (max-width: 800px) { .reference-grid { grid-template-columns: 1fr; } .reference-topline { align-items: flex-start; flex-direction: column; } .reference-fields, .reference-preserve { grid-template-columns: 1fr; } .reference-use { flex-wrap: wrap; } }

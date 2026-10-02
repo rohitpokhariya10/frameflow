@@ -7,12 +7,19 @@ const OBJECT_FIELDS = { kind: 60, appearance: 120, position: 120, relativeScale:
 const COMPOSITION_FIELDS = { framing: 120, crop: 100, foreground: 120, midground: 120, background: 120, negativeSpace: 100, visualHierarchy: 120 };
 export const IMAGE_ANALYSIS_LIMITS = { sceneType: 80, objects: 12, palette: 6, materials: 6, preservationRules: 6, fact: 160 } as const;
 type TextFields<T> = { [K in keyof T]: string };
+export type ReferenceDesignEvidence = {
+  summary: string; subjectMode: 'single' | 'collection' | 'none' | 'unclear'; panelGeometry: string;
+  typographyMood: string; treatment: string; shadows: string; depth: string; focalPoint: string; theme: string; decorations: string;
+  zones: { headline: string; offer: string; cta: string; logo: string; product: string };
+};
+const DESIGN_FIELDS = { summary: 160, panelGeometry: 160, typographyMood: 120, treatment: 100, shadows: 120, depth: 120, focalPoint: 120, theme: 100, decorations: 160 };
+const ZONE_FIELDS = { headline: 80, offer: 80, cta: 80, logo: 80, product: 80 };
 export type ImageVisualAnalysis = {
   sceneType: string; hero: TextFields<typeof HERO_FIELDS>;
   objects: (TextFields<typeof OBJECT_FIELDS> & { count: number | null })[];
   composition: TextFields<typeof COMPOSITION_FIELDS>; palette: string[]; lighting: string; materials: string[];
   backgroundTreatment: string; visibleText: { present: boolean | null; description: string }; preservationRules: string[];
-  additionalObjects: boolean;
+  additionalObjects: boolean; design?: ReferenceDesignEvidence;
 };
 const string = (maxLength: number) => ({ type: 'string', maxLength });
 const object = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
@@ -26,6 +33,7 @@ export const IMAGE_ANALYSIS_SCHEMA = object({
     materials: list(IMAGE_ANALYSIS_LIMITS.materials), backgroundTreatment: string(IMAGE_ANALYSIS_LIMITS.fact),
     visibleText: object({ present: { type: ['boolean', 'null'] }, description: string(IMAGE_ANALYSIS_LIMITS.fact) }),
     preservationRules: list(IMAGE_ANALYSIS_LIMITS.preservationRules),
+    design: object({ ...strings(DESIGN_FIELDS), subjectMode: { type: 'string', enum: ['single', 'collection', 'none', 'unclear'] }, zones: object(strings(ZONE_FIELDS)) }),
   }),
   suggested_name: string(IMAGE_TEMPLATE_LIMITS.name), decomposition_template: { type: 'string', enum: [...GENERATION_TEMPLATE_KEYS] }, reason: string(IMAGE_ANALYSIS_LIMITS.fact),
 });
@@ -57,7 +65,7 @@ function facts(value: unknown, count: number): string[] {
 export function normalizeImageAnalysis(value: unknown): ImageVisualAnalysis {
   const input = record(value), hero = fields(input.hero, HERO_FIELDS), composition = fields(input.composition, COMPOSITION_FIELDS);
   const objects: ImageVisualAnalysis['objects'] = [], seen = new Set<string>();
-  let additionalObjects = false;
+  let additionalObjects = input.additionalObjects === true;
   for (const item of Array.isArray(input.objects) ? input.objects : []) {
     const source = record(item), detail = fields(source, OBJECT_FIELDS);
     if (!detail.kind) continue;
@@ -70,8 +78,19 @@ export function normalizeImageAnalysis(value: unknown): ImageVisualAnalysis {
   }
   const sceneType = compactVisualFact(input.sceneType, IMAGE_ANALYSIS_LIMITS.sceneType);
   if (!hero.identity && !hero.appearance && !objects.length && !sceneType) throw new Error('The visual analysis contains no usable subject or scene evidence.');
-  const text = record(input.visibleText);
-  return { sceneType, hero, objects, composition, additionalObjects,
+  const text = record(input.visibleText), rawDesign = record(input.design);
+  let design: ReferenceDesignEvidence | undefined;
+  if (input.design !== undefined) {
+    if (!['single', 'collection', 'none', 'unclear'].includes(String(rawDesign.subjectMode))) throw new Error('Invalid product structure in reference analysis.');
+    // New design instructions are plain descriptions. Existing visible-text evidence may legitimately name a website;
+    // it stays escaped text and is never used as an asset URL or executable content.
+    for (const value of [...Object.values(rawDesign), ...Object.values(record(rawDesign.zones))]) {
+      // '>' can express visual priority; '<' still blocks every HTML/SVG tag opener.
+      if (typeof value === 'string' && /<|https?:\/\/|data:|javascript:|\beval\s*\(/iu.test(value)) throw new Error('Design evidence must contain plain descriptions, not markup, code or links.');
+    }
+    design = { ...fields(rawDesign, DESIGN_FIELDS), subjectMode: rawDesign.subjectMode as ReferenceDesignEvidence['subjectMode'], zones: fields(rawDesign.zones, ZONE_FIELDS) };
+  }
+  return { sceneType, hero, objects, composition, additionalObjects, ...(design ? { design } : {}),
     palette: facts(input.palette, IMAGE_ANALYSIS_LIMITS.palette), materials: facts(input.materials, IMAGE_ANALYSIS_LIMITS.materials),
     lighting: compactVisualFact(input.lighting, IMAGE_ANALYSIS_LIMITS.fact), backgroundTreatment: compactVisualFact(input.backgroundTreatment, IMAGE_ANALYSIS_LIMITS.fact),
     visibleText: { present: typeof text.present === 'boolean' ? text.present : null, description: compactVisualFact(text.description, IMAGE_ANALYSIS_LIMITS.fact) },

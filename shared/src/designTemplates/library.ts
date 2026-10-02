@@ -35,7 +35,7 @@ export function listDesignTemplates(library: TemplateLibrary): DesignTemplate[] 
 export const creativesOf = (library: TemplateLibrary, templateId: string) => library.creatives.filter(creative => creative.templateId === templateId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
 /** What makes a version: the structure. The name, the version number and the dates are not part of it. */
-const structure = (template: DesignTemplate) => JSON.stringify({ offerTemplate: template.offerTemplate, themeId: template.themeId, supportedAspectRatios: template.supportedAspectRatios, canvas: template.canvas, elements: orderElements(template.elements) });
+const structure = (template: DesignTemplate) => JSON.stringify({ referenceSetId: template.referenceSetId, offerTemplate: template.offerTemplate, themeId: template.themeId, supportedAspectRatios: template.supportedAspectRatios, canvas: template.canvas, elements: orderElements(template.elements) });
 const cleanName = (name: string) => {
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > TEMPLATE_LIMITS.maxName) throw new TemplateError('INVALID_NAME', `A name must be 1 to ${TEMPLATE_LIMITS.maxName} characters.`);

@@ -50,6 +50,8 @@ export interface DesignTemplate {
   schemaVersion: typeof TEMPLATE_SCHEMA_VERSION; id: string; name: string; version: number;
   supportedAspectRatios: DesignAspectRatio[]; canvas: { masterAspectRatio: DesignAspectRatio };
   themeId?: string; offerTemplate?: OfferTemplateMetadata;
+  /** A server-stored ratio set, associated explicitly; its raster images never replace native elements. */
+  referenceSetId?: string;
   elements: TemplateElement[]; createdAt: string; updatedAt: string;
 }
 
@@ -169,6 +171,7 @@ export function templateIssues(value: unknown): TemplateIssue[] {
   const issues: TemplateIssue[] = [];
   const error = (path: string, message: string) => { issues.push({ severity: 'error', path, message }); };
   if (!isRecord(value)) return [{ severity: 'error', path: 'template', message: 'A template must be an object.' }];
+  if (value.referenceSetId !== undefined && (typeof value.referenceSetId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(value.referenceSetId))) error('referenceSetId', 'Invalid reference set identifier.');
   if (value.themeId !== undefined && (typeof value.themeId !== 'string' || value.themeId.length > 100)) error('themeId', 'themeId must be short text.');
   if (value.offerTemplate !== undefined) {
     try { const m = value.offerTemplate as OfferTemplateMetadata; if (!m || m.version !== 1 || !['curated','ai'].includes(m.source) || m.festival !== 'diwali' || !isId(m.definitionId)) throw new Error(); parseThemeSpec(m.spec); }

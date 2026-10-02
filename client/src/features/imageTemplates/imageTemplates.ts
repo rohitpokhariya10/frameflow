@@ -1,4 +1,4 @@
-import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ImageVisualAnalysis, type DesignVariant, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
+import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ReferenceCreativeDraft, type ImageVisualAnalysis, type DesignVariant, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { experimentToVariant, type ExperimentRun } from '../decomposition/layerizeExperiment';
 import type { GenerationVariant } from '../decomposition/templateGeneration';
@@ -14,16 +14,19 @@ export type DecompositionState = { runId: string; templateKey: string; createdAt
 export type ImageTemplateVariant = GenerationVariant & { sourceReference?: { file: string; sha256: string; instruction: string }; decompositions: (GenerationVariant['decompositions'][number] & { templateKey?: string })[]; editor?: { runId: string; openedAt: string }; decomposition?: DecompositionState };
 export type ImageTemplate = {
   id: string; kind: 'image-template'; version: string; createdAt: string; updatedAt: string; name: string;
-  reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number };
+  workflow?: 'offer-reference'; referenceCreative?: ReferenceCreativeDraft; originTemplate?: { id: string; name: string };
+  productReference?: ImageTemplate['reference'];
+  generationSnapshot?: { id: string; referenceSha256: string; blueprintVersion: 1; settings: ReferenceCreativeDraft; analysis: ImageVisualAnalysis; productSha256?: string; model: string; instruction: string; aspectRatios: ImageTemplateRatio[] };
+  reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number; sha256?: string; hasAlpha?: boolean; warnings?: string[] };
   analysis?: ImageVisualAnalysis; promptGeneration?: PromptGeneration; generatedPrompt?: string; prompt: string; promptEdited: boolean;
   detected?: { templateKey: GenerationTemplateKey; reason: string }; decomposeWith?: GenerationTemplateKey; decomposeWithChosen?: boolean;
   aspectRatios: ImageTemplateRatio[]; generatedAt?: string; ratioStrategy?: 'reference' | 'uploaded-reference'; variants: ImageTemplateVariant[];
 };
 export type ImageTemplateInfo = {
   ratios: { ratio: ImageTemplateRatio; name: string; width: number; height: number }[]; limits: { name: number; prompt: number };
-  imageModel: string; promptModel: string; ratioReference: boolean; layerStyles: { key: GenerationTemplateKey; name: string; summary: string }[];
+  productReferenceSupported?: boolean; imageModel: string; promptModel: string; ratioReference: boolean; layerStyles: { key: GenerationTemplateKey; name: string; summary: string }[];
 };
-export type TemplateChange = Partial<{ name: string; prompt: string; aspectRatios: ImageTemplateRatio[]; decomposeWith: GenerationTemplateKey }>;
+export type TemplateChange = Partial<{ name: string; prompt: string; aspectRatios: ImageTemplateRatio[]; decomposeWith: GenerationTemplateKey; referenceCreative: ReferenceCreativeDraft; originTemplate: { id: string; name: string } }>;
 
 const BASE = '/api/layerize-experiment/image-templates';
 const at = (id: string, path = '') => `${BASE}/${encodeURIComponent(id)}${path}`;
@@ -39,19 +42,24 @@ export const imageTemplateApi = {
   info: () => call<ImageTemplateInfo>(`${BASE}/info`),
   list: () => call<{ templates: ImageTemplate[] }>(BASE),
   get: (id: string) => call<ImageTemplate>(at(id)),
-  /** A new draft from the reference; its prompt is asked for at once (one OpenAI request). */
-  create: (image: File, name: string, aspectRatios?: ImageTemplateRatio[]) => {
+  /** A new reference draft. Standalone analyzes immediately; the integrated deferred path waits for Analyze. */
+  create: (image: File, name: string, aspectRatios?: ImageTemplateRatio[], deferred = false) => {
     const form = new FormData();
     if (name.trim()) form.append('name', name);
     if (aspectRatios) form.append('aspectRatios', JSON.stringify(aspectRatios));
     form.append('image', image);
-    return call<ImageTemplate>(BASE, { method: 'POST', body: form });
+    return call<ImageTemplate>(deferred ? `${BASE}/draft` : BASE, { method: 'POST', body: form });
   },
+  product: (id: string, image: File) => {
+    const form = new FormData(); form.append('image', image);
+    return call<ImageTemplate>(at(id, '/product-reference'), { method: 'POST', body: form });
+  },
+  removeProduct: (id: string) => call<ImageTemplate>(at(id, '/product-reference'), { method: 'DELETE' }),
   /** The prompt written again from the image (one OpenAI request); it replaces the working prompt. */
   regeneratePrompt: (id: string) => call<ImageTemplate>(at(id, '/prompt'), { method: 'POST' }),
   change: (id: string, change: TemplateChange) => call<ImageTemplate>(at(id), json('PATCH', change)),
   /** Generates each chosen ratio: one paid OpenAI image request each. */
-  generate: (id: string, request: { name: string; prompt: string; aspectRatios: ImageTemplateRatio[] }) => call<ImageTemplate>(at(id, '/generate'), json('POST', request)),
+  generate: (id: string, request: { name: string; prompt: string; aspectRatios: ImageTemplateRatio[]; referenceCreative?: ReferenceCreativeDraft }) => call<ImageTemplate>(at(id, '/generate'), json('POST', request)),
   /** One ratio adapted from the original upload: a retry or a size added later. One paid request. */
   generateRatio: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'generate'), { method: 'POST' }),
   /** One OpenAI planner request and one paid Seedream call; waits its turn behind any other decomposition. */
@@ -61,6 +69,7 @@ export const imageTemplateApi = {
   opened: (id: string, variantId: string, runId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'opened'), json('POST', { runId })),
 };
 export const referenceUrl = (template: Pick<ImageTemplate, 'id' | 'updatedAt'>) => at(template.id, '/reference');
+export const productReferenceUrl = (template: ImageTemplate) => `${at(template.id, '/product-reference')}?v=${template.productReference?.sha256?.slice(0, 12) ?? ''}`;
 export const resultImageUrl = (template: Pick<ImageTemplate, 'id'>, variant: Pick<ImageTemplateVariant, 'id' | 'image'>) => `${ratioAt(template.id, variant.id, 'image')}?v=${variant.image?.sha256?.slice(0, 12) ?? ''}`;
 
 /** The ratios, each once, in the fixed order, with one turned on or off. */

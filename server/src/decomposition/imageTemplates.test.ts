@@ -1,3 +1,5 @@
+import { referenceCreativeFixture } from './referenceCreative.fixture.js';
+import { airPodsAnalysisFixture, airPodsAnalysisResponseFixture } from './airPodsAnalysis.fixture.js';
 import { verboseImageAnalysis } from './imageTemplateAnalysis.fixture.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -8,7 +10,7 @@ import { request as httpRequest } from 'node:http';
 import express from 'express';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_REQUEST_LIMIT, buildImageTemplatePrompt, normalizeImageAnalysis, IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, templateBGenerationProfile } from '@frameflow/shared';
+import { editReferenceChoices, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_REQUEST_LIMIT, buildImageTemplatePrompt, normalizeImageAnalysis, IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, templateBGenerationProfile } from '@frameflow/shared';
 import type { FalTransport } from './providers/falClient.js';
 import { generateVariant, type GenerationConfig, type GenerationGroup } from './generationGroups.js';
 import { MAX_UPLOAD_BYTES, readRun, type RunnerDeps } from './layerizeExperiment.js';
@@ -38,14 +40,15 @@ const png = (width: number, height: number, color = '#2f6b2f') => sharp({ create
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
 const PROMPT = 'A premium product advertisement in a soft 3D render style: a lavender smartphone stands upright in the centre on a white round platform, with pale spheres floating around it, on a pastel lilac studio background with soft daylight.';
 
-type ImageRequest = { model: string; prompt: string; size: string; n: number; output_format: string; image?: File };
+type ImageRequest = { model: string; prompt: string; size: string; n: number; output_format: string; image?: File | File[] };
 /** A fake OpenAI images client: one PNG of the requested size per request, recording each request and its method. */
 function imageFake() {
   const sent: Buffer[] = [], inputs: (string | undefined)[] = [], requests: (ImageRequest & { method: string })[] = [];
   let fail: ((request: ImageRequest) => boolean) | undefined, gate = Promise.resolve();
   const send = vi.fn(async (request: ImageRequest, method: 'generate' | 'edit') => {
     requests.push({ ...request, method });
-    inputs.push(request.image ? sha(Buffer.from(await request.image.arrayBuffer())) : undefined);
+    const primary = Array.isArray(request.image) ? request.image[0] : request.image;
+    inputs.push(primary ? sha(Buffer.from(await primary.arrayBuffer())) : undefined);
     await gate;
     if (fail?.(request)) throw Object.assign(new Error('The server had an error.'), { status: 500, code: 'server_error', requestID: 'req_img_err', error: { message: 'The server had an error.' } });
     const [width, height] = request.size.split('x').map(Number), bytes = await png(width, height, ['#2f6b2f', '#6b2f2f', '#2f2f6b'][sent.length % 3]);
@@ -98,11 +101,11 @@ async function server(options: { images?: ReturnType<typeof imageFake>; writer?:
     return { status: r.status, body: await r.json() };
   };
   const get = (path: string) => send('GET', path), post = (path: string, body: unknown = {}) => send('POST', path, body), patch = (path: string, body: unknown) => send('PATCH', path, body);
-  const upload = async (image: Buffer | undefined, fields: Record<string, string> = {}, fileName = 'reference.png', mimeType = 'image/png') => {
+  const upload = async (image: Buffer | undefined, fields: Record<string, string> = {}, fileName = 'reference.png', mimeType = 'image/png', path = '/image-templates') => {
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) form.append(key, value);
     if (image) form.append('image', new Blob([new Uint8Array(image)], { type: mimeType }), fileName);
-    const r = await fetch(url('/image-templates'), { method: 'POST', body: form });
+    const r = await fetch(url(path), { method: 'POST', body: form });
     return { status: r.status, body: await r.json() };
   };
   const wait = async <T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> => {
@@ -151,7 +154,7 @@ describe('Create Template from Image', () => {
       for (const request of s.images.requests) {
         expect(request.prompt.startsWith(edited)).toBe(true);
         expect(request.prompt.length).toBeLessThanOrEqual(IMAGE_TEMPLATE_REQUEST_LIMIT);
-        expect(sha(Buffer.from(await request.image!.arrayBuffer()))).toBe(t.reference.sha256);
+        expect(sha(Buffer.from(await (request.image as File).arrayBuffer()))).toBe(t.reference.sha256);
       }
       expect(create).toHaveBeenCalledTimes(2);
     } finally { s.app.close(); }
@@ -713,5 +716,144 @@ describe('the prompt request to OpenAI', () => {
     await expect(createOpenAIImagePromptWriter({ model: 'm' }).describe(Buffer.from('x'), 'image/jpeg')).rejects.toMatchObject({ code: 'PROMPT_NOT_CONFIGURED' });
     // A suggested name that does not fit is left out; the rest is used.
     expect(await createOpenAIImagePromptWriter({ model: 'm', client: answer({ ...valid, suggested_name: 'x'.repeat(81) }) as never }).describe(Buffer.from('x'), 'image/jpeg')).not.toHaveProperty('suggestedName');
+  });
+});
+
+
+describe('integrated reference campaigns using the existing routes', () => {
+  it.each([true, false])('replays the saved AirPods response through explicit analysis (SDK output_text: %s)', async includeOutputText => {
+    const response = includeOutputText ? airPodsAnalysisResponseFixture : { status: airPodsAnalysisResponseFixture.status, output: airPodsAnalysisResponseFixture.output };
+    const fake = writerFake(), create = vi.fn(async () => structuredClone(response));
+    fake.writer = createOpenAIImagePromptWriter({ model: 'fake', client: { responses: { create } } as never });
+    const s = await server({ writer: fake });
+    try {
+      const bytes = await png(600, 600), { body: uploaded } = await s.upload(bytes, {}, 'airpods.png', 'image/png', '/image-templates/draft');
+      expect(create).not.toHaveBeenCalled();
+      expect((await s.post(`/image-templates/${uploaded.id}/prompt`)).status).toBe(202);
+      const result = await s.wait(() => s.template(uploaded.id), value => value.promptGeneration?.status !== 'generating');
+      expect(result.promptGeneration).toMatchObject({ status: 'done', attempts: 1 });
+      expect(result.analysis?.composition.visualHierarchy).toBe(airPodsAnalysisFixture.analysis.composition.visualHierarchy);
+      expect(result.analysis?.visibleText.description).toBe(airPodsAnalysisFixture.analysis.visibleText.description);
+      expect(result.referenceCreative?.prompt).toContain('hero headphone (dominant) > headline text');
+      expect(result.detected?.templateKey).toBe('template-b');
+      expect(result.reference).toEqual(uploaded.reference);
+      expect(readFileSync(join(s.dir, uploaded.id, result.reference.file))).toEqual(bytes);
+      expect((await s.template(uploaded.id)).promptGeneration?.status).toBe('done');
+      expect(create).toHaveBeenCalledTimes(1); expect(s.images.send).not.toHaveBeenCalled(); expect(s.submitted).toEqual([]);
+    } finally { s.app.close(); }
+  });
+  function offerWriter() {
+    const fake = writerFake();
+    const create = vi.fn(async () => ({ status: 'completed', output: [], output_text: JSON.stringify(referenceCreativeFixture) }));
+    fake.writer = createOpenAIImagePromptWriter({ model: 'fake', client: { responses: { create } } as never });
+    return { fake, create };
+  }
+  it('upload makes zero calls; explicit analysis once; fields and persistence zero calls; three frozen original-reference edits, duplicate blocked', async () => {
+    const { fake, create } = offerWriter(), s = await server({ writer: fake });
+    try {
+      const bytes = await png(600, 600), upload = await s.upload(bytes, {}, 'ad.png', 'image/png', '/image-templates/draft'), id = upload.body.id;
+      expect(upload.status).toBe(201); expect(create).toHaveBeenCalledTimes(0); expect(s.images.send).toHaveBeenCalledTimes(0);
+      await s.post(`/image-templates/${id}/prompt`);
+      const t = await s.wait(() => s.template(id), value => value.promptGeneration?.status === 'done');
+      expect(create).toHaveBeenCalledTimes(1); expect(t.analysis?.design?.zones.cta).toBe('lower bar');
+      const settings = editReferenceChoices(t.referenceCreative!, t.analysis!, { changes: { product: 'Samsung Galaxy phone', festival: 'Diwali', decorations: 'diyas and gold bokeh' } });
+      await s.patch(`/image-templates/${id}`, { name: 'Phone campaign', referenceCreative: settings, originTemplate: { id: 'tpl-123', name: 'Merchant template' } });
+      expect((await s.template(id)).referenceCreative).toEqual(settings); expect(create).toHaveBeenCalledTimes(1);
+      const release = s.images.hold();
+      const accepted = await s.post(`/image-templates/${id}/generate`, { referenceCreative: settings, aspectRatios: ['1:1','4:5','16:9'] });
+      expect(accepted.status).toBe(202);
+      expect((await s.post(`/image-templates/${id}/generate`)).status).toBe(400);
+      expect((await s.patch(`/image-templates/${id}`, { referenceCreative: { ...settings, prompt: 'changed later' } })).status).toBe(400);
+      release(); const done = await s.settled(id);
+      expect(done.variants.map(v => v.status)).toEqual(['done','done','done']); expect(s.images.send).toHaveBeenCalledTimes(3);
+      expect(s.images.inputs).toEqual([sha(bytes),sha(bytes),sha(bytes)]);
+      expect(s.images.requests.every(r => r.method === 'edit' && r.prompt.includes(settings.prompt))).toBe(true);
+      expect(done.generationSnapshot).toMatchObject({ id, referenceSha256: sha(bytes), blueprintVersion: 1, settings, analysis: t.analysis });
+      expect(done.variants.every(v => !v.reference)).toBe(true); expect(s.submitted).toHaveLength(0); expect(create).toHaveBeenCalledTimes(1);
+    } finally { s.app.close(); }
+  });
+  it('every ratio including one failed ratio retry uses both original source and the same product; successful images survive', async () => {
+    const config = { model: 'gpt-image-2' };
+    const { fake } = offerWriter(), s = await server({ writer: fake, config });
+    try {
+      const source = await png(600,600), product = await png(200,400,'#cc6600');
+      const created = await s.upload(source, {}, 'ref.png', 'image/png', '/image-templates/draft'), id = created.body.id;
+      await s.post(`/image-templates/${id}/prompt`);
+      const t = await s.wait(() => s.template(id), v => v.promptGeneration?.status === 'done');
+      const uploaded = await s.upload(product, {}, 'phone.png', 'image/png', `/image-templates/${id}/product-reference`);
+      expect(uploaded.status).toBe(200); expect(uploaded.body.productReference.sha256).toBe(sha(product));
+      s.images.failWhen(r => r.size === '1216x1520');
+      const settings = { ...t.referenceCreative!, mode: 'custom', prompt: 'Replace the headphones with the silver Samsung product from the second image. Keep the rounded panels and lighting.'.padEnd(IMAGE_TEMPLATE_LIMITS.prompt, 'x') };
+      expect((await s.post(`/image-templates/${id}/generate`, { name: 'Product reference', referenceCreative: settings })).status).toBe(202);
+      const first = await s.settled(id);
+      expect(first.variants.map(v => v.status)).toEqual(['done','failed','done']);
+      config.model = 'a-different-model-after-generation';
+      s.images.failWhen(undefined); await s.post(`/image-templates/${id}/variants/4x5/generate`);
+      const done = await s.settled(id); expect(s.images.send).toHaveBeenCalledTimes(4);
+      expect(done.variants[0].image).toEqual(first.variants[0].image); expect(done.variants[2].image).toEqual(first.variants[2].image);
+      for (const request of s.images.requests) {
+        expect(request.image).toHaveLength(2); const refs = request.image as File[];
+        expect(await Promise.all(refs.map(async f => sha(Buffer.from(await f.arrayBuffer()))))).toEqual([sha(source),sha(product)]);
+        expect(request.prompt).toContain(settings.prompt); expect(request.prompt).toContain('Image 2 is the replacement product');
+        expect(request.prompt.length).toBeLessThanOrEqual(IMAGE_TEMPLATE_REQUEST_LIMIT);
+        expect(request.model).toBe('gpt-image-2');
+      }
+      expect((await s.upload(product, {}, 'phone.png', 'image/png', `/image-templates/${id}/product-reference`)).status).toBe(400);
+      expect(done.generationSnapshot?.productSha256).toBe(sha(product));
+      expect(done.generationSnapshot?.aspectRatios).toEqual(['1:1', '4:5', '16:9']);
+      expect(s.images.requests[3].prompt).toBe(s.images.requests[1].prompt);
+    } finally { s.app.close(); }
+  });
+  it('a new source has no previous blueprint/results; stale queued generation writes only its own group', async () => {
+    const { fake } = offerWriter(), s = await server({ writer: fake });
+    try {
+      const a = (await s.upload(await png(600,600), {}, 'a.png', 'image/png', '/image-templates/draft')).body.id;
+      await s.post(`/image-templates/${a}/prompt`); await s.wait(() => s.template(a), t => t.promptGeneration?.status === 'done');
+      const release = s.images.hold(); await s.post(`/image-templates/${a}/generate`, { name: 'Campaign A' });
+      const b = (await s.upload(await png(600,600,'#acacac'), {}, 'b.png', 'image/png', '/image-templates/draft')).body.id;
+      release(); await s.settled(a);
+      const current = await s.template(b); expect(current.analysis).toBeUndefined(); expect(current.variants).toEqual([]); expect(current.referenceCreative).toBeUndefined();
+    } finally { s.app.close(); }
+  });
+  it('failed analysis retains upload; only an explicit retry makes the next request', async () => {
+    const fake = writerFake(); fake.failWith(new Error('fixture failure')); const s = await server({ writer: fake });
+    try {
+      const { id } = (await s.upload(await png(600,600), {}, 'a.png', 'image/png', '/image-templates/draft')).body;
+      await s.post(`/image-templates/${id}/prompt`); const failed = await s.wait(() => s.template(id), t => t.promptGeneration?.status === 'failed');
+      expect(failed.reference.file).toBe('reference.png'); expect(fake.seen).toHaveLength(1); expect(s.images.send).toHaveBeenCalledTimes(0);
+      fake.failWith(undefined); await s.post(`/image-templates/${id}/prompt`); await s.wait(() => s.template(id), t => t.promptGeneration?.status === 'done');
+      expect(fake.seen).toHaveLength(2);
+    } finally { s.app.close(); }
+  });
+  it('rejects invalid guided snapshots and unsupported multi-reference models before image calls', async () => {
+    const { fake } = offerWriter(), s = await server({ writer: fake, config: { model: 'dall-e-2' } });
+    try {
+      const { id } = (await s.upload(await png(600,600), {}, 'a.png', 'image/png', '/image-templates/draft')).body;
+      expect((await s.get('/image-templates/info')).body.productReferenceSupported).toBe(false);
+      expect((await s.upload(await png(200,300), {}, 'p.png', 'image/png', `/image-templates/${id}/product-reference`)).status).toBe(400);
+      await s.post(`/image-templates/${id}/prompt`); const t = await s.wait(() => s.template(id), v => v.promptGeneration?.status === 'done');
+      expect((await s.post(`/image-templates/${id}/generate`, { name: 'Invalid', aspectRatios: ['1:1'] })).status).toBe(400);
+      expect((await s.post(`/image-templates/${id}/generate`, { name: 'Invalid', referenceCreative: { ...t.referenceCreative, prompt: 'unrelated long enough description for generation' } })).status).toBe(400);
+      expect(s.images.send).toHaveBeenCalledTimes(0);
+    } finally { s.app.close(); }
+  });
+  it('keeps alpha/orientation, warns on tiny input, and rejects extension mismatch without analysis', async () => {
+    const s = await server();
+    try {
+      const alpha = await sharp({ create: { width: 32, height: 40, channels: 4, background: '#00000000' } }).png().toBuffer();
+      const uploaded = await s.upload(alpha, {}, 'alpha.png', 'image/png', '/image-templates/draft');
+      expect(uploaded.body.reference.hasAlpha).toBe(true); expect(uploaded.body.reference.warnings).toHaveLength(1);
+      expect(readFileSync(join(s.dir, uploaded.body.id, uploaded.body.reference.file))).toEqual(alpha);
+      expect((await s.upload(alpha, {}, 'wrong.jpg', 'image/png', '/image-templates/draft')).status).toBe(400); expect(s.writer.seen).toHaveLength(0);
+      const path = `/image-templates/${uploaded.body.id}/product-reference`;
+      const product = await s.upload(alpha, {}, 'product.png', 'image/png', path);
+      expect(product.body.productReference.hasAlpha).toBe(true);
+      const turned = await sharp({ create: { width: 40, height: 80, channels: 3, background: '#c6aabb' } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+      const oriented = await s.upload(turned, {}, 'turned.jpg', 'image/jpeg', path);
+      expect(oriented.body.productReference).toMatchObject({ width: 80, height: 40, sha256: sha(turned) });
+      expect((await s.upload(turned, {}, 'mismatch.png', 'image/png', path)).status).toBe(400);
+      expect((await s.upload(Buffer.from('corrupt'), {}, 'broken.png', 'image/png', path)).status).toBe(400);
+      expect(s.writer.seen).toHaveLength(0); expect(s.images.send).toHaveBeenCalledTimes(0);
+    } finally { s.app.close(); }
   });
 });

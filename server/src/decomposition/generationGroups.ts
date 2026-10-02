@@ -50,6 +50,8 @@ type ImagesClient = Pick<OpenAI, 'images'>;
  * referenceRatios: false makes new creatives generate every ratio independently even for a template that would keep
  * them together by image (TEMPLATE_RATIO_REFERENCE=off). It changes nothing for templates that never do.
  */
+/** Models whose installed SDK contract explicitly permits multiple edit inputs. */
+export const supportsProductReference = (model: string) => /^(?:gpt-image-(?:1(?:-mini|\.5)?|2)(?:-\d{4}-\d{2}-\d{2})?|gpt-image-2\.5-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?|chatgpt-image-latest)$/.test(model);
 export type GenerationConfig = { model: string; client: () => ImagesClient; referenceRatios?: boolean };
 
 /** pending: not generated yet. queued / generating: on its way. done: has its image. failed: has its error. */
@@ -74,6 +76,7 @@ export type GenerationVariant = {
    */
   reference?: { variantId: string; aspectRatio: string; file: string; sha256?: string; instruction: string };
   /** Original uploaded artwork, when supplied by the caller. Every ratio uses this file, never a generated sibling. */
+  productReference?: { file: string; sha256: string };
   sourceReference?: { file: string; sha256: string; instruction: string };
   /** The provider's own status and messages when it failed, and the file with its complete error response. */
   error?: { code: string; message: string; status?: number; messages?: { msg: string; type?: string }[]; bodyFile?: string };
@@ -274,7 +277,7 @@ function referenceVariant(group: GenerationGroup, variantId: string): Generation
  * request, and what was sent is recorded on the variant. An explicit sourceReference takes precedence over sibling
  * selection and independent generation: every attempt edits that original file, with no text-only fallback.
  */
-export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig, options: { referenceInstruction?: string; independent?: boolean; sourceReference?: GenerationVariant['sourceReference'] } = {}): Promise<GenerationGroup> {
+export async function generateVariant(root: string, groupId: string, variantId: string, config: GenerationConfig, options: { referenceInstruction?: string; independent?: boolean; sourceReference?: GenerationVariant['sourceReference']; productReference?: GenerationVariant['productReference'] } = {}): Promise<GenerationGroup> {
   const dir = groupDir(root, groupId), files = { request: `${variantId}.openai-request.json`, response: `${variantId}.openai-response.json`, error: `${variantId}.provider-error.json` };
   const started = Date.now();
   const sending = findVariant(update(root, groupId, (group) => {
@@ -283,13 +286,14 @@ export async function generateVariant(root: string, groupId: string, variantId: 
     const source = !options.sourceReference && group.ratioStrategy === 'reference' && options.referenceInstruction && !options.independent ? referenceVariant(group, variantId) : undefined;
     Object.assign(variant, { status: 'generating', attempts: variant.attempts + 1, startedAt: new Date(started).toISOString(), generator: { provider: 'openai', model: config.model }, requestFile: files.request });
     // What an earlier attempt left behind does not describe this one.
-    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs; delete variant.reference; delete variant.sourceReference;
+    delete variant.error; delete variant.responseFile; delete variant.finishedAt; delete variant.durationMs; delete variant.reference; delete variant.sourceReference; delete variant.productReference;
+    if (options.productReference) variant.productReference = options.productReference;
     if (options.sourceReference) variant.sourceReference = options.sourceReference;
     else if (source) variant.reference = { variantId: source.id, aspectRatio: source.aspectRatio, file: source.image!.file, ...(source.image!.sha256 ? { sha256: source.image!.sha256 } : {}), instruction: options.referenceInstruction! };
   }), variantId);
   const from = sending.sourceReference ?? sending.reference;
   const request = { model: config.model, prompt: from ? `${sending.prompt} ${from.instruction}` : sending.prompt, size: `${sending.size.width}x${sending.size.height}`, n: 1, output_format: 'png' as const };
-  write(dir, files.request, from ? { method: 'images.edit', ...request, image: `<${sending.sourceReference ? 'original uploaded reference' : `the ${sending.reference!.aspectRatio} variant's image`}: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
+  write(dir, files.request, from ? { method: 'images.edit', ...request, ...(sending.productReference ? { productReference: sending.productReference } : {}), image: `<${sending.sourceReference ? 'original uploaded reference' : `the ${sending.reference!.aspectRatio} variant's image`}: ${from.file}${from.sha256 ? `, sha256 ${from.sha256}` : ''}>` } : request);
   let outcome: Partial<GenerationVariant>, requestId: string | undefined, responseSaved = false;
   try {
     if (sending.sourceReference) validateImageTemplateRequestPrompt(request.prompt);
@@ -298,8 +302,17 @@ export async function generateVariant(root: string, groupId: string, variantId: 
     if (sending.sourceReference && createHash('sha256').update(input!).digest('hex') !== sending.sourceReference.sha256) {
       throw new RunError('REFERENCE_CHANGED', 'The original reference file has changed. Create a new template from the intended image.');
     }
+    const fileType = (file: string) => file.endsWith('.png') ? 'image/png' : file.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+    const primary = from ? await toFile(input!, from.file, { type: fileType(from.file) }) : undefined;
+    let replacement: Awaited<ReturnType<typeof toFile>> | undefined;
+    if (sending.productReference) {
+      if (!sending.sourceReference || !supportsProductReference(config.model)) throw new RunError('INVALID_REQUEST', 'The configured model does not support two reference images.');
+      const product = readFileSync(join(dir, sending.productReference.file));
+      if (createHash('sha256').update(product).digest('hex') !== sending.productReference.sha256) throw new RunError('REFERENCE_CHANGED', 'The replacement product file has changed.');
+      replacement = await toFile(product, sending.productReference.file, { type: fileType(sending.productReference.file) });
+    }
     const response = from
-      ? await config.client().images.edit({ ...request, image: await toFile(input!, from.file, { type: from.file.endsWith('.png') ? 'image/png' : from.file.endsWith('.webp') ? 'image/webp' : 'image/jpeg' }) })
+      ? await config.client().images.edit({ ...request, image: replacement ? [primary!, replacement] : primary! })
       : await config.client().images.generate(request);
     requestId = (response as { _request_id?: string | null })._request_id ?? undefined;
     // The response as returned, with the image bytes left to the image file.
