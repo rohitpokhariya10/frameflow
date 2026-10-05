@@ -142,6 +142,12 @@ it('summarizes a refined run for debugging: passes, final layers, cleanup, backg
   expect(refinementSummary({ ...run, refinement: { ...run.refinement, passesExecuted: 1, passes: [], background: { ...run.refinement.background, status: 'provider-clean' } } }).slice(2, 4).map(line => line.value))
     .toEqual(['Not needed (clean)', 'Clean (Seedream base, no reconstruction needed)']);
   expect(refinementSummary({})).toEqual([]);
+  expect(refinementSummary({ ...run, interactions: { layersBefore: 9, layersAfter: 5, groups: 2, decisions: [] } })[4]).toEqual({ label: 'Protected groups', value: '2 (9 → 5 layers)' });
+  const fallback = { ...run.refinement, background: { ...run.refinement.background, status: 'fallback' as const, method: 'graphic-fill', quality: 'usable' as const, validation: { quality: 'usable' as const, reasons: [], metrics: {} },
+    difficulty: { level: 'hard-large-occlusion', coveragePercent: 45.2, largestComponentPercent: 32.3, simpleGraphic: true } } };
+  expect(refinementSummary({ ...run, refinement: fallback }).slice(3, 5)).toEqual([{ label: 'Background', value: 'Fallback: continued from the surrounding background (not AI reconstructed)' },
+    { label: 'Background quality', value: 'usable · hard-large-occlusion · mask 45.2%, largest region 32.3%' }]);
+  expect(refinementSummary({ ...run, refinement: { ...run.refinement, background: { ...run.refinement.background, status: 'scene-clean' as const } } })[3]).toEqual({ label: 'Background', value: 'Clean (Seedream scene layers, no reconstruction needed)' });
 });
 
 it('asks for the recursive refinement only when chosen', async () => {

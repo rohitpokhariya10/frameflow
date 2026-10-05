@@ -25,6 +25,8 @@ export type LayerInfo = {
     source?: 'original' | 'base'; enclosedPercent?: number };
   /** Runs with the recursive refinement (recursiveDecomposition.ts) only: which pass made this layer, and from what. */
   provenance?: LayerProvenance;
+  /** A group made to protect a person or an interaction (interactionGrouping.ts): which layers it holds and why. */
+  grouping?: LayerGrouping;
   /** The base layer of a refined run: how its clean background was made and whether it is verified clean. */
   cleanBackground?: { status: CleanBackgroundStatus; method: CleanBackgroundMethod };
 };
@@ -36,8 +38,16 @@ export type LayerInfo = {
  */
 export type LayerProvenance = { sourcePass: number; sourceImage: string; parentResidualId?: string; providerFile: string; providerRequestId?: string; providerZIndex: number;
   role: string; bbox?: [number, number, number, number]; mask: string; areaPercent?: number; confidence?: number; groupedFrom?: string[] };
-export type CleanBackgroundStatus = 'provider-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
-export type CleanBackgroundMethod = 'provider-base' | 'ai-reconstruction' | 'local-fill';
+/** Why a layer is part of a group: the parent, an object held with an interleaved grip, a worn ornament, a finger fragment,
+ * a body part cut from its person, content on a held object, a tiny attached piece, or a small decoration. */
+export type GroupMemberRole = 'parent' | 'held_object' | 'worn_ornament' | 'finger_fragment' | 'body_part' | 'object_content' | 'attached_fragment' | 'decoration';
+/** groupedWithParent: members stay with `parent`; protectedInteraction: a hand and what it holds kept intact. */
+export type LayerGrouping = { groupedWithParent: boolean; parent: string; protectedInteraction?: 'hand_holding_object'; attachmentReason: string;
+  members: { file: string; name?: string; role: GroupMemberRole; reason: string }[] };
+/** provider-clean: Seedream's base was clean; scene-clean: Seedream's own scene layers over its base were; ai-reconstructed:
+ * one image edit, validated; contaminated: foreground remains; fallback: the edit was unusable or unavailable. */
+export type CleanBackgroundStatus = 'provider-clean' | 'scene-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+export type CleanBackgroundMethod = 'provider-base' | 'scene-composite' | 'ai-reconstruction' | 'graphic-fill' | 'local-fill';
 export type Canvas = { width: number; height: number };
 const SIZE_TOLERANCE = 2;
 

@@ -157,8 +157,17 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     expect([image.width, image.height, alpha.info.width, alpha.info.height]).toEqual([1024, 1024, 1024, 1024]);
     expect(alpha.data[Math.round(650 * 1.024) * 1024 + Math.round(635 * 1.024)]).toBe(0);
     expect(alpha.data[Math.round(250 * 1.024) * 1024 + Math.round(40 * 1.024)]).toBe(255);
-    expect(await difference(edit.image, s.original)).toBeLessThan(0.5);
-    for (const word of ['reconstruct only the underlying background', 'Do not recreate the removed products', 'do not add any new product, person, text, logo']) expect(CLEAN_BACKGROUND_PROMPT).toContain(word);
+    // The image sent is the original outside the mask, exactly; inside it the products are already replaced by the
+    // continuation of the surrounding background, so the model never sees a removed subject's shape.
+    const [sent, orig, bg] = await Promise.all([edit.image, s.original, await offerBackground()].map(image => sharp(image).removeAlpha().raw().toBuffer()));
+    let outside = 0, outsideDiff = 0;
+    for (let i = 0; i < alpha.data.length; i++) if (alpha.data[i] === 255) { outside++; for (let c = 0; c < 3; c++) outsideDiff += Math.abs(sent[i * 3 + c] - orig[i * 3 + c]); }
+    expect(outsideDiff / (outside * 3)).toBeLessThan(0.5);
+    const speaker = (Math.round(560 * 1.024) * 1024 + Math.round(600 * 1.024)) * 3;
+    expect(Math.max(...[0, 1, 2].map(c => Math.abs(sent[speaker + c] - bg[speaker + c])))).toBeLessThan(12);
+    expect(Math.max(...[0, 1, 2].map(c => Math.abs(sent[speaker + c] - orig[speaker + c])))).toBeGreaterThan(100);
+    for (const word of ['Reconstruct background only', 'do not recreate the removed people, products, text, logos or icons', 'never paint silhouettes', 'dark placeholder areas', 'Keep every pixel outside the mask exactly as it is']) expect(CLEAN_BACKGROUND_PROMPT).toContain(word);
+    expect(existsSync(join(s.dir, 'clean-background-input.png'))).toBe(true);
   }, 60_000);
 
   it('a resume or re-render reuses the saved residual pass and background edit and sends nothing new', async () => {
@@ -275,24 +284,26 @@ describe('recursive decomposition: failures keep what worked', () => {
     expect(lost.transport.submit).toHaveBeenCalledTimes(2);
   }, 60_000);
 
-  it('a failed background edit falls back to a local fill, clearly marked fallback, and is not retried', async () => {
+  it('a failed background edit falls back to the deterministic continuation, clearly marked fallback, and is not retried', async () => {
     const s = await scenario({ edit: 'fail', passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
     const run = readRun(s.dir);
     expect(s.reconstruct).toHaveBeenCalledTimes(1);
     expect(run.calls!.backgroundReconstruction).toBe(1);
-    expect(run.outputLayers![0]).toMatchObject({ file: 'clean-background.png', cleanBackground: { status: 'fallback', method: 'local-fill' } });
+    // The gradient around the products is a simple graphic background: it continues region by region.
+    expect(run.outputLayers![0]).toMatchObject({ file: 'clean-background.png', cleanBackground: { status: 'fallback', method: 'graphic-fill' } });
+    expect(run.refinement!.background).toMatchObject({ fallbackUsed: true, quality: 'usable', difficulty: { simpleGraphic: true } });
     expect(run.refinement!.reconstruction).toMatchObject({ state: 'failed', error: { code: 'BACKGROUND_RECONSTRUCTION_FAILED', message: 'OpenAI image edit returned 500' } });
-    expect(run.refinement!.background!.reasons.join(' ')).toMatch(/Fell back to a local fill because the OpenAI image edit failed/);
+    expect(run.refinement!.background!.reasons.join(' ')).toMatch(/Fell back to a graphic continuation of the surrounding background because the OpenAI image edit failed/);
     expect(run.warnings.some(w => w.startsWith('BACKGROUND_FALLBACK: '))).toBe(true);
-    // The fallback still removes the products (a blurrier fill, not a pretend-clean AI background).
-    expect(await difference(readFileSync(join(s.dir, 'clean-background.png')), await offerBackground())).toBeLessThan(6);
+    // The fallback still removes the products and continues the gradient (not a pretend-clean AI background).
+    expect(await difference(readFileSync(join(s.dir, 'clean-background.png')), await offerBackground())).toBeLessThan(3);
     // A re-render does not retry the failed edit.
     await resumeRun(s.dir, s.deps);
     expect(s.reconstruct).toHaveBeenCalledTimes(1);
     expect(readRun(s.dir).refinement!.background!.status).toBe('fallback');
     // Without any reconstructor the same fallback applies, with no call counted.
     const none = await scenario({ edit: 'none', passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
-    expect(readRun(none.dir)).toMatchObject({ calls: { backgroundReconstruction: 0 }, refinement: { background: { status: 'fallback', method: 'local-fill' } } });
+    expect(readRun(none.dir)).toMatchObject({ calls: { backgroundReconstruction: 0 }, refinement: { background: { status: 'fallback', method: 'graphic-fill' } } });
   }, 90_000);
 });
 

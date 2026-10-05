@@ -33,7 +33,11 @@ import { layerWords, posterRole, similarity } from './layerCount.js';
 import { assessBackgroundContamination, backgroundModel, compositeOnGrid, coverageOnGrid, fidelity, flattenRgba, gridFor, intersectCount, layerShape, objectRetention, overlapStats, rgbOnGrid, unionOf,
   type ContaminationAssessment, type Fidelity, type Grid, type LayerShape, type Retention } from './backgroundContamination.js';
 import { blendIntoCanvas, CLEAN_BACKGROUND_PROMPT, editInputs, featherMask, localFill, reconstructionSize, resizeMap, type BackgroundReconstructor } from './cleanBackground.js';
+import { backgroundDifficulty, backgroundQuality, graphicFill, type BackgroundDifficulty, type BackgroundQuality } from './backgroundRecovery.js';
 import { grow } from './outerBackground.js';
+import { groupInteractions, type InteractionOptions } from './interactionGrouping.js';
+import { idWords, PERSON, SCENE, TEXTISH } from './interactionTerms.js';
+import type { SemanticAnalysis } from './semanticPlanner.js';
 import type { RunRecord } from './layerizeExperiment.js';
 
 /** Residual passes after the initial decomposition: a hard cap whatever a run asks for. */
@@ -80,9 +84,16 @@ export type PassRecord = {
 export type AssessmentRecord = ContaminationAssessment & { after: number; residual: string; sent: boolean };
 export type BackgroundRecord = {
   status: CleanBackgroundStatus; method: CleanBackgroundMethod; file: string; source: 'original' | 'provider-base';
-  /** Whether the provider base had to be replaced (it still showed extracted layers, or could not be checked). */
+  /** Whether the provider base had to be replaced (it still showed extracted layers, or was not usable behind them). */
   needed: boolean; contaminated: boolean; reasons: string[];
   baseRetention: Retention[]; recreated: Retention[]; residual: Omit<ContaminationAssessment, 'regions'> & { regions: number };
+  /** The chosen background's quality behind the foreground (backgroundRecovery.ts), and how hard that area is. */
+  quality: BackgroundQuality['quality']; validation: BackgroundQuality; difficulty: BackgroundDifficulty;
+  foregroundMaskCoverage: number; largestConnectedMaskCoverage: number;
+  /** Every background considered, in order (provider base, scene composite, AI edit, fallback), and which one was used. */
+  candidates: { method: CleanBackgroundMethod; quality: BackgroundQuality['quality']; reasons: string[]; metrics: BackgroundQuality['metrics']; chosen: boolean }[];
+  /** Why an AI edit was needed; whether the deterministic fallback was used; whether an AI result was judged. */
+  reconstructionReason?: string; fallbackUsed: boolean; aiTried: boolean; outsideMaskChangedPercent?: number;
 };
 export type RefinementRecord = {
   version: 1; options: RefinementOptions; state: 'pending' | 'running' | 'done' | 'failed';
@@ -130,6 +141,8 @@ export type RefineContext = {
   allowNewCalls: boolean;
   /** Persists run.json (request IDs and call counts are saved the moment they exist). */
   save: () => void;
+  /** Protected people and interactions (interactionGrouping.ts): the planner's analysis and the run's options. */
+  interactions?: { semantic?: SemanticAnalysis; options: InteractionOptions };
 };
 
 type Item = { layer: LayerInfo; png: Buffer; shape: LayerShape; pass: number; providerZ: number; kind: 'background' | 'foreground'; role: string; sourceImage: string; requestId?: string };
@@ -144,14 +157,31 @@ export function classify(layer: LayerInfo, shape: LayerShape, grid: Grid): { kin
   const n = grid.width * grid.height, box = shape.box;
   const boxShare = box ? (box.x1 - box.x0) * (box.y1 - box.y0) / n : 0;
   const fullSolid = !!box && box.x1 - box.x0 >= 0.9 * grid.width && box.y1 - box.y0 >= 0.9 * grid.height && shape.count / n >= 0.6;
-  const framing = backgroundRole(layer.name), named = posterRole(layer);
+  const framing = backgroundRole(layer.name), named = posterRole(layer), words = idWords(layer.name ?? '');
   const sceneNamed = !!framing || named === 'background' || named === 'backdrop' || named === 'border';
+  // Large atmosphere and design shapes ("…glow background", "yellow curved decorative field") belong to the scene even
+  // when the role reader sees an effect or a decoration; a person, product or text never does.
+  const largeScene = SCENE.test(words) && (shape.count / n >= 0.15 || boxShare >= 0.5) && !PERSON.test(words) && !TEXTISH.test(words) && named !== 'product' && named !== 'text';
   // A frame-filling layer is the scene, unless it is named as a product or text (a close-up hero is still removable).
-  if ((fullSolid && named !== 'product' && named !== 'text') || (sceneNamed && boxShare >= 0.5)) return { kind: 'background', role: framing ? `${framing} background` : named === 'unknown' ? 'background' : named };
+  if ((fullSolid && named !== 'product' && named !== 'text') || (sceneNamed && boxShare >= 0.5) || largeScene) return { kind: 'background', role: framing ? `${framing} background` : named === 'unknown' ? 'background' : named };
   return { kind: 'foreground', role: sceneNamed ? 'decor' : named };
 }
 /** A layer covering (almost) the whole canvas explains nothing about where objects are. */
 const explains = (item: Item, grid: Grid) => item.shape.count > 0 && !(item.kind === 'background' && item.shape.box && item.shape.box.x1 - item.shape.box.x0 >= 0.9 * grid.width && item.shape.box.y1 - item.shape.box.y0 >= 0.9 * grid.height);
+/**
+ * Pixels of an image that Seedream's own scene layers explain: a scene layer is opaque there with the same color. A crisp
+ * brand shape (a yellow wedge on white) is not a leftover object; something left on top of it differs from the scene
+ * layer under it, so it is still found.
+ */
+function sceneMatch(items: Item[], rgb: Buffer): Uint8Array {
+  const out = new Uint8Array(rgb.length / 3);
+  for (const item of items) {
+    if (item.kind !== 'background') continue;
+    const { alpha, rgba } = item.shape;
+    for (let i = 0; i < out.length; i++) if (alpha[i] && Math.max(Math.abs(rgba[i * 4] - rgb[i * 3]), Math.abs(rgba[i * 4 + 1] - rgb[i * 3 + 1]), Math.abs(rgba[i * 4 + 2] - rgb[i * 3 + 2])) <= 30) out[i] = 1;
+  }
+  return out;
+}
 /** Stacking priority where nothing overlaps: background, decoration, supports, secondary objects, products, text on top. */
 const RANK: Record<string, number> = { decor: 1, support: 2, secondary: 3, unknown: 3, product: 4, text: 5 };
 const rankOf = (item: Item) => item.kind === 'background' ? 0 : RANK[item.role] ?? 3;
@@ -382,7 +412,8 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     const residual = coreM ? await localFill(currentBase, { map: coreM, width: M.width, height: M.height }, { map: featherMask(coreM, M.width, M.height, 1), width: M.width, height: M.height }, canvas) : currentBase;
     const residualFile = depth <= options.maxDepth ? `residual-pass-${depth}.png` : 'residual-final.png';
     writeFileSync(join(dir, residualFile), residual);
-    const assessment = assessBackgroundContamination({ rgb: await rgbOnGrid(residual, A), width: A.width, height: A.height, explained: unionOf(explaining.map(item => item.shape.alpha), nA) }, options);
+    const residualA = await rgbOnGrid(residual, A);
+    const assessment = assessBackgroundContamination({ rgb: residualA, width: A.width, height: A.height, explained: unionOf([...explaining.map(item => item.shape.alpha), sceneMatch(items, residualA)], nA) }, options);
     const entry: AssessmentRecord = { ...assessment, after: depth - 1, residual: residualFile, sent: false };
     record.assessments.push(entry);
     passTiles.push({ png: residual, title: depth <= options.maxDepth ? `Residual ${depth} (after pass ${depth - 1})` : `Residual after pass ${depth - 1}`, sub: `${assessment.verdict} · ${assessment.contaminatedPercent}% object-like` });
@@ -428,8 +459,34 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   record.passesExecuted = 1 + residualPasses;
 
   // One stacking order for every layer (pass provenance is not z-order).
-  const { order, notes } = stackOrder(items, originalA);
-  record.warnings.push(...notes);
+  const stacking = stackOrder(items, originalA), renumber = stacking.order.some(item => item.pass > 0);
+  record.warnings.push(...stacking.notes);
+  // Final z: Seedream's own when nothing was added, else the stacking position. Groups are made on that order, so a
+  // residual-pass bangle is composited onto its hand in the right depth.
+  let order = stacking.order.map((item, i): Item => ({ ...item, layer: { ...item.layer, ...(renumber ? { zIndex: i + 1 } : {}) } }));
+  // The layers as Seedream returned them: whether a base still shows a layer is judged per layer, never per group (a
+  // group of skin and bangles would hide that the base still shows the bangles).
+  const ungrouped = order;
+
+  // Protected people and interactions over every layer (residual-pass ones too, so a bangle or finger piece a residual
+  // pass found joins its person instead of becoming a layer), before the background mask.
+  const grouping = await groupInteractions({ dir, canvas, grid: A, entries: order.map(item => ({ layer: item.layer, png: item.png, shape: item.shape })),
+    ...(source.name === 'original' ? { original: originalA } : {}), semantic: ctx.interactions?.semantic, options: ctx.interactions?.options ?? { heldObjects: true } });
+  run.interactions = grouping.record;
+  if (grouping.groups.length) {
+    const byLayer = new Map(order.map(item => [item.layer, item]));
+    order = grouping.entries.map((entry): Item => {
+      const own = byLayer.get(entry.layer);
+      if (own) return own;
+      const members = grouping.groups.find(g => g.entry === entry)!.members.map(m => byLayer.get(m.layer)!);
+      const pass = Math.min(...members.map(m => m.pass)), top = members.filter(m => m.pass === pass).sort((a, b) => b.providerZ - a.providerZ)[0];
+      const { kind, role } = classify(entry.layer, entry.shape, A);
+      return { layer: entry.layer, png: entry.png, shape: entry.shape, pass, providerZ: top.providerZ, kind, role, sourceImage: top.sourceImage, ...(top.requestId ? { requestId: top.requestId } : {}) };
+    });
+    for (const g of grouping.groups) passTiles.push({ png: g.entry.png, title: `Group · ${g.entry.layer.name ?? g.entry.layer.file}`,
+      sub: `${g.entry.layer.grouping?.protectedInteraction ? 'hand holding object' : g.entry.layer.grouping?.attachmentReason} · ${g.members.length} layers` });
+    record.warnings.push(`PROTECTED_INTERACTIONS: ${grouping.groups.length} group(s) kept together (${grouping.groups.map(g => `${g.entry.layer.grouping?.protectedInteraction ? 'hand holding object' : g.entry.layer.grouping?.attachmentReason}: ${g.members.length} layers`).join('; ')}); ${grouping.record.layersBefore} → ${grouping.record.layersAfter} layers.`);
+  }
 
   // The foreground union mask: every foreground layer, grown a little (edges, halos, contact shadows), feathered.
   const foreground = order.filter(item => item.kind === 'foreground' && item.shape.count > 0);
@@ -441,19 +498,69 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   record.mask = { layers: foreground.map(item => item.layer.file), coveragePercent: round(100 * covered / (M.width * M.height), 1), dilatePx: round(dilateM / M.scale, 1), featherPx: round(featherM / M.scale, 1), file: MASK_FILE };
 
   // Does the provider base still show the extracted layers? Compared with the original where each layer is.
-  const major = foreground.filter(item => 100 * item.shape.count / nA >= 0.3).map(item => ({ file: item.layer.file, name: item.layer.name, alpha: item.shape.alpha }));
+  const major = ungrouped.filter(item => item.kind === 'foreground' && 100 * item.shape.count / nA >= 0.3).map(item => ({ file: item.layer.file, name: item.layer.name, alpha: item.shape.alpha }));
   // The original's background under the layers, estimated only when there is a layer to check against it.
   const model = major.length ? backgroundModel(originalA, A.width, A.height, grow(unionOf(foreground.map(item => item.shape.alpha), nA), A.width, A.height, 2)).model : new Float32Array(0);
+  const coreA = await resizeMap(coreM, M, A, 'nearest');
+  await new Promise<void>(done => setImmediate(done));
+  const difficulty = backgroundDifficulty(originalA, coreA, A.width, A.height);
+  // Every candidate background is judged the same way: does it still show a removed layer (per layer, never per group),
+  // and is the area behind the foreground a usable continuation of its surroundings (backgroundRecovery.ts)?
+  type Candidate = { method: CleanBackgroundMethod; png: Buffer; quality: BackgroundQuality; recreated: Retention[] };
+  const candidates: Candidate[] = [];
+  /** Lets the server answer other requests between long pixel computations (one process serves every run). */
+  const breathe = () => new Promise<void>(done => setImmediate(done));
+  const evaluate = async (method: CleanBackgroundMethod, png: Buffer, ai?: Buffer): Promise<Candidate> => {
+    await breathe();
+    const rgbA = await rgbOnGrid(png, A);
+    const recreated = source.name === 'original' ? objectRetention(rgbA, originalA, model, major).filter(r => r.retainedPercent >= options.retainedPercent) : [];
+    await breathe();
+    const quality = backgroundQuality({ rgb: rgbA, core: coreA, w: A.width, h: A.height, recreated: recreated.length, ...(ai && source.name === 'original' ? { outside: { ai: await rgbOnGrid(ai, A), source: originalA } } : {}) });
+    const candidate = { method, png, quality, recreated };
+    candidates.push(candidate);
+    return candidate;
+  };
+  const acceptable = (c: Candidate) => c.quality.quality === 'usable' && !c.recreated.length;
   const baseRetention = source.name === 'original' ? objectRetention(await rgbOnGrid(base0Png, A), originalA, model, major) : [];
-  const duplicated = baseRetention.filter(r => r.retainedPercent >= options.retainedPercent);
-  const needed = foreground.length > 0 && (source.name !== 'original' || duplicated.length > 0);
   const reasons: string[] = [];
-  let backgroundPng: Buffer = base0Png, method: CleanBackgroundMethod = 'provider-base';
-  if (!needed) reasons.push(foreground.length ? 'Seedream\'s base no longer shows any extracted layer, so it is kept as returned (no reconstruction call).' : 'There is no foreground layer to remove.');
-  else {
-    reasons.push(source.name === 'original' ? `Seedream's base still shows ${duplicated.map(r => `${r.name ?? r.file} (${r.retainedPercent}%)`).join(', ')}.` : 'The original does not match the canvas aspect, so the provider base is cleaned instead and cannot be compared.');
+  let chosen: Candidate | undefined, reconstructionReason: string | undefined, fallbackUsed = false, aiTried = false;
+  // 1. Seedream's base, when it no longer shows any extracted layer and its hidden area is usable: no call.
+  if (!foreground.length) { chosen = await evaluate('provider-base', base0Png); reasons.push('There is no foreground layer to remove.'); }
+  else if (source.name === 'original') {
+    const base = await evaluate('provider-base', base0Png);
+    if (acceptable(base)) { chosen = base; reasons.push('Seedream\'s base no longer shows any extracted layer, so it is kept as returned (no reconstruction call).'); }
+    else reasons.push(base.recreated.length ? `Seedream's base still shows ${base.recreated.map(r => `${r.name ?? r.file} (${r.retainedPercent}%)`).join(', ')}.` : `Seedream's base is not usable behind the foreground (${base.quality.reasons.join(', ')}).`);
+  } else reasons.push('The original does not match the canvas aspect, so the provider base is cleaned instead and cannot be compared.');
+  // 2. Seedream's own scene layers (white field, brand curve, gradient) over its base: they often already hold the
+  // complete background behind the person. No call.
+  const scene = order.filter(item => item.kind === 'background' && item.shape.count > 0).sort((a, b) => a.layer.zIndex - b.layer.zIndex);
+  if (!chosen && scene.length && source.name === 'original') {
+    const full = { width: canvas.width, height: canvas.height, scale: 1 };
+    const rgba = await compositeOnGrid([{ png: base0Png, placement: base0.placement }, ...scene.map(item => ({ png: item.png, placement: item.layer.placement }))], full);
+    const composite = await evaluate('scene-composite', await sharp(flattenRgba(rgba), { raw: { width: canvas.width, height: canvas.height, channels: 3 } }).ensureAlpha().png().toBuffer());
+    if (acceptable(composite)) { chosen = composite; reasons.push(`Seedream's scene layers (${scene.map(item => item.layer.name ?? item.layer.file).join(', ')}) over its base hold a clean background behind every extracted layer (no reconstruction call).`); }
+    else reasons.push(`Seedream's scene layers over its base are not clean enough (${[...composite.recreated.map(r => `still shows ${r.name ?? r.file}`), ...composite.quality.reasons].join(', ')}).`);
+  }
+  // The deterministic continuation from the ORIGINAL: the AI edit's starting image (so the model never sees the removed
+  // subject) and the fallback. Simple graphic backgrounds continue region by region; anything else by local fill.
+  let prefill: { method: CleanBackgroundMethod; png: Buffer } | undefined;
+  const prefilled = async () => {
+    if (prefill) return prefill;
+    const W = gridFor(canvas, 1024), coreW = await resizeMap(coreM, M, W, 'nearest');
+    await breathe();
+    const graphic = difficulty.simpleGraphic ? graphicFill(await rgbOnGrid(source.png, W), coreW, W.width, W.height) : undefined;
+    await breathe();
+    const sourceCanvas = await sharp(source.png).resize(canvas.width, canvas.height, { fit: 'fill' }).flatten({ background: '#ffffff' }).removeAlpha().raw().toBuffer();
+    prefill = graphic
+      ? { method: 'graphic-fill', png: await blendIntoCanvas(sourceCanvas, await sharp(graphic, { raw: { width: W.width, height: W.height, channels: 3 } }).png().toBuffer(), { map: alphaM, width: M.width, height: M.height }, canvas) }
+      : { method: 'local-fill', png: await localFill(source.png, { map: coreM, width: M.width, height: M.height }, { map: alphaM, width: M.width, height: M.height }, canvas) };
+    return prefill;
+  };
+  // 3. One AI image edit from the original, validated. Never retried.
+  if (!chosen) {
+    reconstructionReason = reasons.join(' ');
     const size = reconstructionSize(canvas), reconstructor = ctx.deps.backgroundReconstructor;
-    const key = size && reconstructor ? sha256(Buffer.from(JSON.stringify({ source: sha256(source.png), mask: sha256(coreM), size, prompt: CLEAN_BACKGROUND_PROMPT, model: reconstructor.model }))) : undefined;
+    const key = size && reconstructor ? sha256(Buffer.from(JSON.stringify({ source: sha256(source.png), mask: sha256(coreM), size, prompt: CLEAN_BACKGROUND_PROMPT, model: reconstructor.model, prefill: difficulty.simpleGraphic ? 'graphic-fill' : 'local-fill' }))) : undefined;
     let ai: Buffer | undefined, why = '';
     if (key && record.reconstruction?.key === key && record.reconstruction.state === 'done' && existsSync(join(dir, AI_FILE))) ai = read(AI_FILE);
     else if (!options.reconstructBackground) why = 'AI reconstruction is turned off for this run';
@@ -462,10 +569,13 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     else if (!ctx.allowNewCalls) why = 'a resume or re-render never makes a new paid call';
     else if (calls.backgroundReconstruction >= 1) why = 'this run already used its one background reconstruction';
     else {
-      const inputs = await editInputs(source.png, { map: coreM, width: M.width, height: M.height }, size!);
+      const start = await prefilled();
+      const inputs = await editInputs(source.png, { map: coreM, width: M.width, height: M.height }, size!, start.png);
       writeFileSync(join(dir, 'clean-background-mask.png'), inputs.mask);
+      writeFileSync(join(dir, 'clean-background-input.png'), inputs.image);
       writeFileSync(join(dir, 'clean-background-request.json'), JSON.stringify({ method: 'images.edit', model: reconstructor.model, size: `${size!.width}x${size!.height}`, n: 1, output_format: 'png', prompt: CLEAN_BACKGROUND_PROMPT,
-        image: `<${source.name === 'original' ? `original image ${source.file}` : `provider base ${source.file}`}, resized to ${size!.width}x${size!.height}>`, mask: '<clean-background-mask.png: transparent = remove>', cacheKey: key }, null, 2));
+        image: `<clean-background-input.png: ${source.name === 'original' ? `original image ${source.file}` : `provider base ${source.file}`} with the removal area pre-filled (${start.method}), ${size!.width}x${size!.height}>`, mask: '<clean-background-mask.png: transparent = remove>',
+        difficulty: difficulty.level, cacheKey: key }, null, 2));
       record.reconstruction = { key: key!, model: reconstructor.model, size: size!, state: 'sent', sentAt: new Date().toISOString() };
       calls.backgroundReconstruction++;
       ctx.save();
@@ -484,32 +594,52 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
         why = `the OpenAI image edit failed: ${message}`;
       }
     }
-    const sourceCanvas = await sharp(source.png).resize(canvas.width, canvas.height, { fit: 'fill' }).flatten({ background: '#ffffff' }).removeAlpha().raw().toBuffer();
-    if (ai) { backgroundPng = await blendIntoCanvas(sourceCanvas, ai, { map: alphaM, width: M.width, height: M.height }, canvas); method = 'ai-reconstruction'; }
-    else {
-      backgroundPng = await localFill(source.png, { map: coreM, width: M.width, height: M.height }, { map: alphaM, width: M.width, height: M.height }, canvas); method = 'local-fill';
-      reasons.push(`Fell back to a local fill because ${why}. This is not an AI-reconstructed background.`);
+    let aiCandidate: Candidate | undefined;
+    if (ai) {
+      aiTried = true;
+      const sourceCanvas = await sharp(source.png).resize(canvas.width, canvas.height, { fit: 'fill' }).flatten({ background: '#ffffff' }).removeAlpha().raw().toBuffer();
+      aiCandidate = await evaluate('ai-reconstruction', await blendIntoCanvas(sourceCanvas, ai, { map: alphaM, width: M.width, height: M.height }, canvas), ai);
+      if (acceptable(aiCandidate)) chosen = aiCandidate;
+      else why = `the AI edit is ${aiCandidate.quality.quality} (${[...aiCandidate.quality.reasons, ...aiCandidate.recreated.map(r => `recreates ${r.name ?? r.file}`)].join(', ')})`;
     }
-    writeFileSync(join(dir, CLEAN_FILE), backgroundPng);
+    // 4. The deterministic continuation, when the edit is unavailable, failed or not usable. A degraded edit is only kept
+    // when the fallback is no better.
+    if (!chosen) {
+      const fill = await prefilled(), fallback = await evaluate(fill.method, fill.png);
+      const rank = (c: Candidate) => (c.recreated.length ? 3 : 0) + ({ usable: 0, degraded: 1, failed: 2 } as const)[c.quality.quality];
+      chosen = aiCandidate && aiCandidate.quality.quality !== 'failed' && rank(aiCandidate) < rank(fallback) ? aiCandidate : fallback;
+      if (chosen === fallback) {
+        fallbackUsed = true;
+        reasons.push(`Fell back to a ${fill.method === 'graphic-fill' ? 'graphic continuation of the surrounding background' : 'local fill'} because ${why}. This is not an AI-reconstructed background.`);
+      } else reasons.push(`Kept the AI edit although it is ${aiCandidate!.quality.quality}: the fallback is no better.`);
+    }
   }
+  const backgroundPng = chosen!.png, method = chosen!.method;
+  if (method !== 'provider-base') writeFileSync(join(dir, CLEAN_FILE), backgroundPng);
   // Validation: no extracted product recreated, and nothing left that no layer holds.
   const backgroundA = await rgbOnGrid(backgroundPng, A);
-  const recreated = method === 'provider-base' ? [] : objectRetention(backgroundA, originalA, model, major).filter(r => r.retainedPercent >= options.retainedPercent);
+  const recreated = chosen!.recreated;
   // Seedream's base kept as is with no residual layer added: it differs from residual 1 only inside the extracted layers'
   // (filled) areas, which the check ignores, so residual 1's assessment is this background's. Otherwise it is assessed.
-  const unchanged = method === 'provider-base' && !order.some(item => item.pass > 0) && record.assessments[0]?.after === 0;
+  const unchanged = method === 'provider-base' && !record.passes.some(p => p.accepted.length) && record.assessments[0]?.after === 0;
   const leftover = unchanged ? (({ after, residual, sent, ...assessment }) => { void after; void residual; void sent; return assessment; })(record.assessments[0])
-    : assessBackgroundContamination({ rgb: backgroundA, width: A.width, height: A.height, explained: unionOf(order.filter(item => explains(item, A)).map(item => item.shape.alpha), nA) }, options);
+    : assessBackgroundContamination({ rgb: backgroundA, width: A.width, height: A.height, explained: unionOf([...order.filter(item => explains(item, A)).map(item => item.shape.alpha), sceneMatch(order, backgroundA)], nA) }, options);
   if (recreated.length) reasons.push(`The background still shows ${recreated.map(r => `${r.name ?? r.file} (${r.retainedPercent}% of its distinctive pixels)`).join(', ')}.`);
+  if (chosen!.quality.quality !== 'usable') reasons.push(`The area behind the foreground is ${chosen!.quality.quality}: ${chosen!.quality.reasons.join(', ')}.`);
   if (leftover.contaminated) reasons.push(`Objects no layer holds remain in the background: ${leftover.reasons.join(' ')}`);
-  const contaminated = recreated.length > 0 || leftover.contaminated;
-  const status: CleanBackgroundStatus = method === 'local-fill' ? 'fallback' : contaminated ? 'contaminated' : method === 'provider-base' ? 'provider-clean' : 'ai-reconstructed';
+  const contaminated = recreated.length > 0 || leftover.contaminated || chosen!.quality.quality === 'failed';
+  const status: CleanBackgroundStatus = fallbackUsed ? 'fallback' : contaminated || chosen!.quality.quality !== 'usable' ? 'contaminated'
+    : method === 'provider-base' ? 'provider-clean' : method === 'scene-composite' ? 'scene-clean' : 'ai-reconstructed';
   const backgroundFile = method === 'provider-base' ? base0.file : CLEAN_FILE;
+  const needed = method !== 'provider-base';
   const { regions, ...leftoverSummary } = leftover;
-  record.background = { status, method, file: backgroundFile, source: source.name, needed, contaminated, reasons, baseRetention, recreated, residual: { ...leftoverSummary, regions: regions.length } };
+  const aiCandidateRecord = candidates.find(c => c.method === 'ai-reconstruction');
+  record.background = { status, method, file: backgroundFile, source: source.name, needed, contaminated, reasons, baseRetention, recreated, residual: { ...leftoverSummary, regions: regions.length },
+    quality: chosen!.quality.quality, validation: chosen!.quality, difficulty, foregroundMaskCoverage: difficulty.coveragePercent, largestConnectedMaskCoverage: difficulty.largestComponentPercent,
+    candidates: candidates.map(c => ({ method: c.method, quality: c.quality.quality, reasons: [...c.quality.reasons, ...c.recreated.map(r => `recreates ${r.name ?? r.file}`)], metrics: c.quality.metrics, chosen: c === chosen })),
+    ...(reconstructionReason ? { reconstructionReason } : {}), fallbackUsed, aiTried, ...(aiCandidateRecord?.quality.metrics.outsideMaskChangedPercent !== undefined ? { outsideMaskChangedPercent: aiCandidateRecord.quality.metrics.outsideMaskChangedPercent } : {}) };
 
   // The final stack: the background, then every layer in order; unplaced layers keep their place at the end, hidden.
-  const renumber = order.some(item => item.pass > 0);
   const provenance = (item: Item) => {
     const box = item.shape.box, s = 1 / A.scale;
     return { sourcePass: item.pass, sourceImage: item.sourceImage, ...(item.pass > 0 ? { parentResidualId: `residual-pass-${item.pass}` } : {}), providerFile: item.layer.file, ...(item.requestId ? { providerRequestId: item.requestId } : {}),
@@ -535,12 +665,14 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   const pngOf = (l: LayerInfo) => pngs.get(l.file) ?? read(l.file);
   const warnings = [...new Set([...ctx.renderWarnings, ...record.warnings])];
   await composeLayers(join(dir, 'reconstructed.png'), canvas, await Promise.all(layers.map(async l => ({ png: pngOf(l), zIndex: l.zIndex, placement: l.placement }))));
-  const summary = { passesExecuted: record.passesExecuted, residualPasses, stopReason: record.stopReason, finalLayers: layers.length, background: { status, method }, calls: { ...calls } };
+  const summary = { passesExecuted: record.passesExecuted, residualPasses, stopReason: record.stopReason, finalLayers: layers.length, background: { status, method }, calls: { ...calls },
+    protectedGroups: run.interactions?.groups ?? 0 };
   writeFileSync(join(dir, 'layers.json'), JSON.stringify({ canvas, warnings, layers, refinement: summary }, null, 2));
   const finalIndex = new Map(layers.map((l, i) => [l.file, i]));
   await writeContactSheet(join(dir, 'contact-sheet.png'), [
     { png: source.png, title: 'Original', sub: `${source.name === 'original' ? run.input.file : 'provider base (aspect differs)'} · ${canvas.width}×${canvas.height}` },
-    { png: backgroundPng, title: `Background: ${status}`, sub: `${method}${contaminated ? ' · still contaminated' : ''}` },
+    { png: backgroundPng, title: `Background: ${status}`, sub: `${method} · ${chosen!.quality.quality} · ${difficulty.level}${contaminated ? ' · still contaminated' : ''}` },
+    ...candidates.filter(c => c !== chosen).map(c => ({ png: c.png, title: `✗ Background candidate: ${c.method}`, sub: `${c.quality.quality}${c.quality.reasons.length ? `: ${c.quality.reasons.join(', ')}` : ''}${c.recreated.length ? ' · recreates layers' : ''}` })),
     ...items.filter(item => item.pass === 0).sort((a, b) => a.providerZ - b.providerZ).map(item => ({ png: item.png, title: `P0 · ${item.layer.name ?? 'layer'}`, sub: `z${layers[finalIndex.get(item.layer.file)!]?.zIndex} · ${item.kind === 'background' ? 'background' : item.role} · ${round(100 * item.shape.count / nA, 1)}%` })),
     ...passTiles,
     { png: read(MASK_FILE), title: 'Foreground union mask', sub: `${record.mask.coveragePercent}% removed · grow ${record.mask.dilatePx}px · feather ${record.mask.featherPx}px` },
@@ -549,8 +681,8 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   record.state = 'done';
   writeFileSync(join(dir, DEBUG_FILE), JSON.stringify({ runId: run.id, generatedAt: new Date().toISOString(), calls: { ...calls }, callSummary: callLines(calls), summary,
     options, passes: record.passes, assessments: record.assessments, stopReason: record.stopReason, stopDetail: record.stopDetail, mask: record.mask, background: record.background, reconstruction: record.reconstruction,
-    fidelity: record.fidelity, warnings: record.warnings,
-    layers: layers.map(l => ({ file: l.file, name: l.name, zIndex: l.zIndex, placement: l.placement.kind, provenance: l.provenance, cleanBackground: l.cleanBackground })) }, null, 2));
+    fidelity: record.fidelity, warnings: record.warnings, interactions: run.interactions,
+    layers: layers.map(l => ({ file: l.file, name: l.name, zIndex: l.zIndex, placement: l.placement.kind, provenance: l.provenance, cleanBackground: l.cleanBackground, grouping: l.grouping })) }, null, 2));
   const out = [`RECURSIVE_DECOMPOSITION: ${record.passesExecuted} pass(es) (1 initial + ${residualPasses} residual); stopped: ${record.stopReason}. ${layers.length} layers. Background: ${status} (${method}).`, ...record.warnings];
   if (status === 'fallback' || status === 'contaminated') out.push(`BACKGROUND_${status.toUpperCase()}: ${reasons.join(' ')}`);
   return { layers, warnings: out };

@@ -9,12 +9,23 @@ export type ExperimentLayer = { index: number; file: string; zIndex: number; nam
   sources?: string[];
   /** Refined runs: which pass made this layer (0 = the initial decomposition, 1–2 = residual passes) and from what. */
   provenance?: LayerProvenance;
+  /** A group kept together to protect a person or an interaction (server interactionGrouping.ts): its members and why. */
+  grouping?: LayerGrouping;
   /** Refined runs, base layer only: how its clean background was made and whether it is verified clean. */
-  cleanBackground?: { status: CleanBackgroundStatus; method: 'provider-base' | 'ai-reconstruction' | 'local-fill' } };
+  cleanBackground?: { status: CleanBackgroundStatus; method: CleanBackgroundMethod } };
+/** Server LayerGrouping (layerizeArtifacts.ts): members stay with `parent`; protectedInteraction: a hand and what it holds kept intact. */
+export type LayerGrouping = { groupedWithParent: boolean; parent: string; protectedInteraction?: 'hand_holding_object'; attachmentReason: string;
+  members: { file: string; name?: string; role: string; reason: string }[] };
+/** Server InteractionRecord (interactionGrouping.ts): every grouping decision, including clean splits kept separate. */
+export type InteractionRecord = { layersBefore: number; layersAfter: number; groups: number;
+  decisions: { decision: 'grouped' | 'kept-separate'; role: string; file: string; name?: string; parent?: string; reason: string }[] };
 /** Server LayerProvenance (layerizeArtifacts.ts). */
 export type LayerProvenance = { sourcePass: number; sourceImage: string; parentResidualId?: string; providerFile: string; providerRequestId?: string; providerZIndex: number; role: string;
   bbox?: [number, number, number, number]; mask: string; areaPercent?: number; groupedFrom?: string[] };
-export type CleanBackgroundStatus = 'provider-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+export type CleanBackgroundStatus = 'provider-clean' | 'scene-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+export type CleanBackgroundMethod = 'provider-base' | 'scene-composite' | 'ai-reconstruction' | 'graphic-fill' | 'local-fill';
+/** Server BackgroundQuality (backgroundRecovery.ts): whether the area behind the removed foreground is a usable continuation. */
+export type BackgroundQualityInfo = { quality: 'usable' | 'degraded' | 'failed'; reasons: string[]; metrics: Record<string, number | undefined> };
 /** Server CallCounts (recursiveDecomposition.ts): every provider request a refined run sent, counted when sent. */
 export type CallCounts = { fitCheck: number; planner: number; seedreamInitial: number; seedreamResidual: number; backgroundReconstruction: number };
 /** Server RefinementRecord (recursiveDecomposition.ts), the fields the panel shows. */
@@ -24,7 +35,9 @@ export type Refinement = {
   assessments: { after: number; residual: string; sent: boolean; verdict: string; contaminatedPercent: number; reasons: string[] }[];
   stopReason?: string; stopDetail?: string; passesExecuted?: number; finalLayers?: number;
   mask?: { coveragePercent: number; dilatePx: number; featherPx: number; file: string };
-  background?: { status: CleanBackgroundStatus; method: string; file: string; contaminated: boolean; reasons: string[] };
+  background?: { status: CleanBackgroundStatus; method: string; file: string; contaminated: boolean; reasons: string[];
+    quality?: BackgroundQualityInfo['quality']; validation?: BackgroundQualityInfo; difficulty?: { level: string; coveragePercent: number; largestComponentPercent: number; simpleGraphic: boolean };
+    candidates?: { method: CleanBackgroundMethod; quality: BackgroundQualityInfo['quality']; reasons: string[]; chosen: boolean }[]; fallbackUsed?: boolean; aiTried?: boolean; outsideMaskChangedPercent?: number };
   fidelity?: { before: { meanAbsDiff: number }; after: { meanAbsDiff: number } };
   warnings: string[]; error?: string };
 /** Server LayerCount (layerCount.ts): the exact output layer count applied locally after Seedream. */
@@ -140,12 +153,14 @@ export type ExperimentRun = {
   refinement?: Refinement;
   /** Refined runs: every provider request sent, by kind. */
   calls?: CallCounts;
+  /** Image-aware and refined runs: people and interactions kept intact (worn ornaments, finger fragments, held objects). */
+  interactions?: InteractionRecord;
 };
 
-export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
-  contaminated: 'Contaminated (foreground left in the background)', fallback: 'Fallback local fill (not AI reconstructed)' };
+export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'scene-clean': 'Clean (Seedream scene layers, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
+  contaminated: 'Contaminated (foreground left in the background)', fallback: 'Fallback: continued from the surrounding background (not AI reconstructed)' };
 /** The debug lines for a refined run: passes, final layers, residual cleanup, background and every provider call. */
-export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls'>): { label: string; value: string }[] {
+export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls' | 'interactions'>): { label: string; value: string }[] {
   const r = run.refinement, calls = run.calls;
   if (!r) return [];
   const residual = r.passes.filter(p => p.state === 'done').length;
@@ -154,10 +169,12 @@ export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls
     { label: 'Final layers', value: r.finalLayers !== undefined ? String(r.finalLayers) : '—' },
     { label: 'Residual cleanup', value: !r.stopReason ? r.state : residual ? `Performed (stopped: ${r.stopReason})` : `Not needed (${r.stopReason})` },
     { label: 'Background', value: r.background ? BACKGROUND_STATUS_LABELS[r.background.status] : r.state === 'failed' ? `Refinement failed: ${r.error ?? ''}` : '—' },
+    ...(r.background?.quality ? [{ label: 'Background quality', value: `${r.background.quality}${r.background.validation?.reasons.length ? ` (${r.background.validation.reasons.join(', ')})` : ''} · ${r.background.difficulty?.level ?? ''}${r.background.difficulty ? ` · mask ${r.background.difficulty.coveragePercent}%, largest region ${r.background.difficulty.largestComponentPercent}%` : ''}` }] : []),
+    ...(run.interactions ? [{ label: 'Protected groups', value: `${run.interactions.groups} (${run.interactions.layersBefore} → ${run.interactions.layersAfter} layers)` }] : []),
     ...(calls ? [{ label: 'Calls', value: `planner ${calls.planner} · initial Seedream ${calls.seedreamInitial} · residual Seedream ${calls.seedreamResidual} · background edit ${calls.backgroundReconstruction}${calls.fitCheck ? ` · fit check ${calls.fitCheck}` : ''}` }] : []),
   ];
 }
-const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
+const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'scene-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
 
 /** The prompt this run sent (or will send) to Seedream, with its planned layers and warnings. */
 export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource : run.planner;

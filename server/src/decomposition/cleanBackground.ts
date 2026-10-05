@@ -16,8 +16,12 @@ import sharp from 'sharp';
 import type { Canvas } from './layerizeArtifacts.js';
 import { boxBlur, fillMasked } from './outerBackground.js';
 
-/** Compact on purpose: the edit model gets the mask, the image and this. Products are never named (naming invites them back). */
-export const CLEAN_BACKGROUND_PROMPT = 'Edit only the transparent area of the mask: remove everything there and reconstruct only the underlying background scene. Continue the surrounding gradient, wall, floor or table surface, lighting, environmental shadows and background patterns naturally, matching the original colors, lighting and perspective, and keep decorations that are part of the background. Leave everything outside the mask unchanged. Do not recreate the removed products or objects, and do not add any new product, person, text, logo or foreground subject.';
+/**
+ * Compact on purpose: the edit model gets the mask, the image (the original with the removal area already pre-filled from
+ * its own surroundings, so no removed subject's shape is left to repaint) and this. Products are never named (naming
+ * invites them back).
+ */
+export const CLEAN_BACKGROUND_PROMPT = 'Fill only the transparent area of the mask with the natural continuation of the background around it: continue the nearby flat colors, white space, gradients, curves, shapes, textures and lighting, keeping the surrounding composition and brand-colored geometry. Keep every pixel outside the mask exactly as it is. Reconstruct background only: do not recreate the removed people, products, text, logos or icons, do not add any new person, product, text or logo, and never paint silhouettes, shadows of removed subjects or dark placeholder areas. Prefer a clean, simple, empty continuation over invented detail.';
 
 export type BackgroundReconstructionRequest = { image: Buffer; mask: Buffer; prompt: string; size: { width: number; height: number } };
 export type BackgroundReconstructionResult = { image: Buffer; requestId?: string; response?: unknown };
@@ -79,9 +83,12 @@ export function featherMask(core: Uint8Array, w: number, h: number, featherPx: n
   return out;
 }
 
-/** The edit inputs: the source at the request size, and a black mask that is transparent exactly where `core` (0/1) removes. */
-export async function editInputs(source: Buffer, core: { map: Uint8Array; width: number; height: number }, size: { width: number; height: number }): Promise<{ image: Buffer; mask: Buffer }> {
-  const image = await sharp(source).resize(size.width, size.height, { fit: 'fill' }).flatten({ background: '#ffffff' }).removeAlpha().png().toBuffer();
+/**
+ * The edit inputs: the image at the request size (the source, or `prefilled`: the source with the removal area already
+ * filled from its surroundings), and a black mask that is transparent exactly where `core` (0/1) removes.
+ */
+export async function editInputs(source: Buffer, core: { map: Uint8Array; width: number; height: number }, size: { width: number; height: number }, prefilled?: Buffer): Promise<{ image: Buffer; mask: Buffer }> {
+  const image = await sharp(prefilled ?? source).resize(size.width, size.height, { fit: 'fill' }).flatten({ background: '#ffffff' }).removeAlpha().png().toBuffer();
   const keep = new Uint8Array(core.map.length);
   for (let i = 0; i < keep.length; i++) keep[i] = core.map[i] ? 0 : 255;
   const alpha = await resizeMap(keep, core, size, 'nearest'), rgba = Buffer.alloc(size.width * size.height * 4);

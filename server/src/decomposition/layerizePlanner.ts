@@ -7,7 +7,7 @@
  * model is configurable and never silently substituted.
  */
 import OpenAI from 'openai';
-import { SEMANTIC_INSTRUCTION, SEMANTIC_SCHEMA, semanticPlan, type SemanticAnalysis } from './semanticPlanner.js';
+import { SEMANTIC_INSTRUCTION, SEMANTIC_SCHEMA, semanticPlan, type SemanticAnalysis, type SemanticProtection } from './semanticPlanner.js';
 import { DEFAULT_DECOMPOSITION_PLANNER_MODEL } from './aiModels.js';
 import { templateBProfile } from './layerizeTemplateB.js';
 import { templateCProfile } from './layerizeTemplateC.js';
@@ -135,7 +135,7 @@ export function promptProfile(templateKey = 'template-a'): PromptProfile {
 }
 
 export type PlannedLayer = { name: string; description: string };
-export type LayerizePlan = { prompt: string; planned_layers: PlannedLayer[]; warnings: string[]; semantic_analysis?: SemanticAnalysis };
+export type LayerizePlan = { prompt: string; planned_layers: PlannedLayer[]; warnings: string[]; semantic_analysis?: SemanticAnalysis; semantic_protection?: SemanticProtection };
 export type PlannerUsage = { input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; total_tokens?: number };
 export type PlannerResult = { plan: LayerizePlan; model: string; responseId?: string; usage?: PlannerUsage; raw: unknown; request: Record<string, unknown> };
 /**

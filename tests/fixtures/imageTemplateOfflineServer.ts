@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { referenceCreativeFixture } from '../../server/src/decomposition/referenceCreative.fixture.js';
 import { verboseImageAnalysis } from '../../server/src/decomposition/imageTemplateAnalysis.fixture.js';
 import { createOpenAIImagePromptWriter, referenceForPrompt } from '../../server/src/decomposition/imageTemplates.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
@@ -16,6 +16,7 @@ import type { FalTransport } from '../../server/src/decomposition/providers/falC
 import { ALL_PARTS, offerComposite, offerPart, partName, rowFillEdit, type OfferPart } from '../../server/src/decomposition/complexOffer.fixture.js';
 import { RESIDUAL_PROMPT } from '../../server/src/decomposition/recursiveDecomposition.js';
 import { SEMANTIC_SCHEMA, type SemanticAnalysis } from '../../server/src/decomposition/semanticPlanner.js';
+import { BANGLE_PARTS, blackSilhouetteEdit, creative, HOLDING_PARTS, partPng } from '../../server/src/decomposition/protectedInteraction.fixture.js';
 
 if (process.env.FRAMEFLOW_OFFLINE_E2E !== '1') throw new Error('This fixture requires FRAMEFLOW_OFFLINE_E2E=1.');
 // No SDK transport is used. An accidental fetch fails before it can leave this process.
@@ -48,6 +49,11 @@ const files = new Map<string, Buffer>(), inputs = new Map<string, Buffer>(), res
 // The complex offer creative (recursive decomposition): its first decomposition misses the speaker and power bank and
 // leaves everything baked into its base; the residual pass that follows finds both, plus a duplicate of the headphones.
 const complexDigest = offerComposite().then(digest);
+// A woman holding a phone: Seedream's answer is the split seen live (woman, phone, screen badge and gripping fingers as
+// separate layers); the protection must turn it into one intact layer.
+const holdingDigest = creative(HOLDING_PARTS).then(digest), bangleDigest = creative(BANGLE_PARTS).then(digest);
+// The live Paytm failure: Seedream bakes everything into its base, and the image edit answers with a black silhouette.
+let blackEditNext = false;
 let complexResidualNext = false;
 const providerCalls: { kind: 'seedream-initial' | 'seedream-residual' | 'background-edit'; complex?: boolean }[] = [];
 async function complexLayers(requestId: string, base: readonly OfferPart[], parts: OfferPart[], duplicates: OfferPart[] = []) {
@@ -63,6 +69,18 @@ const transport: FalTransport = {
     if (!residual && digest(bytes) === await complexDigest) {
       providerCalls.push({ kind: 'seedream-initial', complex: true }); complexResidualNext = true;
       results.set(requestId, { layers: await complexLayers(requestId, ALL_PARTS, ALL_PARTS.filter(part => part !== 'speaker' && part !== 'powerBank')) });
+      return { requestId };
+    }
+    for (const [creativeDigest, parts, black] of [[await holdingDigest, HOLDING_PARTS, true], [await bangleDigest, BANGLE_PARTS, false]] as const) {
+      if (residual || digest(bytes) !== creativeDigest) continue;
+      providerCalls.push({ kind: 'seedream-initial' }); blackEditNext = black;
+      // The base is the whole creative (everything baked in); every other part is its own layer, as Seedream split them.
+      const layers = await Promise.all(parts.map(async (part, z_index) => {
+        const url = `https://v3b.fal.media/files/offline/${requestId}-${part.key}.png`;
+        files.set(url, z_index === 0 ? await creative(parts) : await partPng(part));
+        return { image: { url }, z_index, name: z_index === 0 ? 'Background' : part.name };
+      }));
+      results.set(requestId, { layers });
       return { requestId };
     }
     if (residual && complexResidualNext) {
@@ -85,8 +103,8 @@ const transport: FalTransport = {
 // Image-template decompositions ask for the semantic analysis (semanticPlanner.ts); the test panel's runs for the plain plan.
 const semanticAnalysis: SemanticAnalysis = { image_type: 'product photograph', scene_summary: 'A lavender smartphone standing in a lavender studio.',
   elements: [
-    { id: 'studio_background', type: 'background', description: 'The lavender studio background with its soft shapes', editable_independently: true, approximate_region: 'full canvas', z_order: 0, confidence: 'high', occlusion: { is_occluded: true, occluded_by: ['lavender_phone'], requires_reconstruction: true } },
-    { id: 'lavender_phone', type: 'product', description: 'The lavender smartphone, whole', editable_independently: true, approximate_region: 'center', z_order: 1, confidence: 'high', occlusion: { is_occluded: false, occluded_by: [], requires_reconstruction: false } },
+    { id: 'studio_background', type: 'background', description: 'The lavender studio background with its soft shapes', editable_independently: true, approximate_region: 'full canvas', z_order: 0, confidence: 'high', occlusion: { is_occluded: true, occluded_by: ['lavender_phone'], requires_reconstruction: true }, attachment: { relation: 'none', parent_id: '', separation_risk: 'low', keep_with_parent: false } },
+    { id: 'lavender_phone', type: 'product', description: 'The lavender smartphone, whole', editable_independently: true, approximate_region: 'center', z_order: 1, confidence: 'high', occlusion: { is_occluded: false, occluded_by: [], requires_reconstruction: false }, attachment: { relation: 'none', parent_id: '', separation_risk: 'low', keep_with_parent: false } },
   ],
   relationships: [{ source: 'lavender_phone', relationship: 'in_front_of', target: 'studio_background' }], ambiguities: [], recommended_layer_count: 2,
   decomposition_strategy: 'Separate the phone from the studio.', downstream_decomposition_prompt: 'Extract the lavender phone as a whole object. Separate the studio background.' };
@@ -112,12 +130,36 @@ const router = createLayerizeRouter({
   } } } as never }),
   // The clean-background edit: a local row fill (exact for the complex offer's vertical gradient); never a network call.
   deps: () => ({ planner, transport: () => transport, backgroundReconstructor: { model: 'offline-image-edit', reconstruct: async ({ image, mask }) => {
-    providerCalls.push({ kind: 'background-edit' }); await pause(); return { image: await rowFillEdit(image, mask), requestId: `offline-edit-${providerCalls.length}` };
+    providerCalls.push({ kind: 'background-edit' }); await pause();
+    const black = blackEditNext; blackEditNext = false;
+    return { image: black ? await blackSilhouetteEdit(image, mask) : await rowFillEdit(image, mask), requestId: `offline-edit-${providerCalls.length}` };
   } } }),
 });
 // Explicit empty configuration: no environment credentials or .env files are read.
 const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router);
 app.get('/__test__/complex-offer.png', async (_req, res) => res.type('png').send(await offerComposite()));
+app.get('/__test__/holding-phone.png', async (_req, res) => res.type('png').send(await creative(HOLDING_PARTS)));
+app.get('/__test__/bangles.png', async (_req, res) => res.type('png').send(await creative(BANGLE_PARTS)));
+// The run's background layer measured against the true scene where the people (and what they hold or wear) were:
+// share of those pixels within 30 of the truth, and how many are near-black.
+app.get('/__test__/background-check', async (req, res) => {
+  const runDir = join(root, 'runs', String(req.query.run).replace(/[^0-9TZa-f-]/g, '')), holding = req.query.creative === 'holding';
+  const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { outputLayers: { file: string }[] };
+  const raw = (png: Buffer) => sharp(png).resize(1024, 1024, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+  const background = await raw(readFileSync(join(runDir, run.outputLayers[0].file)));
+  const parts = holding ? HOLDING_PARTS : BANGLE_PARTS, scene = parts.filter(p => holding ? ['background', 'field'].includes(p.key) : p.key === 'background');
+  const removed = parts.filter(p => holding ? ['woman', 'phone', 'fingers', 'badge'].includes(p.key) : /Hands|Bangles/.test(p.key));
+  const truth = await raw(await creative(scene));
+  const alphas = await Promise.all(removed.map(async p => sharp(await partPng(p)).ensureAlpha().extractChannel(3).raw().toBuffer()));
+  let area = 0, match = 0, black = 0;
+  for (let i = 0; i < 1024 * 1024; i++) {
+    if (!alphas.some(a => a[i] > 200)) continue;
+    area++;
+    if (Math.max(...[0, 1, 2].map(c => Math.abs(background[i * 3 + c] - truth[i * 3 + c]))) <= 30) match++;
+    if (Math.max(background[i * 3], background[i * 3 + 1], background[i * 3 + 2]) < 60) black++;
+  }
+  res.json({ file: run.outputLayers[0].file, area, matchShare: Math.round(1000 * match / Math.max(1, area)) / 1000, black });
+});
 app.get('/__test__/provider-calls', (_req, res) => res.json(providerCalls));
 app.get('/__test__/reference-events', (req, res) => res.json(events.filter(event => event.source === String(req.query.source))));
 app.get('/__test__/offer-reference.png', async (req, res) => {

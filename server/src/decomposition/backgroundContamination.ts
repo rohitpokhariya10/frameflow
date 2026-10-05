@@ -90,7 +90,7 @@ function erode(map: Uint8Array, w: number, h: number, r: number): Uint8Array {
   return out;
 }
 /** 8-connected components of a 0/1 map; 0 = unlabeled. */
-function label(map: Uint8Array, w: number, h: number): { labels: Int32Array; count: number } {
+export function label(map: Uint8Array, w: number, h: number): { labels: Int32Array; count: number } {
   const labels = new Int32Array(map.length), queue = new Int32Array(map.length);
   let count = 0;
   for (let start = 0; start < map.length; start++) {

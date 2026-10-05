@@ -1,4 +1,4 @@
-import { SEMANTIC_SCHEMA } from './semanticPlanner.js';
+import { PROTECTION_CLAUSE, SEMANTIC_SCHEMA } from './semanticPlanner.js';
 import { semanticFixture } from './semanticPlanner.fixture.js';
 import { referenceCreativeFixture } from './referenceCreative.fixture.js';
 import { airPodsAnalysisFixture, airPodsAnalysisResponseFixture } from './airPodsAnalysis.fixture.js';
@@ -548,7 +548,7 @@ describe('Create Template from Image', () => {
       expect(run).toMatchObject({ stage: 'done', templateKey: 'template-b', templateOptions: { separateTouchingIndependentObjects: false }, promptSource: { mode: 'generated' }, semanticPlanning: true,
         origin: { kind: 'image-template', generationId: t.id, variantId: '4x5', aspectRatio: '4:5' }, original: { width: 1216, height: 1520 } });
       expect(run.layerTarget).toBeUndefined();
-      expect(run.finalPrompt).toBe(semanticFixture.downstream_decomposition_prompt);
+      expect(run.finalPrompt).toBe(`${semanticFixture.downstream_decomposition_prompt} ${PROTECTION_CLAUSE}`);
       expect(run.planner?.semantic_analysis).toEqual(semanticFixture);
       expect(run.layerCount?.normalized).toBe(false);
       expect(sha(s.uploads[0])).toBe(sha(s.images.sent[1]));

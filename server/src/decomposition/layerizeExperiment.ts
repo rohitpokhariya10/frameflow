@@ -35,6 +35,7 @@ import { createOpenAIPlanner, PlannerError, promptProfile, validatePlan, type La
 import { createOpenAIFitChecker, type FitChecker } from './layerizeTemplateFit.js';
 import { templateCRoleStrategy, type PlannedCLayer } from './layerizeTemplateC.js';
 import { createOpenAIBackgroundReconstructor, type BackgroundReconstructor } from './cleanBackground.js';
+import { protectRenderedLayers, type InteractionRecord } from './interactionGrouping.js';
 import { callLines, newRefinementRecord, noCalls, refineDecomposition, refinementOptions, type CallCounts, type RefinementOptions, type RefinementRecord } from './recursiveDecomposition.js';
 import { getTemplatePrompt, requireTemplate, saveTemplatePrompt, suggestedLayerCount, targetLayerRange, targetLayersProblem, templateOptionsFor, type SavedTemplatePrompt, type TemplateOptions } from './layerizeTemplates.js';
 
@@ -107,6 +108,8 @@ export type RunRecord = {
    * without it (every older run), which are rendered exactly as before.
    */
   refinement?: RefinementRecord;
+  /** Protected people and interactions (interactionGrouping.ts): every grouping decision. Image-aware and refined runs only. */
+  interactions?: InteractionRecord;
   /** Every provider request this run sent, by kind, counted when sent. Recorded on refined runs only. */
   calls?: CallCounts;
 };
@@ -420,11 +423,18 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps, fresh = fa
     // The recursive refinement (refined runs only): residual passes and a clean background replace the rendered layers.
     // Its failure never fails the run: the initial decomposition stays as rendered, with a warning.
     let refineWarnings: string[] = [];
+    // Protected people and interactions: worn ornaments, finger fragments and risky held objects stay with their person.
+    // Image-aware and refined runs only; a user who asked for a separate held object (Template A's checkbox) keeps it.
+    const interactions = { semantic: run.planner?.semantic_analysis, options: { heldObjects: !(template.grouping && run.separateHeldObject !== false && !run.semanticPlanning) } };
+    if (run.semanticPlanning && !run.refinement) {
+      const protectedLayers = await protectRenderedLayers({ dir, canvas: rendered.canvas, layers: rendered.layers, warnings: rendered.warnings, read: file => readFileSync(join(dir, file)), sourceImage, ...interactions });
+      rendered.layers = protectedLayers.layers; run.interactions = protectedLayers.record;
+    }
     if (run.refinement) {
       callsOf(run); run.stage = 'refining'; save(dir, run, deps);
       const r = Date.now();
       try {
-        const refined = await refineDecomposition({ dir, run, canvas: rendered.canvas, layers: rendered.layers, renderWarnings: rendered.warnings, sourceImage, transport, deps, allowNewCalls: fresh, save: () => save(dir, run, deps) });
+        const refined = await refineDecomposition({ dir, run, canvas: rendered.canvas, layers: rendered.layers, renderWarnings: rendered.warnings, sourceImage, transport, deps, allowNewCalls: fresh, save: () => save(dir, run, deps), interactions });
         rendered.layers = refined.layers; refineWarnings = refined.warnings;
       } catch (error) {
         Object.assign(run.refinement, { state: 'failed', error: error instanceof Error ? error.message : String(error) });
@@ -439,7 +449,7 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps, fresh = fa
     const roleStrategy = template.normalization === 'template-c' ? templateCRoleStrategy(plannedLayersOf(run) as PlannedCLayer[] | undefined) : undefined;
     const normalized = await normalizeLayerCount(dir, rendered.canvas, rendered.layers, run.semanticPlanning ? undefined : run.layerTarget, run.semanticPlanning ? {} : { strategy: template.normalization, separate: run.separateHeldObject !== false, ...(plannedLayers ? { plannedLayers } : {}), ...(roleStrategy ? { roleStrategy } : {}) });
     Object.assign(run, { canvas: rendered.canvas, layers: rendered.layers, outputLayers: normalized.outputLayers, layerCount: normalized.layerCount,
-      warnings: [...new Set([...run.warnings.filter(w => !/^(UNRESOLVED_PLACEMENT|NO_BASE|NO_Z0|BASE_ASPECT|FEWER_LAYERS_THAN_TARGET|UNPLACED_LAYERS_EXCLUDED|RECURSIVE_DECOMPOSITION|RESIDUAL_|BACKGROUND_|REFINEMENT_|ORDER_CYCLE)/.test(w)), ...rendered.warnings, ...refineWarnings, ...normalized.layerCount.warnings])] });
+      warnings: [...new Set([...run.warnings.filter(w => !/^(UNRESOLVED_PLACEMENT|NO_BASE|NO_Z0|BASE_ASPECT|FEWER_LAYERS_THAN_TARGET|UNPLACED_LAYERS_EXCLUDED|RECURSIVE_DECOMPOSITION|RESIDUAL_|BACKGROUND_|REFINEMENT_|ORDER_CYCLE|PROTECTED_)/.test(w)), ...rendered.warnings, ...refineWarnings, ...normalized.layerCount.warnings])] });
     const inAspect = run.input.width / run.input.height, outAspect = rendered.canvas.width / rendered.canvas.height;
     if (Math.abs(outAspect / inAspect - 1) > 0.01) run.warnings.push(`BASE_ASPECT_DIFFERS: base ${rendered.canvas.width}×${rendered.canvas.height} vs input ${run.input.width}×${run.input.height}.`);
   } catch (error) { return fail(dir, run, 'RENDER_FAILED', `${error instanceof Error ? error.message : String(error)}. The raw response is saved; use Resume to retry without a new paid call.`, deps); }

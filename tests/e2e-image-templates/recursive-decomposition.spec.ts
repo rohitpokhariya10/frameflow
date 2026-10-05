@@ -26,7 +26,12 @@ test('recursive decomposition of a complex offer: missed products found once, on
   // One active run at a time on the shared server: wait until it is idle, then start; another project may get there first.
   let runId: string | undefined;
   for (let attempt = 0; attempt < 30 && !runId; attempt++) {
-    await expect.poll(async () => (await (await request.get('/api/layerize-experiment/runs', { headers })).json()).active, { timeout: 90_000 }).toBeNull();
+    // Politely: no run active and no image-template decomposition waiting its turn (it must not be starved by these runs).
+    await expect.poll(async () => {
+      const busy = (await (await request.get('/api/layerize-experiment/runs', { headers })).json()).active;
+      const templates = (await (await request.get('/api/layerize-experiment/image-templates', { headers })).json()).templates as { variants: { decomposition?: { state: string } }[] }[];
+      return busy ?? templates.some(t => t.variants.some(v => v.decomposition && ['waiting', 'running'].includes(v.decomposition.state))) ? 'busy' : null;
+    }, { timeout: 120_000 }).toBeNull();
     const [response] = await Promise.all([page.waitForResponse(r => r.url().endsWith('/api/layerize-experiment/runs') && r.request().method() === 'POST'), runButton.click()]);
     if (response.status() === 202) runId = (await response.json()).id;
     else expect(response.status()).toBe(409);
