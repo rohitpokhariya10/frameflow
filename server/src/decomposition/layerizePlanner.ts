@@ -7,7 +7,8 @@
  * model is configurable and never silently substituted.
  */
 import OpenAI from 'openai';
-import { DEFAULT_PLANNER_MODEL } from './aiModels.js';
+import { SEMANTIC_INSTRUCTION, SEMANTIC_SCHEMA, semanticPlan, type SemanticAnalysis } from './semanticPlanner.js';
+import { DEFAULT_DECOMPOSITION_PLANNER_MODEL } from './aiModels.js';
 import { templateBProfile } from './layerizeTemplateB.js';
 import { templateCProfile } from './layerizeTemplateC.js';
 import type { TemplateOptions } from './layerizeTemplates.js';
@@ -134,14 +135,14 @@ export function promptProfile(templateKey = 'template-a'): PromptProfile {
 }
 
 export type PlannedLayer = { name: string; description: string };
-export type LayerizePlan = { prompt: string; planned_layers: PlannedLayer[]; warnings: string[] };
+export type LayerizePlan = { prompt: string; planned_layers: PlannedLayer[]; warnings: string[]; semantic_analysis?: SemanticAnalysis };
 export type PlannerUsage = { input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; total_tokens?: number };
 export type PlannerResult = { plan: LayerizePlan; model: string; responseId?: string; usage?: PlannerUsage; raw: unknown; request: Record<string, unknown> };
 /**
  * Per-run settings the planner is told about. templateKey: default template-a. templateOptions: the template's own
  * options, only present for templates that declare them (never for Template A).
  */
-export type PlannerContext = { separateHeldObject: boolean; templateKey?: string; templateOptions?: TemplateOptions };
+export type PlannerContext = { semanticPlanning?: boolean; separateHeldObject: boolean; templateKey?: string; templateOptions?: TemplateOptions };
 export type Planner = (image: Buffer, mime: string, context?: PlannerContext) => Promise<PlannerResult>;
 /** Run settings as told to OpenAI, worded by the template's profile. */
 export function plannerContextText(context?: PlannerContext): string | undefined {
@@ -178,16 +179,20 @@ type ResponsesClient = Pick<OpenAI, 'responses'>;
 
 /** Responses API with image input and strict json_schema output; reasoning effort medium. */
 export function createOpenAIPlanner(options: { apiKey?: string; model?: string; client?: ResponsesClient } = {}): Planner {
-  const model = options.model?.trim() || DEFAULT_PLANNER_MODEL;
+  const model = options.model?.trim() || DEFAULT_DECOMPOSITION_PLANNER_MODEL;
   return async (image, mime, context) => {
     if (!options.client && !options.apiKey?.trim()) throw new PlannerError('PLANNER_NOT_CONFIGURED', 'Set OPENAI_API_KEY in server/.env.');
     const client = options.client ?? new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: 180_000 });
-    const profile = promptProfile(context?.templateKey);
+    const profile: PromptProfile = context?.semanticPlanning ? {
+      plannerInstruction: SEMANTIC_INSTRUCTION, maxPlannerPrompt: MAX_LAYERIZE_PROMPT, lengthNote: '',
+      inputText: 'Analyze this exact image and generate its editable-layer decomposition plan.',
+      planSchema: SEMANTIC_SCHEMA, compose: p => p, adapt: p => p, contextText: () => '',
+    } : promptProfile(context?.templateKey);
     const request = {
       model, reasoning: { effort: 'medium' as const }, store: false,
       instructions: `${profile.plannerInstruction}\n\n${profile.lengthNote}`,
       input: [{ role: 'user' as const, content: [
-        { type: 'input_text' as const, text: [profile.inputText, plannerContextText(context)].filter(Boolean).join('\n') },
+        { type: 'input_text' as const, text: [profile.inputText, context?.semanticPlanning ? undefined : plannerContextText(context)].filter(Boolean).join('\n') },
         { type: 'input_image' as const, image_url: `data:${mime};base64,${image.toString('base64')}`, detail: 'high' as const },
       ] }],
       text: { format: { type: 'json_schema' as const, name: 'layerize_plan', schema: profile.planSchema ?? PLAN_SCHEMA as unknown as Record<string, unknown>, strict: true } },
@@ -210,7 +215,13 @@ export function createOpenAIPlanner(options: { apiKey?: string; model?: string; 
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { throw new PlannerError('PLANNER_INVALID_JSON', 'The planner did not return valid JSON.', response); }
     let plan: LayerizePlan;
-    try { plan = validatePlan(parsed); }
+    try {
+      if (context?.semanticPlanning) {
+        let semantic;
+        try { semantic = semanticPlan(parsed); } catch (error) { throw new PlannerError('PLANNER_INVALID_JSON', error instanceof Error ? error.message : String(error)); }
+        plan = { ...semantic, ...validatePlan(semantic) };
+      } else plan = validatePlan(parsed);
+    }
     catch (error) { if (error instanceof PlannerError) throw new PlannerError(error.code, error.message, response); throw error; }
     if (plan.prompt.length > profile.maxPlannerPrompt) throw new PlannerError('PLANNER_PROMPT_TOO_LONG', `The generated prompt is ${plan.prompt.length} characters; with the fixed background rules it would exceed the local ${MAX_LAYERIZE_PROMPT}-character limit (at most ${profile.maxPlannerPrompt} allowed). Seedream was not called.`, response);
     return { plan: profile.finishPlan ? profile.finishPlan(parsed, plan, context) : { ...plan, prompt: profile.compose(plan.prompt) }, model, responseId: r.id, usage, raw: response, request: shown };

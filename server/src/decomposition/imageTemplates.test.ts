@@ -1,3 +1,5 @@
+import { SEMANTIC_SCHEMA } from './semanticPlanner.js';
+import { semanticFixture } from './semanticPlanner.fixture.js';
 import { referenceCreativeFixture } from './referenceCreative.fixture.js';
 import { airPodsAnalysisFixture, airPodsAnalysisResponseFixture } from './airPodsAnalysis.fixture.js';
 import { verboseImageAnalysis } from './imageTemplateAnalysis.fixture.js';
@@ -80,7 +82,7 @@ async function server(options: { images?: ReturnType<typeof imageFake>; writer?:
   const uploads: Buffer[] = [], submitted: Record<string, unknown>[] = [];
   let active = 0, mostAtOnce = 0;
   const create = vi.fn(async (request: { text: { format: { schema: unknown } } }) => ({ status: 'completed', output: [], output_text: JSON.stringify(
-    request.text.format.schema === PLAN_SCHEMA_C ? { prompt: 'draft', planned_layers: [], warnings: [], people: [], repeated_modules: null, elements: [] }
+    request.text.format.schema === SEMANTIC_SCHEMA ? semanticFixture : request.text.format.schema === PLAN_SCHEMA_C ? { prompt: 'draft', planned_layers: [], warnings: [], people: [], repeated_modules: null, elements: [] }
       : { prompt: request.text.format.schema === PLAN_SCHEMA_B ? 'Extract the hero object as one layer.' : 'Keep the main subject whole. Separate each held object into its own layer.', planned_layers: [], warnings: [] }) }));
   const planner = createOpenAIPlanner({ client: { responses: { create } } as never });
   // fal: the base layer is the uploaded image itself, so every run completes with a real layer at the image's size.
@@ -543,11 +545,14 @@ describe('Create Template from Image', () => {
       expect(done.variants[0]).not.toHaveProperty('decomposition');
       // An ordinary Template B run of exactly that image, linked back to the template and the ratio.
       const run = readRun(join(s.runsDir, entry.runId));
-      expect(run).toMatchObject({ stage: 'done', templateKey: 'template-b', templateOptions: { separateTouchingIndependentObjects: false }, promptSource: { mode: 'generated' }, layerTarget: { templateKey: 'template-b' },
+      expect(run).toMatchObject({ stage: 'done', templateKey: 'template-b', templateOptions: { separateTouchingIndependentObjects: false }, promptSource: { mode: 'generated' }, semanticPlanning: true,
         origin: { kind: 'image-template', generationId: t.id, variantId: '4x5', aspectRatio: '4:5' }, original: { width: 1216, height: 1520 } });
-      expect(run.layerTarget).not.toHaveProperty('targetLayers');
+      expect(run.layerTarget).toBeUndefined();
+      expect(run.finalPrompt).toBe(semanticFixture.downstream_decomposition_prompt);
+      expect(run.planner?.semantic_analysis).toEqual(semanticFixture);
+      expect(run.layerCount?.normalized).toBe(false);
       expect(sha(s.uploads[0])).toBe(sha(s.images.sent[1]));
-      expect(s.create.mock.calls[0][0].text.format.schema).toBe(PLAN_SCHEMA_B);
+      expect(s.create.mock.calls[0][0].text.format.schema).toBe(SEMANTIC_SCHEMA);
       expect(s.submitted).toHaveLength(1);
       // The run is served by the experiment's own run routes, as any run.
       expect((await s.get(`/runs/${entry.runId}`)).body).toMatchObject({ id: entry.runId, stage: 'done', origin: { kind: 'image-template' } });
@@ -558,11 +563,11 @@ describe('Create Template from Image', () => {
     } finally { s.app.close(); }
   });
 
-  it('decomposes with the layer style the user chose: Template A with its held object separate and its suggested count, Template C with its options off', async () => {
+  it('uses semantic planning regardless of the reference layer style', async () => {
     const s = await server();
     try {
-      for (const [style, expected] of [['template-a', { separateHeldObject: true, layerTarget: { templateKey: 'template-a', suggestedLayers: 6, targetLayers: 6 } }],
-        ['template-c', { templateOptions: { separateHumanSubjects: false, separateRepeatedModules: false }, layerTarget: { templateKey: 'template-c' } }]] as const) {
+      for (const [style, expected] of [['template-a', { separateHeldObject: true, semanticPlanning: true }],
+        ['template-c', { templateOptions: { separateHumanSubjects: false, separateRepeatedModules: false }, semanticPlanning: true }]] as const) {
         const t = await s.draft();
         await s.patch(`/image-templates/${t.id}`, { decomposeWith: style });
         await s.post(`/image-templates/${t.id}/generate`, { name: style, aspectRatios: ['1:1'] });

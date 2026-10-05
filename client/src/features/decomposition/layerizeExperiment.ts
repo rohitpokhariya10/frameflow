@@ -6,7 +6,27 @@ export type Placement = { kind: 'base' | 'full-canvas' | 'bbox-crop' | 'bbox-sca
 export type ExperimentLayer = { index: number; file: string; zIndex: number; name?: string; description?: string; pixelWidth: number; pixelHeight: number; opaquePercent: number; placement: Placement;
   rawFile?: string; rebuilt?: { method: string; from: string[]; foreground?: string[]; holePercent: number; texture: string; contaminationPercent?: number; residualPercent?: number };
   /** Output layers only: the semantic layer files this one was made from (its own file when not merged). */
-  sources?: string[] };
+  sources?: string[];
+  /** Refined runs: which pass made this layer (0 = the initial decomposition, 1–2 = residual passes) and from what. */
+  provenance?: LayerProvenance;
+  /** Refined runs, base layer only: how its clean background was made and whether it is verified clean. */
+  cleanBackground?: { status: CleanBackgroundStatus; method: 'provider-base' | 'ai-reconstruction' | 'local-fill' } };
+/** Server LayerProvenance (layerizeArtifacts.ts). */
+export type LayerProvenance = { sourcePass: number; sourceImage: string; parentResidualId?: string; providerFile: string; providerRequestId?: string; providerZIndex: number; role: string;
+  bbox?: [number, number, number, number]; mask: string; areaPercent?: number; groupedFrom?: string[] };
+export type CleanBackgroundStatus = 'provider-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+/** Server CallCounts (recursiveDecomposition.ts): every provider request a refined run sent, counted when sent. */
+export type CallCounts = { fitCheck: number; planner: number; seedreamInitial: number; seedreamResidual: number; backgroundReconstruction: number };
+/** Server RefinementRecord (recursiveDecomposition.ts), the fields the panel shows. */
+export type Refinement = {
+  state: 'pending' | 'running' | 'done' | 'failed'; options: { maxDepth: number; maxTotalLayers: number; reconstructBackground: boolean };
+  passes: { pass: number; state: string; requestId?: string; returnedLayers?: number; accepted: string[]; grouped?: string[]; rejected: { file: string; name?: string; reason: string; duplicateOf?: string }[]; error?: { code: string; message: string } }[];
+  assessments: { after: number; residual: string; sent: boolean; verdict: string; contaminatedPercent: number; reasons: string[] }[];
+  stopReason?: string; stopDetail?: string; passesExecuted?: number; finalLayers?: number;
+  mask?: { coveragePercent: number; dilatePx: number; featherPx: number; file: string };
+  background?: { status: CleanBackgroundStatus; method: string; file: string; contaminated: boolean; reasons: string[] };
+  fidelity?: { before: { meanAbsDiff: number }; after: { meanAbsDiff: number } };
+  warnings: string[]; error?: string };
 /** Server LayerCount (layerCount.ts): the exact output layer count applied locally after Seedream. */
 export type LayerCount = { suggestedLayers?: number; targetLayers?: number; providerReturnedLayers: number; semanticLayers: number; finalOutputLayers: number; normalized: boolean;
   groups: { name: string; file: string; sourceLayers: string[] }[]; warnings: string[];
@@ -116,7 +136,28 @@ export type ExperimentRun = {
   timings: Record<string, number>;
   /** layers: semantic layers; outputLayers: the final layers at the target count; layerCount: the counts and merges. */
   canvas?: { width: number; height: number }; layers?: ExperimentLayer[]; outputLayers?: ExperimentLayer[]; layerCount?: LayerCount; warnings: string[];
+  /** The recursive refinement (residual passes and a clean background); absent on runs made without it. */
+  refinement?: Refinement;
+  /** Refined runs: every provider request sent, by kind. */
+  calls?: CallCounts;
 };
+
+export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
+  contaminated: 'Contaminated (foreground left in the background)', fallback: 'Fallback local fill (not AI reconstructed)' };
+/** The debug lines for a refined run: passes, final layers, residual cleanup, background and every provider call. */
+export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls'>): { label: string; value: string }[] {
+  const r = run.refinement, calls = run.calls;
+  if (!r) return [];
+  const residual = r.passes.filter(p => p.state === 'done').length;
+  return [
+    { label: 'Passes', value: r.passesExecuted !== undefined ? `${r.passesExecuted} (1 initial + ${residual} residual, at most ${r.options.maxDepth})` : r.state },
+    { label: 'Final layers', value: r.finalLayers !== undefined ? String(r.finalLayers) : '—' },
+    { label: 'Residual cleanup', value: !r.stopReason ? r.state : residual ? `Performed (stopped: ${r.stopReason})` : `Not needed (${r.stopReason})` },
+    { label: 'Background', value: r.background ? BACKGROUND_STATUS_LABELS[r.background.status] : r.state === 'failed' ? `Refinement failed: ${r.error ?? ''}` : '—' },
+    ...(calls ? [{ label: 'Calls', value: `planner ${calls.planner} · initial Seedream ${calls.seedreamInitial} · residual Seedream ${calls.seedreamResidual} · background edit ${calls.backgroundReconstruction}${calls.fitCheck ? ` · fit check ${calls.fitCheck}` : ''}` }] : []),
+  ];
+}
+const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
 
 /** The prompt this run sent (or will send) to Seedream, with its planned layers and warnings. */
 export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource : run.planner;
@@ -136,7 +177,8 @@ export const experimentApi = {
   get: (id: string) => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}`),
   /** templateOptions: the selected template's own options (Template B); omitted for templates without them. */
   /** skipFitCheck: "Run anyway" past the template fit check (only sent when true). */
-  start: (file: File, mode: PromptMode = 'generated', templateKey?: string, separateHeldObject = true, targetLayers?: number, templateOptions?: Record<string, boolean>, skipFitCheck = false) => {
+  /** recursive: the recursive refinement (up to 2 residual Seedream calls and 1 OpenAI image edit, only as needed); only sent when true. */
+  start: (file: File, mode: PromptMode = 'generated', templateKey?: string, separateHeldObject = true, targetLayers?: number, templateOptions?: Record<string, boolean>, skipFitCheck = false, recursive = false) => {
     const form = new FormData();
     form.append('promptMode', mode);
     form.append('separateHeldObject', String(separateHeldObject));
@@ -144,6 +186,7 @@ export const experimentApi = {
     if (templateKey) form.append('templateKey', templateKey);
     if (templateOptions) form.append('templateOptions', JSON.stringify(templateOptions));
     if (skipFitCheck) form.append('skipFitCheck', 'true');
+    if (recursive) form.append('recursive', 'true');
     form.append('image', file);
     return call<ExperimentRun>('/runs', { method: 'POST', body: form });
   },
@@ -182,8 +225,10 @@ export async function experimentToVariant(run: Pick<ExperimentRun, 'id' | 'canva
       const p = layer.placement, unresolved = p.kind === 'unresolved';
       // Unresolved: natural size, shrunk to fit the canvas if needed, at the top-left and hidden.
       const k = unresolved ? Math.min(1, run.canvas.width / p.width, run.canvas.height / p.height) : 1;
-      const label = p.kind === 'base' ? 'Generated base' : layer.name || 'Layer';
-      layers.push({ id: `layer-${newId()}`, type: 'image', assetId, name: `${unresolved ? '⚠ unplaced: ' : ''}${label} (z${layer.zIndex})`.slice(0, 200),
+      const label = p.kind === 'base' ? (layer.cleanBackground ? BASE_LABELS[layer.cleanBackground.status] : 'Generated base') : layer.name || 'Layer';
+      // Layers a residual pass found say so, for debugging the refinement.
+      const pass = layer.provenance && layer.provenance.sourcePass > 0 ? ` · pass ${layer.provenance.sourcePass}` : '';
+      layers.push({ id: `layer-${newId()}`, type: 'image', assetId, name: `${unresolved ? '⚠ unplaced: ' : ''}${label}${pass} (z${layer.zIndex})`.slice(0, 200),
         x: p.x * scale, y: p.y * scale, width: Math.max(1, p.width * k * scale), height: Math.max(1, p.height * k * scale), rotation: 0, opacity: 1, visible: !unresolved, locked: false });
     }
     return { id: `layerize-${newId()}`, name: `OpenAI + Seedream ${run.id.slice(0, 16)}`, revision: 0, canvas: { width, height, backgroundColor: '#FFFFFF', transparent: true }, elements: [], layers };

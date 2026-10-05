@@ -8,7 +8,8 @@
  * count), separateHeldObject (true | false, default true; Template A's checkbox, ignored by templates without it),
  * templateOptions (JSON object of the selected template's own options, e.g. Template B's
  * {"separateTouchingIndependentObjects":true}; rejected for a template that does not declare them), skipFitCheck (true |
- * false, default false: "Run anyway" past the template fit check) and targetLayers
+ * false, default false: "Run anyway" past the template fit check), recursive (true | false, default false: the recursive
+ * refinement, recursiveDecomposition.ts: residual Seedream passes and one clean background, only as needed) and targetLayers
  * (exact output layer count including the base, applied locally after Seedream) form fields. Resume takes an optional
  * targetLayers to re-render a finished run at another count from its saved result. Templates are listed and saved under /templates.
  */
@@ -68,14 +69,14 @@ export function experimentAccess(access: ExperimentAccess = {}): RequestHandler 
 function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<string, string> }> {
   return new Promise((resolve, reject) => {
     let parser: ReturnType<typeof busboy>;
-    try { parser = busboy({ headers: req.headers, limits: { files: 1, fields: 8, parts: 9, fieldSize: 200, fileSize: MAX_UPLOAD_BYTES } }); }
+    try { parser = busboy({ headers: req.headers, limits: { files: 1, fields: 9, parts: 10, fieldSize: 200, fileSize: MAX_UPLOAD_BYTES } }); }
     catch { reject(new RunError('INVALID_UPLOAD', 'Upload one image as multipart form data.')); return; }
     let file: Buffer | undefined, truncated = false, optionsTruncated = false;
     const fields: Record<string, string> = {};
     parser.on('field', (name, value, info) => {
       // A cut-off templateOptions value would silently lose an option; refuse instead.
       if (info.valueTruncated && name === 'templateOptions') { optionsTruncated = true; return; }
-      if (['promptMode', 'templateKey', 'separateHeldObject', 'templateOptions', 'skipFitCheck', 'targetLayers', 'minLayers', 'maxLayers'].includes(name)) fields[name] = value;
+      if (['promptMode', 'templateKey', 'separateHeldObject', 'templateOptions', 'skipFitCheck', 'recursive', 'targetLayers', 'minLayers', 'maxLayers'].includes(name)) fields[name] = value;
     });
     parser.on('file', (_name, stream) => {
       const chunks: Buffer[] = [];
@@ -132,7 +133,10 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
       // "Run anyway": the user overrides the template fit check for this run.
       const skip = fields.skipFitCheck ?? 'false';
       if (skip !== 'true' && skip !== 'false') throw new RunError('INVALID_FIT_CHECK', 'skipFitCheck must be "true" or "false".');
-      const { dir, run } = await createRun(runsDir, bytes, source, { separateHeldObject, layerTarget, templateKey, templateOptions, skipFitCheck: skip === 'true' });
+      // The recursive refinement: off unless asked for, so other callers of this route are unchanged.
+      const recursive = fields.recursive ?? 'false';
+      if (recursive !== 'true' && recursive !== 'false') throw new RunError('INVALID_RECURSIVE', 'recursive must be "true" or "false".');
+      const { dir, run } = await createRun(runsDir, bytes, source, { separateHeldObject, layerTarget, templateKey, templateOptions, skipFitCheck: skip === 'true', refinement: recursive === 'true' });
       background(run.id, () => executeRun(dir, deps()));
       res.status(202).json(run);
     } catch (error) { next(error); }

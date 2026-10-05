@@ -62,7 +62,8 @@ export const imageTemplateApi = {
   generate: (id: string, request: { name: string; prompt: string; aspectRatios: ImageTemplateRatio[]; referenceCreative?: ReferenceCreativeDraft }) => call<ImageTemplate>(at(id, '/generate'), json('POST', request)),
   /** One ratio adapted from the original upload: a retry or a size added later. One paid request. */
   generateRatio: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'generate'), { method: 'POST' }),
-  /** One OpenAI planner request and one paid Seedream call; waits its turn behind any other decomposition. */
+  /** One OpenAI planner request and one paid Seedream call, plus the recursive cleanup only while the base is contaminated
+   * (at most 2 Seedream calls and 1 OpenAI image edit); waits its turn behind any other decomposition. */
   decompose: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'decompose'), { method: 'POST' }),
   /** Reads fal's saved result of a stopped decomposition: no new paid call. */
   resume: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'resume'), { method: 'POST' }),

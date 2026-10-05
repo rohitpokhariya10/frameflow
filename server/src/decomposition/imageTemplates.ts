@@ -33,7 +33,7 @@ import { plannerModel } from './aiModels.js';
 import { allowOnly, supportsProductReference, generateVariant, queueVariant, recordDecomposition, variantImage, type GenerationConfig, type GenerationVariant, type VariantDecomposition } from './generationGroups.js';
 import { createRun, executeRun, MAX_UPLOAD_BYTES, readRun, resumeRun, RunError, validRunId, type RunnerDeps, type RunRecord } from './layerizeExperiment.js';
 import type { PlannerUsage } from './layerizePlanner.js';
-import { requireTemplate, suggestedLayerCount, TEMPLATES } from './layerizeTemplates.js';
+import { requireTemplate, TEMPLATES } from './layerizeTemplates.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_IMAGE_TEMPLATES_DIR = resolve(here, '../../../artifacts/decomposition/image-templates');
@@ -368,15 +368,10 @@ export function addRatio(root: string, id: string, variantId: string): ImageTemp
   });
 }
 
-/**
- * How a ratio's image is decomposed: as an ordinary run of the template's layer style, with that template's default
- * settings, the same as an upload of this image in the OpenAI + Seedream test panel left at its defaults: Template A
- * with its held object separate and its suggested layer count, Templates B and C with their options off and their
- * natural layer count. The template fit check follows the server's setting, as for any run.
- */
+/** Layer-style metadata is retained for older records; new runs analyze the actual variant. */
 export function decompositionSettings(templateKey: GenerationTemplateKey) {
-  const template = requireTemplate(templateKey), suggestedLayers = suggestedLayerCount(templateKey, true);
-  return { templateKey, separateHeldObject: true, layerTarget: { templateKey, ...(suggestedLayers !== undefined ? { suggestedLayers, targetLayers: suggestedLayers } : {}) }, hasGrouping: Boolean(template.grouping) };
+  const template = requireTemplate(templateKey);
+  return { templateKey, separateHeldObject: true, hasGrouping: Boolean(template.grouping) };
 }
 
 /** A ratio's latest decomposition as shown: waiting its turn, running, done (with its layer count) or failed. */
@@ -584,8 +579,10 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       res.status(202).json(shown(readImageTemplate(root, req.params.id)));
     } catch (error) { next(error); }
   });
-  // Decomposes this ratio's image with the template's layer style: an ordinary run (OpenAI planner + one paid Seedream
-  // call). Asked for while another run is active, it waits its turn instead of being refused.
+  // Analyze this exact ratio semantically, then make one Seedream call. Reference-style metadata
+  // does not constrain its layers. Requests wait their turn while another run is active. The recursive refinement
+  // follows (recursiveDecomposition.ts): up to 2 residual Seedream calls and 1 OpenAI image edit, only when the base is
+  // still contaminated.
   router.post(`${at}/:id/variants/:variant/decompose`, express.json({ limit: '1kb' }), async (req, res, next) => {
     const key = `${req.params.id}/${req.params.variant}`;
     // Reserve before createRun's asynchronous image validation, so two clicks/tabs cannot submit this image twice.
@@ -597,10 +594,10 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       if (previous?.state === 'waiting' || previous?.state === 'running') throw new RunError('BUSY', 'This image is already being decomposed.');
       const { variant, bytes } = variantImage(root, template.id, req.params.variant);
       const settings = decompositionSettings(template.decomposeWith ?? FALLBACK_LAYER_STYLE);
-      const { dir, run } = await createRun(runsDir, bytes, { mode: 'generated' }, { templateKey: settings.templateKey, separateHeldObject: settings.separateHeldObject, layerTarget: settings.layerTarget,
+      const { dir, run } = await createRun(runsDir, bytes, { mode: 'generated' }, { semanticPlanning: true, refinement: true, templateKey: settings.templateKey, separateHeldObject: true,
         origin: { kind: 'image-template', generationId: template.id, variantId: variant.id, aspectRatio: variant.aspectRatio } });
       const entry: VariantDecomposition & { templateKey: string } = { runId: run.id, createdAt: run.createdAt, templateKey: settings.templateKey, ...(settings.hasGrouping ? { separateHeldObject: settings.separateHeldObject } : {}),
-        ...(run.templateOptions ? { templateOptions: run.templateOptions } : {}), ...(settings.layerTarget.targetLayers !== undefined ? { targetLayers: settings.layerTarget.targetLayers } : {}) };
+        ...(run.templateOptions ? { templateOptions: run.templateOptions } : {}) };
       recordDecomposition(root, template.id, variant.id, entry);
       ctx.runInTurn(run.id, () => executeRun(dir, ctx.deps()));
       res.status(202).json(shown(readImageTemplate(root, template.id)));

@@ -144,7 +144,7 @@ export function ReferenceCreative({ templateId, templateName, linkedSetId, onAss
     });
   };
   const decompose = (variants: ImageTemplateVariant[]) => {
-    if (!current || !window.confirm(`Decompose ${variants.length} image(s)? Each makes 1 OpenAI planner request and 1 paid Seedream call.`)) return;
+    if (!current || !window.confirm(`Decompose ${variants.length} image(s)? Each makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it.`)) return;
     void act('decompose', async valid => { for (const variant of variants) { if (!valid()) return; const result = await imageTemplateApi.decompose(current.id, variant.id); if (valid()) keep(result); } });
   };
   const open = (variant: ImageTemplateVariant) => void act('open', async valid => {

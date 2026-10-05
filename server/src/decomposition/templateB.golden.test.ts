@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PLANNER_MODEL } from './aiModels.js';
+import { DEFAULT_DECOMPOSITION_PLANNER_MODEL } from './aiModels.js';
 import { createOpenAIPlanner } from './layerizePlanner.js';
 import { PLAN_SCHEMA_B, PLANNER_INSTRUCTION_B, TEMPLATE_B_OPTIONS, touchingGroupPrompt } from './layerizeTemplateB.js';
 import { listTemplates } from './layerizeTemplates.js';
@@ -35,6 +35,6 @@ describe('Template B frozen behavior (golden)', () => {
       await createOpenAIPlanner({ client: { responses: { create } } as never })(Buffer.from('x'), 'image/png', { separateHeldObject: true, templateKey: 'template-b', templateOptions: { separateTouchingIndependentObjects: touching } });
     }
     expect(shapes).toEqual(['7dd81d87b5befdba', '4d6d7105ece0e57d']);
-    expect(models).toEqual([DEFAULT_PLANNER_MODEL, DEFAULT_PLANNER_MODEL]);
+    expect(models).toEqual([DEFAULT_DECOMPOSITION_PLANNER_MODEL, DEFAULT_DECOMPOSITION_PLANNER_MODEL]);
   });
 });

@@ -124,8 +124,8 @@ export function CreateTemplateFromImage({ onClose }: { onClose: () => void }) {
   const generateRatio = (template: ImageTemplate, variant: ImageTemplateVariant) => window.confirm(`Generate the ${variant.aspectRatio} image${variant.attempts ? ' again' : ''} from the original reference? This makes 1 paid OpenAI image request.`)
     && act(`generate-${variant.id}`, async () => keep(await imageTemplateApi.generateRatio(template.id, variant.id)));
   const decompose = (template: ImageTemplate, list: ImageTemplateVariant[]) => window.confirm(list.length === 1
-    ? `Decompose the ${list[0].aspectRatio} image into layers? This makes 1 OpenAI planner request and 1 paid Seedream call.`
-    : `Decompose ${plural(list.length, 'image')} into layers (${list.map(variant => variant.aspectRatio).join(', ')})? Each makes 1 OpenAI planner request and 1 paid Seedream call; they run one at a time.`)
+    ? `Decompose the ${list[0].aspectRatio} image into layers? This makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it.`
+    : `Decompose ${plural(list.length, 'image')} into layers (${list.map(variant => variant.aspectRatio).join(', ')})? Each makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it; they run one at a time.`)
     && act(list.length === 1 ? `decompose-${list[0].id}` : 'decompose-all', async () => { for (const variant of list) keep(await imageTemplateApi.decompose(template.id, variant.id)); });
   const resume = (template: ImageTemplate, variant: ImageTemplateVariant) => act(`resume-${variant.id}`, async () => keep(await imageTemplateApi.resume(template.id, variant.id)));
   // The finished decomposition becomes a new version of the open design, selected, and the dialog closes onto it.
@@ -280,16 +280,13 @@ function TemplateDraft({ template, info, busy, onCreate, onChange, onRegenerate,
   </div>;
 }
 
-/** Which decomposition template a result is split with: detected from the reference, or chosen. Folded away; most never change it. */
-function LayerStyle({ template, info, disabled, onChange }: { template: ImageTemplate; info?: ImageTemplateInfo; disabled: boolean; onChange: (key: GenerationTemplateKey) => void }) {
+/** Reference-style metadata; decomposition itself now analyzes each result independently. */
+function LayerStyle({ template, info }: { template: ImageTemplate; info?: ImageTemplateInfo; disabled: boolean; onChange: (key: GenerationTemplateKey) => void }) {
   const key = template.decomposeWith ?? template.detected?.templateKey ?? 'template-b', style = info?.layerStyles.find(item => item.key === key);
   const how = template.decomposeWithChosen ? 'chosen by you' : template.detected ? 'detected from your image' : 'default';
   return <details className="cti-advanced" data-testid="layer-style">
-    <summary>Layer style: <strong>{style ? `${style.summary.split(':')[0]} (${style.name})` : key}</strong> · {how}</summary>
-    <label className="cti-field"><span>How the results are split into layers when decomposed</span>
-      <select value={key} disabled={disabled || !info} onChange={event => onChange(event.target.value as GenerationTemplateKey)}>
-        {(info?.layerStyles ?? []).map(item => <option key={item.key} value={item.key}>{item.name} — {item.summary}</option>)}
-      </select></label>
+    <summary>Image-aware decomposition · Reference style: <strong>{style ? `${style.summary.split(':')[0]} (${style.name})` : key}</strong> · {how}</summary>
+    <p className="ws-hint">Each result is analyzed individually to separate meaningful objects, text and graphics while preserving overlaps. Layer count follows the image.</p>
     {template.detected && <span className="ws-hint">Detected: {info?.layerStyles.find(item => item.key === template.detected!.templateKey)?.name ?? template.detected.templateKey}. {template.detected.reason}</span>}
   </details>;
 }
@@ -354,7 +351,7 @@ function ResultCard({ template, variant, busy, onGenerate, onDecompose, onResume
         {failure === 'decomposition' && variant.decomposition?.resumable && <button className="ws-btn ws-btn-primary" disabled={!!busy} onClick={onResume}>Resume (no new charge)</button>}
         {failure === 'decomposition' && <button className="ws-btn" disabled={!!busy} onClick={onDecompose}><RotateCcw size={14} aria-hidden="true" /> Decompose again</button>}
       </div>
-      {(status === 'generated' || failure === 'decomposition') && <span className="ws-hint">Decomposing makes 1 OpenAI planner request and 1 paid Seedream call.</span>}
+      {(status === 'generated' || failure === 'decomposition') && <span className="ws-hint">Decomposing makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it (at most 5 calls).</span>}
     </div>
   </article>;
 }

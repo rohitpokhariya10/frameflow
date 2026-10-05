@@ -74,13 +74,13 @@ describe('OpenAI → Seedream layerize experiment', () => {
     expect(text).not.toMatch(/layer target|suggested|min |max /i);
   });
 
-  it('plans with GPT-5 mini unless OPENAI_DECOMPOSITION_MODEL names another model; only the model changes', async () => {
+  it('plans with GPT-5.6 Sol unless OPENAI_DECOMPOSITION_MODEL names another model; only the model changes', async () => {
     const create = vi.fn(async (request: { model: string }) => { void request; return { status: 'completed', output: [], output_text: JSON.stringify({ prompt: 'Separate each held object.', planned_layers: [], warnings: [] }) }; });
     const client = { responses: { create } } as never;
     const byDefault = await createOpenAIPlanner({ client })(Buffer.from('x'), 'image/png');
     const configured = await createOpenAIPlanner({ client, model: plannerModel({ OPENAI_DECOMPOSITION_MODEL: 'gpt-5.4-mini' }) })(Buffer.from('x'), 'image/png');
-    expect([byDefault.model, configured.model]).toEqual(['gpt-5-mini', 'gpt-5.4-mini']);
-    expect(create.mock.calls.map(([request]) => request.model)).toEqual(['gpt-5-mini', 'gpt-5.4-mini']);
+    expect([byDefault.model, configured.model]).toEqual(['gpt-5.6-sol', 'gpt-5.4-mini']);
+    expect(create.mock.calls.map(([request]) => request.model)).toEqual(['gpt-5.6-sol', 'gpt-5.4-mini']);
     // Same request either way: instructions, image input and the strict plan schema.
     const [first, second] = create.mock.calls.map(([request]) => ({ ...request, model: '' }));
     expect(second).toEqual(first);

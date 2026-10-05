@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { isDesignVariant } from '../../lib/persistence/schema';
-import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer } from './layerizeExperiment';
+import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -104,4 +104,51 @@ it('sends Template B\'s option as templateOptions, and Template A\'s request wit
   await experimentApi.start(file, 'generated', 'template-a', false, undefined, undefined, true);
   expect([...bodies[2].keys()]).toEqual(['promptMode', 'separateHeldObject', 'templateKey', 'skipFitCheck', 'image']);
   expect(bodies[2].get('skipFitCheck')).toBe('true');
+});
+
+it('imports a refined run: the clean background at the bottom, residual-pass layers marked, each layer once', async () => {
+  const placement = { kind: 'full-canvas' as const, x: 0, y: 0, width: 1024, height: 1024 };
+  const layer = (file: string, zIndex: number, name: string, sourcePass: number, extra: Partial<ExperimentLayer> = {}): ExperimentLayer => ({ index: zIndex, file, zIndex, name, pixelWidth: 1024, pixelHeight: 1024, opaquePercent: 5, placement,
+    provenance: { sourcePass, sourceImage: sourcePass ? `residual-pass-${sourcePass}.png` : 'original.png', providerFile: file, providerZIndex: zIndex, role: 'unknown', mask: file }, ...extra });
+  const layers = [
+    layer('clean-background.png', 0, 'Background', 0, { placement: { ...placement, kind: 'base' }, rawFile: 'layer-00.png', cleanBackground: { status: 'ai-reconstructed', method: 'ai-reconstruction' } }),
+    layer('layer-01.png', 1, 'Display pedestal', 0), layer('pass-1-layer-01.png', 2, 'Bluetooth speaker', 1), layer('layer-03.png', 3, 'Wireless headphones', 0),
+  ];
+  const fetched: string[] = [];
+  const variant = await experimentToVariant({ id: '2026-10-05T10-00-00-000Z-abcdef', canvas: { width: 1024, height: 1024 }, layers, outputLayers: layers.map(l => ({ ...l, sources: [l.file] })) },
+    async file => { fetched.push(file); return new Blob(['x'], { type: 'image/png' }); }, { putAsset: async () => undefined, deleteAsset: async () => undefined });
+  expect(isDesignVariant(variant)).toBe(true);
+  expect(fetched).toEqual(['clean-background.png', 'layer-01.png', 'pass-1-layer-01.png', 'layer-03.png']);
+  expect(variant.layers!.map(l => l.name)).toEqual(['Clean background (z0)', 'Display pedestal (z1)', 'Bluetooth speaker · pass 1 (z2)', 'Wireless headphones (z3)']);
+  // A fallback or contaminated background is never called clean.
+  for (const [status, name] of [['fallback', 'Background (fallback fill) (z0)'], ['contaminated', 'Background (contaminated) (z0)']] as const) {
+    const base = { ...layers[0], cleanBackground: { status, method: status === 'fallback' ? 'local-fill' as const : 'ai-reconstruction' as const } };
+    const imported = await experimentToVariant({ id: '2026-10-05T10-00-00-000Z-abcdef', canvas: { width: 1024, height: 1024 }, layers: [base] }, async () => new Blob(['x']), { putAsset: async () => undefined, deleteAsset: async () => undefined });
+    expect(imported.layers![0].name).toBe(name);
+  }
+});
+
+it('summarizes a refined run for debugging: passes, final layers, cleanup, background and every call', () => {
+  const run = { calls: { fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 2, backgroundReconstruction: 1 }, refinement: {
+    state: 'done', options: { maxDepth: 2, maxTotalLayers: 32, reconstructBackground: true }, passesExecuted: 3, finalLayers: 17, stopReason: 'clean', warnings: [], assessments: [],
+    passes: [{ pass: 1, state: 'done', accepted: ['a'], rejected: [] }, { pass: 2, state: 'done', accepted: ['b'], rejected: [] }],
+    background: { status: 'ai-reconstructed', method: 'ai-reconstruction', file: 'clean-background.png', contaminated: false, reasons: [] },
+  } } satisfies Pick<ExperimentRun, 'refinement' | 'calls'>;
+  expect(refinementSummary(run)).toEqual([
+    { label: 'Passes', value: '3 (1 initial + 2 residual, at most 2)' }, { label: 'Final layers', value: '17' },
+    { label: 'Residual cleanup', value: 'Performed (stopped: clean)' }, { label: 'Background', value: 'AI reconstructed' },
+    { label: 'Calls', value: 'planner 1 · initial Seedream 1 · residual Seedream 2 · background edit 1' },
+  ]);
+  expect(refinementSummary({ ...run, refinement: { ...run.refinement, passesExecuted: 1, passes: [], background: { ...run.refinement.background, status: 'provider-clean' } } }).slice(2, 4).map(line => line.value))
+    .toEqual(['Not needed (clean)', 'Clean (Seedream base, no reconstruction needed)']);
+  expect(refinementSummary({})).toEqual([]);
+});
+
+it('asks for the recursive refinement only when chosen', async () => {
+  const sent: FormData[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => { sent.push(init.body as FormData); return new Response(JSON.stringify({ id: 'x' }), { status: 202 }); }));
+  const file = new File(['x'], 'offer.png', { type: 'image/png' });
+  await experimentApi.start(file, 'generated', 'template-b');
+  await experimentApi.start(file, 'generated', 'template-b', true, undefined, undefined, false, true);
+  expect(sent.map(form => form.get('recursive'))).toEqual([null, 'true']);
 });

@@ -8,6 +8,9 @@
  * A configured model is used as given and never silently substituted.
  */
 export const DEFAULT_PLANNER_MODEL = 'gpt-5-mini';
+/** Decomposition-only default, verified in OpenAI SDK 7.23.0 and the GPT-5.6 Sol model docs. */
+export const DEFAULT_DECOMPOSITION_PLANNER_MODEL = 'gpt-5.6-sol';
+export const decompositionPlannerModel = (env = process.env) => env.OPENAI_DECOMPOSITION_MODEL?.trim() || DEFAULT_DECOMPOSITION_PLANNER_MODEL;
 /** "OpenAI Image 2": the identifier in the OpenAI SDK's ImageModel list (openai 7.23.0, checked 2026-09-30). */
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 

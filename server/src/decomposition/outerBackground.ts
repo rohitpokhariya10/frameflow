@@ -18,7 +18,7 @@ export type RebuildResult = { png: Buffer; holePercent: number; texture: string;
   source: 'original' | 'base'; enclosedPercent: number };
 
 /** Separable box blur with clamped edges on interleaved float channels. */
-function boxBlur(src: Float32Array, w: number, h: number, ch: number, r: number): Float32Array {
+export function boxBlur(src: Float32Array, w: number, h: number, ch: number, r: number): Float32Array {
   if (r < 1) return src.slice();
   const tmp = new Float32Array(src.length), out = new Float32Array(src.length), n = 2 * r + 1;
   for (let y = 0; y < h; y++) for (let c = 0; c < ch; c++) {
@@ -41,7 +41,7 @@ function boxBlur(src: Float32Array, w: number, h: number, ch: number, r: number)
 }
 
 /** Average color of known pixels around each pixel (known = weight 1): smooth color and lighting without texture. */
-function maskedBlur(rgb: Float32Array, known: Float32Array, w: number, h: number, r: number): Float32Array {
+export function maskedBlur(rgb: Float32Array, known: Float32Array, w: number, h: number, r: number): Float32Array {
   const weighted = new Float32Array(rgb.length);
   for (let i = 0; i < known.length; i++) for (let c = 0; c < 3; c++) weighted[i * 3 + c] = rgb[i * 3 + c] * known[i];
   const num = boxBlur(weighted, w, h, 3, r), den = boxBlur(known, w, h, 1, r), out = new Float32Array(rgb.length);
@@ -50,7 +50,7 @@ function maskedBlur(rgb: Float32Array, known: Float32Array, w: number, h: number
 }
 
 /** Push-pull: fills unknown pixels from progressively coarser averages of known ones, upsampled bilinearly. */
-function pushPull(rgb: Float32Array, known: Float32Array, w: number, h: number): Float32Array {
+export function pushPull(rgb: Float32Array, known: Float32Array, w: number, h: number): Float32Array {
   const levels: { c: Float32Array; wt: Float32Array; w: number; h: number }[] = [];
   const c0 = new Float32Array(rgb.length);
   for (let i = 0; i < known.length; i++) for (let c = 0; c < 3; c++) c0[i * 3 + c] = rgb[i * 3 + c] * known[i];
@@ -100,15 +100,15 @@ function clearBand(hole: Uint8Array, w: number, h: number, rows: boolean) {
 const reflect = (v: number, n: number) => { const m = ((v % (2 * n)) + 2 * n) % (2 * n); return m < n ? m : 2 * n - 1 - m; };
 
 /** Square dilation of a 0/1 map by r pixels. */
-function grow(map: Uint8Array, w: number, h: number, r: number): Uint8Array {
+export function grow(map: Uint8Array, w: number, h: number, r: number): Uint8Array {
   const blurred = boxBlur(Float32Array.from(map), w, h, 1, r), out = new Uint8Array(map.length);
   for (let i = 0; i < map.length; i++) if (blurred[i] > 1e-3) out[i] = 1;
   return out;
 }
-const deviation = (rgb: Float32Array, model: Float32Array, i: number) =>
+export const deviation = (rgb: Float32Array, model: Float32Array, i: number) =>
   Math.max(Math.abs(rgb[i * 3] - model[i * 3]), Math.abs(rgb[i * 3 + 1] - model[i * 3 + 1]), Math.abs(rgb[i * 3 + 2] - model[i * 3 + 2]));
 /** Texture noise of the pixels marked in `use`, as a robust sigma (median absolute deviation from the model). */
-function noiseSigma(rgb: Float32Array, model: Float32Array, use: Float32Array): number {
+export function noiseSigma(rgb: Float32Array, model: Float32Array, use: Float32Array): number {
   const devs: number[] = [], step = Math.max(1, Math.floor(use.length / 20000));
   for (let i = 0; i < use.length; i += step) if (use[i]) devs.push(deviation(rgb, model, i));
   if (!devs.length) return 1;
@@ -207,6 +207,19 @@ export async function rebuildOuterBackground(base: Buffer, canvas: Size, holes: 
   // Nothing trustworthy to continue from: keep the provider layer rather than invent a background.
   if (n - holeCount < n * 0.01) return undefined;
 
+  const { out, texture } = fillMasked(rgb, mask, w, h);
+  return { png: await sharp(out, { raw: { width: w, height: h, channels: 3 } }).ensureAlpha().png().toBuffer(), holePercent: Math.round(1000 * holeCount / n) / 10, texture,
+    contaminationPercent: Math.round(10000 * contamination / n) / 100, residualPercent: backgroundResidualPercent(out, w, h), source, enclosedPercent: Math.round(10000 * enclosed / n) / 100 };
+}
+
+/**
+ * Fills the masked pixels (mask = 1) by continuing the unmasked surroundings: a smooth color and lighting field
+ * interpolated inward (push-pull), plus fine texture borrowed from the longest untouched row or column band. Unmasked
+ * pixels are kept; a 3 px soft seam blends inside the mask. Deterministic, no model call. Shared by the outer-background
+ * rebuild and the recursive decomposition's residual images and local clean-background fallback.
+ */
+export function fillMasked(rgb: Float32Array, mask: Uint8Array, w: number, h: number): { out: Buffer; texture: string } {
+  const n = w * h;
   const known = new Float32Array(n);
   for (let i = 0; i < n; i++) known[i] = mask[i] ? 0 : 1;
   // Low frequency: color and lighting of the surrounding background, continued inward, then smoothed.
@@ -231,6 +244,5 @@ export async function rebuildOuterBackground(base: Buffer, canvas: Size, holes: 
     const a = mask[i] ? alpha[i] : 0;
     for (let c = 0; c < 3; c++) out[i * 3 + c] = Math.max(0, Math.min(255, Math.round(rgb[i * 3 + c] * (1 - a) + filled[i * 3 + c] * a)));
   }
-  return { png: await sharp(out, { raw: { width: w, height: h, channels: 3 } }).ensureAlpha().png().toBuffer(), holePercent: Math.round(1000 * holeCount / n) / 10, texture,
-    contaminationPercent: Math.round(10000 * contamination / n) / 100, residualPercent: backgroundResidualPercent(out, w, h), source, enclosedPercent: Math.round(10000 * enclosed / n) / 100 };
+  return { out, texture };
 }

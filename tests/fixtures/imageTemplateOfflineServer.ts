@@ -13,6 +13,9 @@ import { createLayerizeRouter } from '../../server/src/decomposition/layerizeRou
 import { createOpenAIPlanner } from '../../server/src/decomposition/layerizePlanner.js';
 import type { GenerationConfig } from '../../server/src/decomposition/generationGroups.js';
 import type { FalTransport } from '../../server/src/decomposition/providers/falClient.js';
+import { ALL_PARTS, offerComposite, offerPart, partName, rowFillEdit, type OfferPart } from '../../server/src/decomposition/complexOffer.fixture.js';
+import { RESIDUAL_PROMPT } from '../../server/src/decomposition/recursiveDecomposition.js';
+import { SEMANTIC_SCHEMA, type SemanticAnalysis } from '../../server/src/decomposition/semanticPlanner.js';
 
 if (process.env.FRAMEFLOW_OFFLINE_E2E !== '1') throw new Error('This fixture requires FRAMEFLOW_OFFLINE_E2E=1.');
 // No SDK transport is used. An accidental fetch fails before it can leave this process.
@@ -42,11 +45,32 @@ const generate = async (request: { size: string; prompt: string; image?: File | 
   return { created: 1, data: [{ b64_json: (await artwork(width, height)).toString('base64') }] };
 };
 const files = new Map<string, Buffer>(), inputs = new Map<string, Buffer>(), results = new Map<string, unknown>();
+// The complex offer creative (recursive decomposition): its first decomposition misses the speaker and power bank and
+// leaves everything baked into its base; the residual pass that follows finds both, plus a duplicate of the headphones.
+const complexDigest = offerComposite().then(digest);
+let complexResidualNext = false;
+const providerCalls: { kind: 'seedream-initial' | 'seedream-residual' | 'background-edit'; complex?: boolean }[] = [];
+async function complexLayers(requestId: string, base: readonly OfferPart[], parts: OfferPart[], duplicates: OfferPart[] = []) {
+  const entries: [string, Buffer][] = [['Background', await offerComposite(base)], ...await Promise.all([...parts, ...duplicates].map(async part => [partName(part), await offerPart(part)] as [string, Buffer]))];
+  return entries.map(([name, png], z_index) => { const url = `https://v3b.fal.media/files/offline/${requestId}-${z_index}.png`; files.set(url, png); return { image: { url }, z_index, name }; });
+}
 const transport: FalTransport = {
   upload: async bytes => { const url = `https://v3b.fal.media/files/offline/input-${inputs.size}.png`; inputs.set(url, bytes); return url; },
   submit: async (_endpoint, input) => {
-    const { width = 1024, height = 1024 } = await sharp(inputs.get(String(input.image_url))!).metadata();
+    const bytes = inputs.get(String(input.image_url))!, residual = String(input.prompt ?? '').startsWith(RESIDUAL_PROMPT.slice(0, 60));
+    const { width = 1024, height = 1024 } = await sharp(bytes).metadata();
     const requestId = `offline-${results.size}`;
+    if (!residual && digest(bytes) === await complexDigest) {
+      providerCalls.push({ kind: 'seedream-initial', complex: true }); complexResidualNext = true;
+      results.set(requestId, { layers: await complexLayers(requestId, ALL_PARTS, ALL_PARTS.filter(part => part !== 'speaker' && part !== 'powerBank')) });
+      return { requestId };
+    }
+    if (residual && complexResidualNext) {
+      providerCalls.push({ kind: 'seedream-residual', complex: true }); complexResidualNext = false;
+      results.set(requestId, { layers: await complexLayers(requestId, [], ['speaker', 'powerBank'], ['headphones']) });
+      return { requestId };
+    }
+    providerCalls.push({ kind: residual ? 'seedream-residual' : 'seedream-initial' });
     const layers = await Promise.all((['background', 'phone'] as const).map(async (part, z_index) => {
       const url = `https://v3b.fal.media/files/offline/${requestId}-${part}.png`;
       files.set(url, await artwork(width, height, part));
@@ -58,7 +82,15 @@ const transport: FalTransport = {
   status: async () => 'COMPLETED', result: async (_endpoint, id) => { await pause(); return results.get(id); }, cancel: async () => undefined,
   download: async url => { const bytes = files.get(url); if (!bytes) throw new Error('Unknown fixture layer.'); return bytes; },
 };
-const planner = createOpenAIPlanner({ client: { responses: { create: async () => ({ status: 'completed', output: [], output_text: JSON.stringify({
+// Image-template decompositions ask for the semantic analysis (semanticPlanner.ts); the test panel's runs for the plain plan.
+const semanticAnalysis: SemanticAnalysis = { image_type: 'product photograph', scene_summary: 'A lavender smartphone standing in a lavender studio.',
+  elements: [
+    { id: 'studio_background', type: 'background', description: 'The lavender studio background with its soft shapes', editable_independently: true, approximate_region: 'full canvas', z_order: 0, confidence: 'high', occlusion: { is_occluded: true, occluded_by: ['lavender_phone'], requires_reconstruction: true } },
+    { id: 'lavender_phone', type: 'product', description: 'The lavender smartphone, whole', editable_independently: true, approximate_region: 'center', z_order: 1, confidence: 'high', occlusion: { is_occluded: false, occluded_by: [], requires_reconstruction: false } },
+  ],
+  relationships: [{ source: 'lavender_phone', relationship: 'in_front_of', target: 'studio_background' }], ambiguities: [], recommended_layer_count: 2,
+  decomposition_strategy: 'Separate the phone from the studio.', downstream_decomposition_prompt: 'Extract the lavender phone as a whole object. Separate the studio background.' };
+const planner = createOpenAIPlanner({ client: { responses: { create: async (request: { text: { format: { schema: unknown } } }) => ({ status: 'completed', output: [], output_text: JSON.stringify(request.text.format.schema === SEMANTIC_SCHEMA ? semanticAnalysis : {
   prompt: 'Extract the lavender phone as a whole object. Separate the studio background.', planned_layers: [{ name: 'Lavender phone', description: 'The main product, in one layer.' }], warnings: [],
 }) }) } } as never });
 const router = createLayerizeRouter({
@@ -78,10 +110,15 @@ const router = createLayerizeRouter({
     const characters = width === 900 ? 3344 : 4002;
     return { id: `offline-analysis-${characters}`, status: 'completed', output: [], output_text: JSON.stringify(verboseImageAnalysis(characters)) };
   } } } as never }),
-  deps: () => ({ planner, transport: () => transport }),
+  // The clean-background edit: a local row fill (exact for the complex offer's vertical gradient); never a network call.
+  deps: () => ({ planner, transport: () => transport, backgroundReconstructor: { model: 'offline-image-edit', reconstruct: async ({ image, mask }) => {
+    providerCalls.push({ kind: 'background-edit' }); await pause(); return { image: await rowFillEdit(image, mask), requestId: `offline-edit-${providerCalls.length}` };
+  } } }),
 });
 // Explicit empty configuration: no environment credentials or .env files are read.
 const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router);
+app.get('/__test__/complex-offer.png', async (_req, res) => res.type('png').send(await offerComposite()));
+app.get('/__test__/provider-calls', (_req, res) => res.json(providerCalls));
 app.get('/__test__/reference-events', (req, res) => res.json(events.filter(event => event.source === String(req.query.source))));
 app.get('/__test__/offer-reference.png', async (req, res) => {
   const seed = String(req.query.seed ?? ''), color = createHash('sha256').update(seed).digest('hex').slice(0, 6);

@@ -23,7 +23,21 @@ export type LayerInfo = {
   /** Set when this layer was rebuilt locally: `file` is the rebuilt asset, `rawFile` the untouched provider layer. */
   rawFile?: string; rebuilt?: { method: 'local-background-fill'; from: string[]; foreground: string[]; holePercent: number; texture: string; contaminationPercent: number; residualPercent: number;
     source?: 'original' | 'base'; enclosedPercent?: number };
+  /** Runs with the recursive refinement (recursiveDecomposition.ts) only: which pass made this layer, and from what. */
+  provenance?: LayerProvenance;
+  /** The base layer of a refined run: how its clean background was made and whether it is verified clean. */
+  cleanBackground?: { status: CleanBackgroundStatus; method: CleanBackgroundMethod };
 };
+/**
+ * sourcePass: 0 = the initial decomposition of the uploaded image, 1–2 = residual passes. sourceImage: the image that
+ * pass decomposed. role: background, or the foreground role read from the layer's name. bbox: its opaque pixels in
+ * canvas pixels [left, top, right, bottom]. mask: the file whose alpha is its mask. groupedFrom: provider files merged
+ * into this one layer (tiny residual fragments).
+ */
+export type LayerProvenance = { sourcePass: number; sourceImage: string; parentResidualId?: string; providerFile: string; providerRequestId?: string; providerZIndex: number;
+  role: string; bbox?: [number, number, number, number]; mask: string; areaPercent?: number; confidence?: number; groupedFrom?: string[] };
+export type CleanBackgroundStatus = 'provider-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+export type CleanBackgroundMethod = 'provider-base' | 'ai-reconstruction' | 'local-fill';
 export type Canvas = { width: number; height: number };
 const SIZE_TOLERANCE = 2;
 

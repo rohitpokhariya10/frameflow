@@ -6,11 +6,11 @@ import { assets } from '../../lib/assets/runtimeAssets';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { decomposedDesignImported } from '../../store/editorSlice';
 import { variantSelected } from '../../store/uiSlice';
-import { experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, ownsOptions, parseTargetLayers, runPrompt, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
+import { BACKGROUND_STATUS_LABELS, experimentApi, experimentFileUrl, experimentToVariant, experimentZipUrl, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, runPrompt, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun, type PlannedLayer, type PromptMode, type TemplateEntry } from './layerizeExperiment';
 import './workspace/workspace.css';
 import { TemplateGenerator } from './TemplateGenerator';
 
-const ACTIVE = ['uploaded', 'planning', 'planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading'];
+const ACTIVE = ['uploaded', 'planning', 'planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading', 'refining'];
 const box: React.CSSProperties = { padding: 16, borderTop: '1px solid var(--color-line)' };
 const thumb: React.CSSProperties = { width: '100%', height: 150, objectFit: 'contain', background: 'repeating-conic-gradient(#e6e4de 0 25%, #fff 0 50%) 0 0/16px 16px' };
 const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', background: '#fff', padding: 10, borderRadius: 8, margin: '6px 0' };
@@ -34,8 +34,10 @@ function LayerTile({ l, f }: { l: ExperimentLayer; f: (file: string) => string }
     <a href={f(l.file)} target="_blank" rel="noreferrer"><img src={f(l.file)} alt={l.name ?? l.file} style={thumb} /></a>
     <figcaption><strong>z{l.zIndex} {l.name ?? (l.placement.kind === 'base' ? 'base' : l.file)}</strong><br />{l.placement.kind} · {l.pixelWidth}×{l.pixelHeight} · {l.opaquePercent}% opaque
       {l.sources && l.sources.length > 1 && <div>Merged from {l.sources.join(' + ')}</div>}
+      {l.provenance && <div>Pass {l.provenance.sourcePass}{l.provenance.sourcePass ? ` (from ${l.provenance.sourceImage})` : ''} · {l.provenance.role}{l.provenance.groupedFrom ? ` · grouped from ${l.provenance.groupedFrom.length} fragments` : ''}</div>}
+      {l.cleanBackground && <div>Background: <strong>{BACKGROUND_STATUS_LABELS[l.cleanBackground.status]}</strong>{l.rawFile && <> · <a href={f(l.rawFile)} target="_blank" rel="noreferrer">raw Seedream base</a></>}</div>}
       {l.placement.reason && <div style={{ color: '#8a5a00' }}>{l.placement.reason}</div>}
-      {l.rebuilt && <div>Rebuilt locally as a full-canvas background from {l.rebuilt.from.join(' + ')} ({l.rebuilt.holePercent}% filled{l.rebuilt.contaminationPercent ? `, incl. ${l.rebuilt.contaminationPercent}% leftover foreground` : ''}){l.rebuilt.residualPercent !== undefined && <> · residual {l.rebuilt.residualPercent}%</>}{l.rawFile && <> · <a href={f(l.rawFile)} target="_blank" rel="noreferrer">raw Seedream layer</a></>}</div>}</figcaption>
+      {l.rebuilt && !l.cleanBackground && <div>Rebuilt locally as a full-canvas background from {l.rebuilt.from.join(' + ')} ({l.rebuilt.holePercent}% filled{l.rebuilt.contaminationPercent ? `, incl. ${l.rebuilt.contaminationPercent}% leftover foreground` : ''}){l.rebuilt.residualPercent !== undefined && <> · residual {l.rebuilt.residualPercent}%</>}{l.rawFile && <> · <a href={f(l.rawFile)} target="_blank" rel="noreferrer">raw Seedream layer</a></>}</div>}</figcaption>
   </figure>;
 }
 
@@ -60,6 +62,8 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
   const [templateKey, setTemplateKey] = useState('template-a');
   const [mode, setMode] = useState<PromptMode>('generated');
   const [separateHeldObject, setSeparateHeldObject] = useState(true);
+  // The recursive refinement: residual passes for objects left in the base, then one clean background (experiment).
+  const [recursive, setRecursive] = useState(true);
   // Per template, the options the user changed (Template B); unchanged options take the template's default.
   const [optionChoices, setOptionChoices] = useState<Record<string, Record<string, boolean>>>({});
   const [targetText, setTargetText] = useState('');
@@ -102,7 +106,7 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
   const target = parseTargetLayers(targetText, template, separateHeldObject);
   const start = () => file && act(async () => {
     if (target.error) throw new Error(target.error);
-    const next = await experimentApi.start(file, reuse ? 'template' : 'generated', templateKey, separateHeldObject, target.targetLayers, templateOptions);
+    const next = await experimentApi.start(file, reuse ? 'template' : 'generated', templateKey, separateHeldObject, target.targetLayers, templateOptions, false, recursive);
     setRun(next); setRuns(r => [next, ...r]);
   });
   const resume = () => run && act(async () => { await experimentApi.resume(run.id); setRun(await experimentApi.get(run.id)); });
@@ -113,7 +117,7 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
     if (!response.ok) throw new Error('The original image could not be loaded.');
     const blob = await response.blob();
     const image = new File([blob], run.original.file, { type: blob.type || 'image/png' });
-    const next = await experimentApi.start(image, 'generated', key, run.separateHeldObject !== false, undefined, templateOptionValues(templates.find(t => t.key === key), optionChoices[key]), skipFitCheck);
+    const next = await experimentApi.start(image, 'generated', key, run.separateHeldObject !== false, undefined, templateOptionValues(templates.find(t => t.key === key), optionChoices[key]), skipFitCheck, !!run.refinement);
     setTemplateKey(key); setRun(next); setRuns(r => [next, ...r]);
   });
   // Explicit, confirmed user action only: one new paid Seedream call. Nothing is ever retried automatically.
@@ -190,10 +194,13 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
             <PlanDetails layers={saved.planned_layers} warnings={saved.warnings} />
           </> : <span>No saved {template?.name ?? 'template'} prompt yet. Run "Generate new prompt" on a representative image, then click "Save this prompt as {template?.name ?? 'template'}".</span>}
         </div>}
+        <label><input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} /> Recursive cleanup + clean background (experiment)
+          <span style={{ color: 'var(--color-muted)' }}> — after the decomposition, objects still left in Seedream's base are decomposed again from the residual (at most 2 more paid Seedream calls, only while it is contaminated), then one OpenAI image edit rebuilds a clean background from the original (only when the base still shows the layers). Resume and re-render never call again.</span></label>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+          <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Image to decompose" onChange={e => setFile(e.target.files?.[0] ?? null)} />
           <button className="ws-btn ws-btn-primary" disabled={!file || busy || polling || (reuse && !saved) || !!target.error} onClick={start}>
             {automaticTemplate ? `Run: Seedream automatic major elements (${fitCheck ? '1 OpenAI fit check, ' : 'no OpenAI, '}1 paid Seedream call)` : reuse ? `Run with saved ${template?.name} prompt (${fitCheck ? '1 OpenAI fit check, ' : 'no OpenAI, '}1 paid Seedream call)` : `Run: ${fitCheck ? 'check fit, ' : ''}generate prompt (${fitCheck ? 2 : 1} OpenAI + 1 paid Seedream call)`}
+            {recursive && ' + cleanup (≤2 Seedream, ≤1 image edit)'}
           </button>
           {runs.length > 0 && <select value={run?.id ?? ''} onChange={e => void act(async () => setRun(await experimentApi.get(e.target.value)))}>
             {runs.map(r => <option key={r.id} value={r.id}>{r.id} — {templates.find(t => t.key === runTemplateKey(r))?.name ?? runTemplateKey(r)} — {r.stage} — {sourceLabel(r)} — {optionsLabel(r, templates.find(t => t.key === runTemplateKey(r))) ?? heldObjectLabel(r)}</option>)}
@@ -244,6 +251,21 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
             <a className="ws-btn" href={experimentZipUrl(run.id)} download>Download outputs</a>
           </div>
         </section>
+        {run.refinement && <section style={box} data-testid="refinement-debug" aria-label="Recursive decomposition debug">
+          <strong>Recursive decomposition (debug)</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 12px', marginTop: 6 }}>
+            {refinementSummary(run).map(({ label, value }) => <div key={label} style={{ display: 'contents' }}><span style={{ color: 'var(--color-muted)' }}>{label}</span><span data-testid={`refinement-${label.toLowerCase().replace(/\s+/g, '-')}`}>{value}</span></div>)}
+          </div>
+          {run.refinement.stopDetail && <div style={{ marginTop: 6 }}>Stop: {run.refinement.stopDetail}</div>}
+          {run.refinement.background?.reasons.map(reason => <div key={reason} style={{ color: run.refinement!.background!.contaminated || run.refinement!.background!.status === 'fallback' ? '#8a5a00' : undefined }}>{reason}</div>)}
+          {run.refinement.passes.map(p => <div key={p.pass} style={{ marginTop: 4 }}>Residual pass {p.pass}: {p.state}{p.requestId && <> · fal <code>{p.requestId}</code></>}{p.returnedLayers !== undefined && ` · returned ${p.returnedLayers}`} · kept {p.accepted.length}{p.grouped?.length ? ` (+${p.grouped.length} grouped)` : ''}
+            {p.rejected.length > 0 && ` · rejected ${p.rejected.map(r => `${r.name ?? r.file} (${r.reason}${r.duplicateOf ? ` of ${r.duplicateOf}` : ''})`).join(', ')}`}{p.error && <span style={{ color: 'var(--color-error)' }}> · {p.error.code}: {p.error.message}</span>}</div>)}
+          {run.refinement.fidelity && <div style={{ marginTop: 4 }}>Reconstruction vs original: mean difference {run.refinement.fidelity.after.meanAbsDiff} (before refinement {run.refinement.fidelity.before.meanAbsDiff})</div>}
+          {run.stage === 'done' && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
+            {['decomposition-debug.json', 'contact-sheet.png', run.refinement.mask?.file, run.refinement.background?.method !== 'provider-base' ? run.refinement.background?.file : undefined, ...run.refinement.assessments.map(a => a.residual)]
+              .filter((file): file is string => !!file).map(file => <a key={file} href={f(file)} target="_blank" rel="noreferrer">{file}</a>)}
+          </div>}
+        </section>}
         <section style={box}>
           {run.promptSource?.mode === 'template'
             ? <div><span style={badge(TEMPLATE)}>Prompt source: {run.promptSource.templateName} saved prompt</span> Reused from run <code>{run.promptSource.sourceRunId}</code>, saved {when(run.promptSource.savedAt)}. OpenAI was not called.
