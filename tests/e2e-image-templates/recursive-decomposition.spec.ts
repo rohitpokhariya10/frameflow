@@ -2,7 +2,8 @@ import { expect, test } from '@playwright/test';
 
 // Runs only in playwright.offline.config.ts, against the real API and runner with injected local providers: the complex
 // offer's first decomposition misses the speaker and power bank, the residual pass finds them (plus a duplicate of the
-// headphones), and the background edit is a local fill. No request leaves this machine.
+// headphones), and the plain gradient behind them is continued locally, so no background edit is needed. No request
+// leaves this machine.
 test('recursive decomposition of a complex offer: missed products found once, one clean background, separately editable layers', async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'The fixture server is shared by every project and runs one decomposition at a time; one journey is enough.');
   test.setTimeout(180_000);
@@ -44,8 +45,9 @@ test('recursive decomposition of a complex offer: missed products found once, on
   await expect(debug.getByTestId('refinement-passes')).toHaveText('2 (1 initial + 1 residual, at most 2)');
   await expect(debug.getByTestId('refinement-final-layers')).toHaveText('10');
   await expect(debug.getByTestId('refinement-residual-cleanup')).toHaveText('Performed (stopped: clean)');
-  await expect(debug.getByTestId('refinement-background')).toHaveText('AI reconstructed');
-  await expect(debug.getByTestId('refinement-calls')).toHaveText('planner 1 · initial Seedream 1 · residual Seedream 1 · background edit 1');
+  await expect(debug.getByTestId('refinement-background')).toHaveText('Clean (simple background continued locally, no reconstruction needed)');
+  await expect(debug.getByTestId('refinement-editable-layers')).toHaveText('10 (nothing left out)');
+  await expect(debug.getByTestId('refinement-calls')).toHaveText('planner 1 · initial Seedream 1 · residual Seedream 1 · background edit 0');
   await expect(debug).toContainText(/Residual pass 1: done · fal offline-\d+ · returned 4 · kept 2 · rejected Wireless headphones \((duplicate|inside-extracted-region)/);
   await expect(panel.getByAltText('Reconstruction')).toBeVisible();
   await expect(panel.getByText('Final output layers (10) — what Open in editor imports')).toBeVisible();
@@ -53,13 +55,13 @@ test('recursive decomposition of a complex offer: missed products found once, on
 
   // The run itself: each product once, provenance per pass, the base replaced by the clean background.
   const run = await (await request.get(`/api/layerize-experiment/runs/${runId}`, { headers })).json();
-  expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 1 });
+  expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 0 });
   expect(await complexCalls() - complexBefore).toBe(2);
   const names = run.outputLayers.map((layer: { name: string }) => layer.name);
   for (const name of ['Display pedestal', 'Gift box', 'Bluetooth speaker', 'Power bank', 'Wireless headphones', 'Earbuds', 'Smartwatch', 'Confetti', 'MEGA SALE headline']) expect(names.filter((n: string) => n === name), name).toHaveLength(1);
   const pass = (name: string) => run.outputLayers.find((layer: { name: string }) => layer.name === name).provenance.sourcePass;
   expect([pass('Bluetooth speaker'), pass('Power bank'), pass('Wireless headphones'), pass('Smartwatch')]).toEqual([1, 1, 0, 0]);
-  expect(run.outputLayers[0]).toMatchObject({ file: 'clean-background.png', rawFile: 'layer-00.png', cleanBackground: { status: 'ai-reconstructed', method: 'ai-reconstruction' } });
+  expect(run.outputLayers[0]).toMatchObject({ file: 'clean-background.png', rawFile: 'layer-00.png', cleanBackground: { status: 'continued-clean', method: 'plain-field' } });
   for (const file of ['clean-background.png', 'foreground-mask.png', 'residual-pass-1.png', 'reconstructed.png', 'contact-sheet.png', 'decomposition-debug.json']) {
     expect((await request.get(`/api/layerize-experiment/runs/${runId}/files/${file}`, { headers })).status(), file).toBe(200);
   }

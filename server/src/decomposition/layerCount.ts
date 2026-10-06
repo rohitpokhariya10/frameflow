@@ -80,7 +80,7 @@ const SUPPORT = words('support|pedestal|plinth|podium|platform|riser|stand|table
 const CONTAINER = words('plate|bowl|dish|tray|platter|cup|mug|jar|basket|pan|pot|saucer');
 const PART = words('cable|cord|wire|chain|rope|string|stem|shade|lampshade|bulb|canopy|cap|lid|handle|strap|buttons?|cameras?|lens|lenses|screen|case|body|legs?|arms?|feet|foot|knob|switch|plug|base|garnish|toppings?|sauce|crumbs?|pieces?|slices?|chunks?|bits|flakes?|sprinkles?|florets?|leaves|leaf|seeds?');
 /** "Hero lamp on a white pedestal" is about the lamp: only the head, before a relation word, names the layer. */
-const head = (text: string) => text.split(/\b(?:with|including|plus|on|onto|over|under|beneath|below|above|beside|behind|around|against|in front of|near|next to|holding|supporting|inside|within|of the|for)\b/i)[0];
+export const head = (text: string) => text.split(/\b(?:with|including|plus|on|onto|over|under|beneath|below|above|beside|behind|around|against|in front of|near|next to|holding|supporting|inside|within|of the|for)\b/i)[0];
 
 function nameHint(name: string): Hint {
   const h = head(name);

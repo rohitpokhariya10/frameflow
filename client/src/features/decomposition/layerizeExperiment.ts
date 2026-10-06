@@ -22,8 +22,11 @@ export type InteractionRecord = { layersBefore: number; layersAfter: number; gro
 /** Server LayerProvenance (layerizeArtifacts.ts). */
 export type LayerProvenance = { sourcePass: number; sourceImage: string; parentResidualId?: string; providerFile: string; providerRequestId?: string; providerZIndex: number; role: string;
   bbox?: [number, number, number, number]; mask: string; areaPercent?: number; groupedFrom?: string[] };
-export type CleanBackgroundStatus = 'provider-clean' | 'scene-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
-export type CleanBackgroundMethod = 'provider-base' | 'scene-composite' | 'ai-reconstruction' | 'graphic-fill' | 'local-fill';
+export type CleanBackgroundStatus = 'provider-clean' | 'scene-clean' | 'continued-clean' | 'ai-reconstructed' | 'contaminated' | 'fallback';
+export type CleanBackgroundMethod = 'provider-base' | 'scene-composite' | 'plain-field' | 'ai-reconstruction' | 'graphic-fill' | 'local-fill';
+/** Server LayerPlan (layerUsefulness.ts): the editor's meaningful layers by category, and every layer left out and why. */
+export type LayerPlan = { screenedLayers: number; editableLayers: number; byCategory: Record<string, number>; backgroundKind?: 'plain' | 'graphic' | 'scene';
+  dropped: { file: string; name?: string; category: string; reason?: string; detail: string; action?: 'fold' | 'remove' }[] };
 /** Server BackgroundQuality (backgroundRecovery.ts): whether the area behind the removed foreground is a usable continuation. */
 export type BackgroundQualityInfo = { quality: 'usable' | 'degraded' | 'failed'; reasons: string[]; metrics: Record<string, number | undefined> };
 /** Server CallCounts (recursiveDecomposition.ts): every provider request a refined run sent, counted when sent. */
@@ -34,10 +37,12 @@ export type Refinement = {
   passes: { pass: number; state: string; requestId?: string; returnedLayers?: number; accepted: string[]; grouped?: string[]; rejected: { file: string; name?: string; reason: string; duplicateOf?: string }[]; error?: { code: string; message: string } }[];
   assessments: { after: number; residual: string; sent: boolean; verdict: string; contaminatedPercent: number; reasons: string[] }[];
   stopReason?: string; stopDetail?: string; passesExecuted?: number; finalLayers?: number;
-  mask?: { coveragePercent: number; dilatePx: number; featherPx: number; file: string };
+  mask?: { coveragePercent: number; dilatePx: number; featherPx: number; file: string; shadowPercent?: number; shadowFile?: string };
   background?: { status: CleanBackgroundStatus; method: string; file: string; contaminated: boolean; reasons: string[];
     quality?: BackgroundQualityInfo['quality']; validation?: BackgroundQualityInfo; difficulty?: { level: string; coveragePercent: number; largestComponentPercent: number; simpleGraphic: boolean };
-    candidates?: { method: CleanBackgroundMethod; quality: BackgroundQualityInfo['quality']; reasons: string[]; chosen: boolean }[]; fallbackUsed?: boolean; aiTried?: boolean; outsideMaskChangedPercent?: number };
+    candidates?: { method: CleanBackgroundMethod; quality: BackgroundQualityInfo['quality']; reasons: string[]; chosen: boolean }[]; fallbackUsed?: boolean; aiTried?: boolean; outsideMaskChangedPercent?: number;
+    shadow?: { percent: number; note: string } };
+  layerPlan?: LayerPlan;
   fidelity?: { before: { meanAbsDiff: number }; after: { meanAbsDiff: number } };
   warnings: string[]; error?: string };
 /** Server LayerCount (layerCount.ts): the exact output layer count applied locally after Seedream. */
@@ -157,7 +162,8 @@ export type ExperimentRun = {
   interactions?: InteractionRecord;
 };
 
-export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'scene-clean': 'Clean (Seedream scene layers, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
+export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'scene-clean': 'Clean (Seedream scene layers, no reconstruction needed)',
+  'continued-clean': 'Clean (simple background continued locally, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
   contaminated: 'Contaminated (foreground left in the background)', fallback: 'Fallback: continued from the surrounding background (not AI reconstructed)' };
 /** The debug lines for a refined run: passes, final layers, residual cleanup, background and every provider call. */
 export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls' | 'interactions'>): { label: string; value: string }[] {
@@ -171,10 +177,12 @@ export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls
     { label: 'Background', value: r.background ? BACKGROUND_STATUS_LABELS[r.background.status] : r.state === 'failed' ? `Refinement failed: ${r.error ?? ''}` : '—' },
     ...(r.background?.quality ? [{ label: 'Background quality', value: `${r.background.quality}${r.background.validation?.reasons.length ? ` (${r.background.validation.reasons.join(', ')})` : ''} · ${r.background.difficulty?.level ?? ''}${r.background.difficulty ? ` · mask ${r.background.difficulty.coveragePercent}%, largest region ${r.background.difficulty.largestComponentPercent}%` : ''}` }] : []),
     ...(run.interactions ? [{ label: 'Protected groups', value: `${run.interactions.groups} (${run.interactions.layersBefore} → ${run.interactions.layersAfter} layers)` }] : []),
+    ...(r.layerPlan ? [{ label: 'Editable layers', value: `${r.layerPlan.editableLayers}${r.layerPlan.dropped.length ? ` (left out: ${r.layerPlan.dropped.map(d => `${d.name ?? d.file} — ${(d.reason ?? '').replace(/-/g, ' ')}`).join('; ')})` : ' (nothing left out)'}` }] : []),
+    ...(r.background?.shadow?.percent ? [{ label: 'Cast shadows', value: `${r.background.shadow.percent}% of the image removed with the foreground` }] : []),
     ...(calls ? [{ label: 'Calls', value: `planner ${calls.planner} · initial Seedream ${calls.seedreamInitial} · residual Seedream ${calls.seedreamResidual} · background edit ${calls.backgroundReconstruction}${calls.fitCheck ? ` · fit check ${calls.fitCheck}` : ''}` }] : []),
   ];
 }
-const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'scene-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
+const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'scene-clean': 'Clean background', 'continued-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
 
 /** The prompt this run sent (or will send) to Seedream, with its planned layers and warnings. */
 export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource : run.planner;

@@ -2,8 +2,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 // Runs only in playwright.offline.config.ts, against the real API and runner with injected local providers. Seedream's
 // fake answers are the splits seen live and its base has everything baked in; for the woman holding a phone the fake
-// image edit also fails the way gpt-image-2 did live (a black silhouette). The people stay intact layers, and hiding or
-// moving them must reveal a clean, usable background.
+// image edit would fail the way gpt-image-2 did live (a black silhouette), but the simple white-and-yellow design is now
+// continued locally first, so no edit is sent. The people stay intact layers, and hiding or moving them must reveal a
+// clean, usable background.
 test.describe.configure({ mode: 'serial' });
 
 /** Uploads an image to the OpenAI + Seedream test panel (Template B, recursive cleanup on) and waits for its run. */
@@ -42,19 +43,19 @@ test('a person holding a phone stays one intact layer; hiding or moving her reve
   page.on('pageerror', error => errors.push(error.message));
   const { panel, runId, run } = await decompose(page, request, '/__test__/holding-phone.png', 'holding-phone.png');
 
-  // Debug view: two protected groups; the AI edit's black silhouette rejected; the continuation of the design used.
+  // Debug view: two protected groups; the simple design continued locally behind her, with no image edit at all.
   const debug = panel.getByTestId('refinement-debug');
   await expect(debug.getByTestId('refinement-protected-groups')).toHaveText('2 (9 → 5 layers)');
-  await expect(debug.getByTestId('refinement-background')).toHaveText('Fallback: continued from the surrounding background (not AI reconstructed)');
+  await expect(debug.getByTestId('refinement-background')).toHaveText('Clean (simple background continued locally, no reconstruction needed)');
   await expect(debug.getByTestId('refinement-background-quality')).toHaveText(/^usable · hard-large-occlusion · mask [\d.]+%, largest region [\d.]+%$/);
-  await expect(debug.getByTestId('background-candidates')).toContainText('ai-reconstruction failed (black-region');
   await expect(debug.getByTestId('background-candidates')).toContainText('graphic-fill usable ✓ used');
-  await expect(debug.getByTestId('refinement-calls')).toHaveText('planner 1 · initial Seedream 1 · residual Seedream 0 · background edit 1');
+  await expect(debug.getByTestId('background-candidates')).not.toContainText('ai-reconstruction');
+  await expect(debug.getByTestId('refinement-calls')).toHaveText('planner 1 · initial Seedream 1 · residual Seedream 0 · background edit 0');
   await expect(panel.getByText(/^Kept together \(hand holding object\): Woman base — parent; Smartphone with white screen — held object; Green success badge on the screen — object content; Foreground gripping finger fragments — finger fragment$/)).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('1-protected-run.png'), fullPage: true });
 
   expect(run.interactions).toMatchObject({ layersBefore: 9, layersAfter: 5, groups: 2 });
-  expect(run.refinement.background).toMatchObject({ status: 'fallback', method: 'graphic-fill', quality: 'usable', fallbackUsed: true, aiTried: true });
+  expect(run.refinement.background).toMatchObject({ status: 'continued-clean', method: 'graphic-fill', quality: 'usable', fallbackUsed: false, aiTried: false });
   // Where the woman, her hand and the phone were, the background is the white field and the yellow curve: no black.
   const check = await (await request.get(`/__test__/background-check?run=${runId}&creative=holding`)).json();
   expect(check).toMatchObject({ file: 'clean-background.png', black: 0 });
@@ -67,7 +68,7 @@ test('a person holding a phone stays one intact layer; hiding or moving her reve
   await expect(layers.locator('li')).toHaveCount(6);
   for (const name of ['Black headline text', 'Small white GET text', 'Navy rounded CTA pill + White CTA chevron']) await expect(layers.locator('.layer-select').filter({ hasText: name })).toHaveCount(1);
   await expect(layers.locator('.layer-select').filter({ hasText: /^Foreground gripping finger fragments/ })).toHaveCount(0);
-  await expect(layers.locator('.layer-select').filter({ hasText: 'Background (fallback fill) (z0)' })).toHaveCount(1);
+  await expect(layers.locator('.layer-select').filter({ hasText: 'Clean background (z0)' })).toHaveCount(1);
   const person = layers.locator('.layer-select').filter({ hasText: 'Woman base + Smartphone with white screen' });
   await person.click();
   await expect(person).toHaveAttribute('aria-pressed', 'true');

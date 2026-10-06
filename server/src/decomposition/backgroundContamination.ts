@@ -147,6 +147,12 @@ export type ContaminationOptions = {
   contaminatedPercent: number;
   /** The confidence (0–1) a region needs to count. */
   minConfidence: number;
+  /**
+   * The contrast a region also needs to count (deviation / threshold). Set when every element the planner listed was
+   * extracted: what is left is then presumed to be the background's own design (a platform, soft circles) unless it
+   * stands out as strongly as a product does. Absent: any contrast counts.
+   */
+  minContrast?: number;
 };
 /** A foreground-like region: normalized box [x0, y0, x1, y1] (0–1), area, solidity (area / box), contrast (deviation / threshold). */
 export type ContaminationRegion = { box: [number, number, number, number]; areaPercent: number; fill: number; contrast: number; confidence: number; position: string };
@@ -202,11 +208,16 @@ export function assessBackgroundContamination(input: { rgb: Uint8Array; width: n
       confidence: round(confidence), position: positionWords((s.x0 + s.x1 + 1) / 2 / w, (s.y0 + s.y1 + 1) / 2 / h) });
   }
   regions.sort((a, b) => b.areaPercent - a.areaPercent);
-  const counted = regions.filter(r => r.confidence >= options.minConfidence), contaminatedPercent = round(counted.reduce((sum, r) => sum + r.areaPercent, 0));
+  const counted = regions.filter(r => r.confidence >= options.minConfidence && r.contrast >= (options.minContrast ?? 0)), contaminatedPercent = round(counted.reduce((sum, r) => sum + r.areaPercent, 0));
   const confidence = counted.length ? Math.max(...counted.map(r => r.confidence)) : 0;
   const base = { regions, assessedPercent, threshold: round(threshold, 1), contaminatedPercent, confidence };
   if (!regions.length) return { ...base, contaminated: false, verdict: 'clean', reasons: ['Nothing outside the extracted layers stands out from the background.'] };
-  if (!counted.length) return { ...base, contaminated: false, verdict: 'low-confidence', reasons: [`${regions.length} region(s) stand out, but none is solid or large enough to be an object (best confidence ${Math.max(...regions.map(r => r.confidence))} < ${options.minConfidence}).`] };
+  if (!counted.length) {
+    const design = regions.filter(r => r.confidence >= options.minConfidence).length;
+    return { ...base, contaminated: false, verdict: 'low-confidence', reasons: [design
+      ? `${design} region(s) stand out, but every element the planner listed was extracted and none stands out like an object (contrast below ${options.minContrast}): the background's own design.`
+      : `${regions.length} region(s) stand out, but none is solid or large enough to be an object (best confidence ${Math.max(...regions.map(r => r.confidence))} < ${options.minConfidence}).`] };
+  }
   if (contaminatedPercent < options.contaminatedPercent) return { ...base, contaminated: false, verdict: 'below-threshold', reasons: [`${counted.length} object-like region(s) cover ${contaminatedPercent}% of the image, below the ${options.contaminatedPercent}% threshold.`] };
   return { ...base, contaminated: true, verdict: 'contaminated',
     reasons: [`${counted.length} object-like region(s) outside the extracted layers cover ${contaminatedPercent}% of the image (${counted.slice(0, 6).map(r => `${r.position} ${r.areaPercent}%`).join(', ')}).`] };

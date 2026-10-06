@@ -18,6 +18,8 @@ export const ORNAMENT = words('bangles?|bracelets?|rings?|earrings?|necklaces?|p
 export const TEXTISH = /["“”]|\b(?:text|texts|headline|heading|title|caption|label|labels|logo|logos|logotype|wordmark|lettering|typography|copy|paragraph|tagline|slogan|price|prices|footer|url|disclaimer|legal)\b/i;
 /** Lighting and shadow layers: never a person, even when they name one ("dancer cast shadows"). */
 export const EFFECT = words('shadows?|glow|glows|reflections?|highlights?|vignette|light|lighting|rays?|flares?');
+/** Shadows and stains a subject leaves on the background: they go with the subject they touch, or away with it. */
+export const SHADOW = words('shadows?|shadowed|stains?|smudges?|ghosts?|ghosting|residue|remnants?');
 
 /**
  * The scene and its design: backgrounds, atmosphere (glow, vignette, lighting) and large brand shapes (a curved field, a

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FalTransport } from './providers/falClient.js';
 import { createRun, executeRun, readRun, resumeRun, type RunnerDeps } from './layerizeExperiment.js';
 import { createOpenAIPlanner } from './layerizePlanner.js';
-import { backgroundDifficulty, backgroundQuality, graphicFill } from './backgroundRecovery.js';
+import { backgroundDifficulty, backgroundQuality, graphicFill, plainFieldFill } from './backgroundRecovery.js';
 import { rowFillEdit } from './complexOffer.fixture.js';
 import { BANGLE_PARTS, bangleAnalysis, blackSilhouetteEdit, creative, flatEdit, HOLDING_PARTS, holdingAnalysis, part, partPng, WHITE_FIELD_PART } from './protectedInteraction.fixture.js';
 
@@ -16,7 +16,7 @@ const H = (key: string) => part(HOLDING_PARTS, key), B = (key: string) => part(B
 const at = (x: number, y: number) => Math.round(y * 1.024) * 1024 + Math.round(x * 1.024);
 
 /** A semantic, refined run with every provider faked; Seedream answers the scripted splits in turn. */
-async function run(original: Buffer, analysis: unknown, passes: { base: Part[]; layers: Part[] }[], edit: Edit) {
+async function run(original: Buffer, analysis: unknown, passes: { base: Part[]; layers: Part[] }[], edit: Edit, refinement: boolean | { deterministicBackground: boolean } = true) {
   const files: Record<string, Buffer> = {}, answers = new Map<string, unknown>(), submitted: Record<string, unknown>[] = [];
   const transport = {
     upload: vi.fn(async () => 'https://v3b.fal.media/files/test/upload.png'),
@@ -39,7 +39,7 @@ async function run(original: Buffer, analysis: unknown, passes: { base: Part[]; 
   });
   const deps: RunnerDeps = { planner: createOpenAIPlanner({ client: { responses: { create } } as never }), transport: () => transport, sleep: async () => undefined,
     ...(edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-edit', reconstruct } }) };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'background-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement: true });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'background-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement });
   await executeRun(dir, deps);
   return { dir, run: readRun(dir), submitted, reconstruct, deps };
 }
@@ -52,6 +52,8 @@ const diff = (a: Buffer, b: Buffer, i: number) => Math.max(Math.abs(a[i * 3] - b
 /** The recharge offer with everything baked into Seedream's base (the worst case), the woman's parts as Seedream split them live. */
 const PAYTM_LAYERS = ['field', 'woman', 'phone', 'badge', 'fingers', 'headline', 'pill', 'get', 'chevron'];
 const paytm = async (edit: Edit, layers = PAYTM_LAYERS.map(H)) => run(await creative(HOLDING_PARTS), holdingAnalysis('high'), [{ base: HOLDING_PARTS, layers }], edit);
+/** The same, with the image edit tried before the local continuation: how a bad edit is caught. */
+const paytmEditFirst = async (edit: Edit) => run(await creative(HOLDING_PARTS), holdingAnalysis('high'), [{ base: HOLDING_PARTS, layers: PAYTM_LAYERS.map(H) }], edit, { deterministicBackground: false });
 
 describe('clean background behind a large person on a geometric offer background (Paytm-like)', () => {
   it('A/E: the removal mask is the grouped person\'s real silhouette (fingers and phone included), not its box', async () => {
@@ -70,8 +72,21 @@ describe('clean background behind a large person on a geometric offer background
     expect(s.run.refinement!.background!.largestConnectedMaskCoverage).toBeGreaterThanOrEqual(10);
   }, 60_000);
 
-  it('B/C: a black-silhouette edit is rejected; the white field and the yellow curve continue behind her; headline and CTA are not baked in', async () => {
+  it('B/C: by default the white field and yellow curve continue locally behind her, with no image edit at all', async () => {
     const s = await paytm('black');
+    expect(s.reconstruct).not.toHaveBeenCalled();
+    expect(s.run.calls).toMatchObject({ planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 0 });
+    expect(s.run.refinement!.background).toMatchObject({ status: 'continued-clean', method: 'graphic-fill', quality: 'usable', fallbackUsed: false, aiTried: false });
+    expect(s.run.outputLayers![0]).toMatchObject({ file: 'clean-background.png', cleanBackground: { status: 'continued-clean', method: 'graphic-fill' } });
+    const [clean, expected, woman] = await Promise.all([raw(join(s.dir, 'clean-background.png')), sharp(await creative([H('background'), H('field')])).removeAlpha().raw().toBuffer(), alphaOf(await partPng(H('woman')))]);
+    let area = 0, right = 0, black = 0;
+    for (let i = 0; i < woman.length; i++) if (woman[i] > 200) { area++; if (diff(clean, expected, i) <= 30) right++; if (Math.max(clean[i * 3], clean[i * 3 + 1], clean[i * 3 + 2]) < 60) black++; }
+    expect(black).toBe(0);
+    expect(right / area).toBeGreaterThanOrEqual(0.9);
+  }, 60_000);
+
+  it('B/C: an edit tried first that comes back as a black silhouette is rejected; the white field and the yellow curve continue behind her; headline and CTA are not baked in', async () => {
+    const s = await paytmEditFirst('black');
     const b = s.run.refinement!.background!;
     expect(b.candidates.map(c => [c.method, c.quality, c.chosen])).toEqual([['provider-base', 'failed', false], ['scene-composite', 'failed', false], ['ai-reconstruction', 'failed', false], ['graphic-fill', 'usable', true]]);
     expect(b.candidates[2].reasons).toEqual(expect.arrayContaining(['black-region']));
@@ -98,7 +113,7 @@ describe('clean background behind a large person on a geometric offer background
   }, 60_000);
 
   it('a flat placeholder fill that cuts across the curve is caught as a seam, and the continuation is used instead', async () => {
-    const s = await paytm('white');
+    const s = await paytmEditFirst('white');
     const ai = s.run.refinement!.background!.candidates.find(c => c.method === 'ai-reconstruction')!;
     expect(ai.quality).not.toBe('usable');
     expect(ai.reasons).toEqual(expect.arrayContaining(['boundary-discontinuity']));
@@ -126,7 +141,7 @@ describe('clean background behind a large person on a geometric offer background
   }, 60_000);
 
   it('G: a failed edit keeps every extracted layer, reports the fallback and is never retried', async () => {
-    const s = await paytm('fail');
+    const s = await paytmEditFirst('fail');
     expect(s.run.stage).toBe('done');
     expect(s.run.outputLayers).toHaveLength(6);
     expect(s.run.refinement!.background).toMatchObject({ status: 'fallback', method: 'graphic-fill', fallbackUsed: true, aiTried: false });
@@ -151,8 +166,9 @@ describe('worn jewelry: bangles go with their hands and leave no ghost', () => {
     const clean = await raw(join(s.dir, 'clean-background.png'));
     const red = [0x7f, 0x1d, 0x1d];
     for (const [x, y] of [[120, 560], [250, 600], [430, 580]]) expect(Math.max(...red.map((v, c) => Math.abs(clean[at(x, y) * 3 + c] - v))), `${x},${y}`).toBeLessThanOrEqual(12);
-    expect(s.run.refinement!.background).toMatchObject({ quality: 'usable', status: 'ai-reconstructed' });
-    expect(s.run.calls!.backgroundReconstruction).toBe(1);
+    // The red field around the hands is plain: it continues locally, with no image edit.
+    expect(s.run.refinement!.background).toMatchObject({ quality: 'usable', status: 'continued-clean', method: 'plain-field' });
+    expect(s.run.calls!.backgroundReconstruction).toBe(0);
   }, 60_000);
 });
 
@@ -173,6 +189,28 @@ describe('background recovery units', () => {
     // An AI result that re-rendered the scene outside the mask is degraded even when the hole looks fine.
     const rerendered = scene(() => [200, 150, 40]);
     expect(backgroundQuality({ rgb: truthScene, core: hole, w: 200, h: 200, outside: { ai: rerendered, source: truthScene } }).reasons).toContain('large-unexpected-change');
+  });
+  it('continues straight edges through a hole, corners included (a panel under a removed headline), and a gradient as one region (no ghost of what stood on a platform)', () => {
+    // A light panel (x ≥ 40, y ≥ 60, x < 140) on a darker wall; the hole covers the panel's top-right corner.
+    const panel = (x: number, y: number) => x >= 40 && x < 140 && y >= 60;
+    const truth = scene((x, y) => (panel(x, y) ? [129, 140, 248] : [79, 70, 229]));
+    const corner = new Uint8Array(200 * 200); for (let y = 30; y < 90; y++) for (let x = 100; x < 180; x++) corner[y * 200 + x] = 1;
+    const filledCorner = graphicFill(Uint8Array.from(truth, (v, i) => (corner[Math.floor(i / 3)] ? 0 : v)), corner, 200, 200)!;
+    let right = 0, total = 0;
+    for (let i = 0; i < corner.length; i++) if (corner[i]) { total++; if (Math.max(...[0, 1, 2].map(c => Math.abs(filledCorner[i * 3 + c] - truth[i * 3 + c]))) <= 12) right++; }
+    expect(right / total).toBeGreaterThanOrEqual(0.97);
+    // A vertical lavender gradient with a white platform at the bottom; the hole (a product) stands on the platform.
+    const lavender = (y: number): [number, number, number] => [241 - Math.round(15 * y / 200), 233 - Math.round(19 * y / 200), 250 - Math.round(8 * y / 200)];
+    const platform = (x: number, y: number) => y >= 160 && ((x - 100) / 70) ** 2 + ((y - 175) / 15) ** 2 <= 1;
+    const stage = scene((x, y) => (platform(x, y) ? [250, 247, 255] : lavender(y)));
+    const product = new Uint8Array(200 * 200); for (let y = 40; y < 168; y++) for (let x = 75; x < 125; x++) product[y * 200 + x] = 1;
+    const filled = graphicFill(Uint8Array.from(stage, (v, i) => (product[Math.floor(i / 3)] ? 80 : v)), product, 200, 200)!;
+    let lighter = 0, above = 0;
+    for (let y = 40; y < 150; y++) for (let x = 75; x < 125; x++) { const i = y * 200 + x; above++; if (filled[i * 3 + 1] > lavender(y)[1] + 8) lighter++; }
+    expect(lighter / above).toBeLessThan(0.05);
+    // The same ring is not a plain field: the platform does not bend a smooth surface toward itself.
+    expect(plainFieldFill(stage, product, 200, 200).plain).toBe(false);
+    expect(plainFieldFill(scene((_x, y) => lavender(y)), product, 200, 200).plain).toBe(true);
   });
   it('continues a two-color design crisply across the hole and refuses noisy photographic surroundings', () => {
     const out = graphicFill(filled(() => [0, 0, 0]), hole, 200, 200)!;

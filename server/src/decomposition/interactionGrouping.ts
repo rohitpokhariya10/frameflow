@@ -11,6 +11,7 @@
  *   content on a held object       → follows it (a badge or text on a held phone's screen)
  *   worn ornament                  → into the wearer (bangles, rings, watches, jewelry touching and inside a person);
  *                                    a standalone ornament no person wears stays its own layer
+ *   cast shadow                    → with the subject it touches (a person first), so it moves and hides with it
  *   tiny attached piece            → into the layer it sits in (a chevron inside a button)
  *   tiny scattered decorations     → one decoration group when there are three or more
  *
@@ -23,10 +24,10 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { backgroundRole, composeLayers, writeContactSheet, type Canvas, type LayerInfo, type LayerGrouping, type GroupMemberRole } from './layerizeArtifacts.js';
-import { layerWords, posterRole, similarity } from './layerCount.js';
-import { compositeOnGrid, gridFor, intersectCount, layerShape, rgbOnGrid, type Box, type Grid, type LayerShape } from './backgroundContamination.js';
+import { head, layerWords, posterRole, similarity } from './layerCount.js';
+import { compositeOnGrid, countOf, gridFor, intersectCount, layerShape, rgbOnGrid, type Box, type Grid, type LayerShape } from './backgroundContamination.js';
 import { grow } from './outerBackground.js';
-import { BODY_PART, EFFECT, FRAGMENT, idWords, ORNAMENT, PERSON, SCENE, TEXTISH, WHOLE_PERSON } from './interactionTerms.js';
+import { BODY_PART, EFFECT, FRAGMENT, idWords, ORNAMENT, PERSON, SCENE, SHADOW, TEXTISH, WHOLE_PERSON } from './interactionTerms.js';
 import type { SemanticAnalysis, SemanticElement } from './semanticPlanner.js';
 
 export type InteractionKind = 'scene' | 'text' | 'person' | 'fragment' | 'ornament' | 'decor' | 'object';
@@ -64,6 +65,21 @@ export function interactionKind(layer: LayerInfo, shape: LayerShape, grid: Grid,
   if (ORNAMENT.test(name)) return 'ornament';
   if (PERSON.test(name) || (element && PERSON.test(idWords(element.type)))) return 'person';
   return role === 'decor' ? 'decor' : 'object';
+}
+
+/**
+ * A shadow or stain layer, not a subject: the head of its name ("Soft cast shadow of the man", not "Woman with shadow")
+ * names one, and its pixels are translucent or dark (a person or product is neither). `rgba` on a grid of `n` pixels.
+ */
+export function isShadowLayer(layer: Pick<LayerInfo, 'name'>, rgba: Buffer, n: number): boolean {
+  if (!SHADOW.test(idWords(head(layer.name ?? '')))) return false;
+  let count = 0, alpha = 0, lum = 0;
+  for (let i = 0; i < n; i++) {
+    const a = rgba[i * 4 + 3];
+    if (a <= 16) continue;
+    count++; alpha += a; lum += a * (0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]);
+  }
+  return count > 0 && (alpha / count <= 0.9 * 255 || lum / alpha <= 80);
 }
 
 /** Planned elements matched to provider layers by the words they share (each element at most once). */
@@ -162,6 +178,18 @@ export async function groupInteractions(input: { dir: string; canvas: Canvas; gr
     if (person) attach(w, person, 'worn_ornament', 'worn on the person (touches them and sits within or across them); kept with the wearer');
     else decisions.push({ decision: 'kept-separate', role: 'standalone_ornament', file: w.layer.file, ...(w.layer.name ? { name: w.layer.name } : {}), reason: 'no person wears it: a standalone item' });
   }
+  // 4b. A cast shadow goes with the subject it touches (a person before an object), so it moves and hides with it and
+  // the clean background is rebuilt where it was. Shadows are soft: their contact is measured on every visible pixel.
+  const shadows = new Set(entries.filter(e => !['scene', 'text'].includes(kinds.get(e)!) && isShadowLayer(e.layer, e.shape.rgba, n)));
+  for (const s of shadows) {
+    if (!free(s)) continue;
+    const soft = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (s.shape.rgba[i * 4 + 3] > 16) soft[i] = 1;
+    const owner = entries.filter(o => o !== s && !shadows.has(o) && ['person', 'object', 'ornament'].includes(kinds.get(o)!) && o.shape.count > 0)
+      .map(o => ({ o, c: intersectCount(soft, grown(o)), person: kinds.get(o) === 'person' ? 1 : 0 })).filter(x => x.c >= Math.max(4, 0.02 * countOf(soft)))
+      .sort((a, b) => b.person - a.person || b.c - a.c)[0]?.o;
+    if (owner) attach(s, owner, 'cast_shadow', `its cast shadow; kept with ${owner.layer.name ?? owner.layer.file} so it moves and hides with it and leaves no ghost`);
+  }
   // 5. Tiny attached pieces go into the layer they sit in.
   for (const e of entries.filter(e => ['object', 'decor', 'fragment', 'ornament'].includes(kinds.get(e)!) && free(e) && e.shape.count > 0 && e.shape.count / n < 0.0015)) {
     const container = entries.filter(c => c !== e && !['scene', 'text'].includes(kinds.get(c)!) && c.shape.count >= 4 * e.shape.count && insideShare(e.shape.box, c.shape.box, 0.02) >= 0.8 && contact(e, c) > 0)
@@ -169,7 +197,7 @@ export async function groupInteractions(input: { dir: string; canvas: Canvas; gr
     if (container) attach(e, container, 'attached_fragment', `tiny piece (${round(100 * e.shape.count / n)}% of the canvas) inside ${container.layer.name ?? container.layer.file}`);
   }
   // 6. Three or more tiny scattered decorations become one decoration group.
-  const tinyDecor = entries.filter(e => kinds.get(e) === 'decor' && free(e) && e.shape.count > 0 && e.shape.count / n < 0.003 && !entries.some(x => parentOf.get(x) === e));
+  const tinyDecor = entries.filter(e => kinds.get(e) === 'decor' && free(e) && !shadows.has(e) && e.shape.count > 0 && e.shape.count / n < 0.003 && !entries.some(x => parentOf.get(x) === e));
   if (tinyDecor.length >= 3) {
     const lead = [...tinyDecor].sort((a, b) => b.shape.count - a.shape.count)[0];
     for (const e of tinyDecor) if (e !== lead) attach(e, lead, 'decoration', 'small scattered decoration, grouped with the others');

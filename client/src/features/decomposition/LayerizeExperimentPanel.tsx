@@ -265,7 +265,7 @@ export function LayerizeExperimentPanel({ onClose, onCreateFromImage }: { onClos
           {run.interactions?.decisions.filter(d => d.decision === 'kept-separate').map(d => <div key={`${d.file}-${d.role}`} style={{ color: 'var(--color-muted)' }}>Kept separate: {d.name ?? d.file} ({d.role.replace(/_/g, ' ')}) — {d.reason}</div>)}
           {run.refinement.fidelity && <div style={{ marginTop: 4 }}>Reconstruction vs original: mean difference {run.refinement.fidelity.after.meanAbsDiff} (before refinement {run.refinement.fidelity.before.meanAbsDiff})</div>}
           {run.stage === 'done' && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
-            {['decomposition-debug.json', 'contact-sheet.png', run.refinement.mask?.file, run.refinement.background?.method !== 'provider-base' ? run.refinement.background?.file : undefined, ...run.refinement.assessments.map(a => a.residual)]
+            {['decomposition-debug.json', 'contact-sheet.png', run.refinement.mask?.file, run.refinement.mask?.shadowFile, run.refinement.background?.method !== 'provider-base' ? run.refinement.background?.file : undefined, ...run.refinement.assessments.map(a => a.residual)]
               .filter((file): file is string => !!file).map(file => <a key={file} href={f(file)} target="_blank" rel="noreferrer">{file}</a>)}
           </div>}
         </section>}

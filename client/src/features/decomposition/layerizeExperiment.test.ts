@@ -148,6 +148,15 @@ it('summarizes a refined run for debugging: passes, final layers, cleanup, backg
   expect(refinementSummary({ ...run, refinement: fallback }).slice(3, 5)).toEqual([{ label: 'Background', value: 'Fallback: continued from the surrounding background (not AI reconstructed)' },
     { label: 'Background quality', value: 'usable · hard-large-occlusion · mask 45.2%, largest region 32.3%' }]);
   expect(refinementSummary({ ...run, refinement: { ...run.refinement, background: { ...run.refinement.background, status: 'scene-clean' as const } } })[3]).toEqual({ label: 'Background', value: 'Clean (Seedream scene layers, no reconstruction needed)' });
+  // A plain background continued locally is clean; the editable layers and the cast shadows removed are shown.
+  const plain = { ...run.refinement, background: { ...run.refinement.background, status: 'continued-clean' as const, method: 'plain-field', shadow: { percent: 5.2, note: '' } },
+    layerPlan: { screenedLayers: 6, editableLayers: 4, byCategory: { background: 1, person: 1, text: 1, object: 1 },
+      dropped: [{ file: 'layer-02.png', name: 'Grey background panel', category: 'object', reason: 'not-in-original', detail: '', action: 'fold' as const }, { file: 'layer-05.png', name: 'Pink studio plate', category: 'scene', reason: 'merged-into-background', detail: '' }] } };
+  expect(refinementSummary({ ...run, refinement: plain }).slice(3)).toEqual([{ label: 'Background', value: 'Clean (simple background continued locally, no reconstruction needed)' },
+    { label: 'Editable layers', value: '4 (left out: Grey background panel — not in original; Pink studio plate — merged into background)' },
+    { label: 'Cast shadows', value: '5.2% of the image removed with the foreground' },
+    { label: 'Calls', value: 'planner 1 · initial Seedream 1 · residual Seedream 2 · background edit 1' }]);
+  expect(refinementSummary({ ...run, refinement: { ...plain, layerPlan: { ...plain.layerPlan, dropped: [] } } })[4]).toEqual({ label: 'Editable layers', value: '4 (nothing left out)' });
 });
 
 it('asks for the recursive refinement only when chosen', async () => {

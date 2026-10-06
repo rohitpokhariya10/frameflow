@@ -99,14 +99,15 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     expect(pass).toMatchObject({ pass: 1, state: 'done', requestId: 'req-1', returnedLayers: 5, accepted: ['pass-1-layer-01.png', 'pass-1-layer-02.png'] });
     expect(pass.rejected.map(r => [r.name, r.reason])).toEqual(expect.arrayContaining([['Wireless headphones', expect.stringMatching(/^(duplicate|inside-extracted-region)$/)], ['Speaker body', 'duplicate']]));
     expect(pass.rejected.find(r => r.name === 'Speaker body')!.duplicateOf).toBe('pass-1-layer-01.png');
-    // Call accounting: nothing hidden.
-    expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 1 });
-    // Clean background: AI reconstructed from the original, the products gone.
+    // Call accounting: nothing hidden. The gradient around every product is a plain field, so no image edit is needed.
+    expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 0 });
+    expect(s.reconstruct).not.toHaveBeenCalled();
+    // Clean background: the gradient continued from the original, the products gone.
     const base = run.outputLayers![0];
-    expect(base).toMatchObject({ file: 'clean-background.png', rawFile: 'layer-00.png', zIndex: 0, placement: { kind: 'base' }, cleanBackground: { status: 'ai-reconstructed', method: 'ai-reconstruction' } });
+    expect(base).toMatchObject({ file: 'clean-background.png', rawFile: 'layer-00.png', zIndex: 0, placement: { kind: 'base' }, cleanBackground: { status: 'continued-clean', method: 'plain-field' } });
     expect(await difference(readFileSync(join(s.dir, 'clean-background.png')), await offerBackground())).toBeLessThan(1.5);
     expect(await difference(readFileSync(join(s.dir, 'layer-00.png')), await offerBackground())).toBeGreaterThan(5);
-    expect(run.refinement!.background).toMatchObject({ status: 'ai-reconstructed', needed: true, contaminated: false, recreated: [], source: 'original' });
+    expect(run.refinement!.background).toMatchObject({ status: 'continued-clean', needed: true, contaminated: false, recreated: [], source: 'original', aiTried: false, fallbackUsed: false, plainField: { plain: true } });
     // Reconstruction still matches the original (major products appear once, composition recognizable).
     expect(await difference(readFileSync(join(s.dir, 'reconstructed.png')), s.original)).toBeLessThan(1.5);
     expect(run.refinement!.fidelity!.after.meanAbsDiff).toBeLessThanOrEqual(run.refinement!.fidelity!.before.meanAbsDiff);
@@ -114,7 +115,9 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     for (const file of ['layers.json', 'contact-sheet.png', 'reconstructed.png', 'clean-background.png', 'foreground-mask.png', 'residual-pass-1.png', 'residual-pass-2.png', 'decomposition-debug.json']) expect(existsSync(join(s.dir, file)), file).toBe(true);
     expect(run.outputLayers!.map(({ sources, ...layer }) => { expect(sources).toEqual([layer.file]); return layer; })).toEqual(run.layers);
     const debug = JSON.parse(readFileSync(join(s.dir, 'decomposition-debug.json'), 'utf8'));
-    expect(debug.callSummary).toEqual(['Template fit check (OpenAI): 0', 'Planner (OpenAI): 1', 'Initial layerize (Seedream): 1', 'Residual layerize (Seedream): 1', 'Background reconstruction (OpenAI image edit): 1']);
+    expect(debug.callSummary).toEqual(['Template fit check (OpenAI): 0', 'Planner (OpenAI): 1', 'Initial layerize (Seedream): 1', 'Residual layerize (Seedream): 1', 'Background reconstruction (OpenAI image edit): 0']);
+    // Every layer is a real element of the creative: nothing is left out.
+    expect(run.refinement!.layerPlan).toMatchObject({ editableLayers: 10, dropped: [] });
     expect(run.warnings.some(w => /^RECURSIVE_DECOMPOSITION: 2 pass\(es\) \(1 initial \+ 1 residual\); stopped: clean/.test(w))).toBe(true);
   }, 60_000);
 
@@ -136,12 +139,13 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     expect(z('Power bank')).toBeGreaterThan(z('Display pedestal'));
     // layers.json carries the same provenance, additively.
     const json = JSON.parse(readFileSync(join(s.dir, 'layers.json'), 'utf8'));
-    expect(json).toMatchObject({ canvas: { width: 1024, height: 1024 }, refinement: { passesExecuted: 2, residualPasses: 1, stopReason: 'clean', background: { status: 'ai-reconstructed' } } });
+    expect(json).toMatchObject({ canvas: { width: 1024, height: 1024 }, refinement: { passesExecuted: 2, residualPasses: 1, stopReason: 'clean', background: { status: 'continued-clean' }, layersLeftOut: 0 } });
     expect(json.layers.map((l: { provenance: { sourcePass: number } }) => l.provenance.sourcePass).filter((p: number) => p === 1)).toHaveLength(2);
   }, 60_000);
 
   it('builds the foreground union mask from every foreground layer, grown a little, and sends it with the original once', async () => {
-    const s = await scenario({ passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
+    // The image edit's inputs: with the plain-field shortcut off, so the edit is what makes the background.
+    const s = await scenario({ refinement: { deterministicBackground: false }, passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
     const run = readRun(s.dir), mask = join(s.dir, 'foreground-mask.png');
     expect(run.refinement!.mask).toMatchObject({ file: 'foreground-mask.png', dilatePx: 8, featherPx: 4 });
     expect(run.refinement!.mask!.layers).toHaveLength(9);
@@ -171,7 +175,7 @@ describe('recursive decomposition: complex offer creative with fake providers', 
   }, 60_000);
 
   it('a resume or re-render reuses the saved residual pass and background edit and sends nothing new', async () => {
-    const s = await scenario({ passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
+    const s = await scenario({ refinement: { deterministicBackground: false }, passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
     const before = readRun(s.dir), background = readFileSync(join(s.dir, 'clean-background.png'));
     const again = await resumeRun(s.dir, s.deps);
     expect(s.transport.submit).toHaveBeenCalledTimes(2);
@@ -212,11 +216,15 @@ describe('recursive decomposition: when to recurse and when to stop', () => {
     }
   }, 60_000);
 
-  it('a clean base that still duplicates its layers is reconstructed once, without recursion', async () => {
+  it('a clean base that still duplicates its layers is replaced by the plain-field continuation, without recursion or any call', async () => {
     const s = await scenario({ passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
     const run = readRun(s.dir);
-    expect(run.refinement).toMatchObject({ passesExecuted: 1, stopReason: 'clean', background: { status: 'ai-reconstructed', needed: true } });
-    expect(run.calls).toMatchObject({ seedreamResidual: 0, backgroundReconstruction: 1 });
+    expect(run.refinement).toMatchObject({ passesExecuted: 1, stopReason: 'clean', background: { status: 'continued-clean', method: 'plain-field', needed: true } });
+    expect(run.calls).toMatchObject({ seedreamResidual: 0, backgroundReconstruction: 0 });
+    expect(s.reconstruct).not.toHaveBeenCalled();
+    // With the shortcut off, the same base is reconstructed once by the edit.
+    const edited = await scenario({ refinement: { deterministicBackground: false }, passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
+    expect(readRun(edited.dir)).toMatchObject({ calls: { backgroundReconstruction: 1 }, refinement: { background: { status: 'ai-reconstructed', needed: true } } });
   }, 60_000);
 
   it('a second residual still contaminated gets a bounded second pass', async () => {
@@ -230,7 +238,7 @@ describe('recursive decomposition: when to recurse and when to stop', () => {
     expect(run.refinement!.passes.map(p => [p.pass, p.state, p.accepted.length])).toEqual([[1, 'done', 1], [2, 'done', 1]]);
     expect(run.refinement!.assessments.map(a => a.verdict)).toEqual(['contaminated', 'contaminated', 'clean']);
     expect(passOf(run, 'Power bank')).toBe(2);
-    expect(run.calls).toMatchObject({ seedreamInitial: 1, seedreamResidual: 2, backgroundReconstruction: 1 });
+    expect(run.calls).toMatchObject({ seedreamInitial: 1, seedreamResidual: 2, backgroundReconstruction: 0 });
   }, 60_000);
 
   it('stops at the maximum depth: never a third residual call, and the leftover is reported as contamination', async () => {
@@ -275,7 +283,10 @@ describe('recursive decomposition: failures keep what worked', () => {
     expect(names(run)).toHaveLength(8);
     expect(run.refinement).toMatchObject({ stopReason: 'pass-failed', passesExecuted: 1 });
     expect(run.refinement!.passes[0]).toMatchObject({ pass: 1, state: 'failed', requestId: 'req-1', error: { code: 'FAL_RESULT_FAILED' } });
+    // The speaker and power bank stay in the creative next to removed products, so not every removed area sits on a plain
+    // field: the one image edit is still used.
     expect(run.calls).toMatchObject({ seedreamResidual: 1, backgroundReconstruction: 1 });
+    expect(run.refinement!.background!.plainField!.plain).toBe(false);
     expect(run.warnings.some(w => w.startsWith('RESIDUAL_PASS_FAILED: pass 1'))).toBe(true);
     // A submission that never got a request ID is recorded as failed; it is counted and not resubmitted.
     const lost = await scenario({ passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, 'fail-submit'] });
@@ -285,15 +296,15 @@ describe('recursive decomposition: failures keep what worked', () => {
   }, 60_000);
 
   it('a failed background edit falls back to the deterministic continuation, clearly marked fallback, and is not retried', async () => {
-    const s = await scenario({ edit: 'fail', passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
+    const s = await scenario({ edit: 'fail', refinement: { deterministicBackground: false }, passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
     const run = readRun(s.dir);
     expect(s.reconstruct).toHaveBeenCalledTimes(1);
     expect(run.calls!.backgroundReconstruction).toBe(1);
-    // The gradient around the products is a simple graphic background: it continues region by region.
-    expect(run.outputLayers![0]).toMatchObject({ file: 'clean-background.png', cleanBackground: { status: 'fallback', method: 'graphic-fill' } });
+    // The gradient around the products is a plain field: it continues as its own smooth surface.
+    expect(run.outputLayers![0]).toMatchObject({ file: 'clean-background.png', cleanBackground: { status: 'fallback', method: 'plain-field' } });
     expect(run.refinement!.background).toMatchObject({ fallbackUsed: true, quality: 'usable', difficulty: { simpleGraphic: true } });
     expect(run.refinement!.reconstruction).toMatchObject({ state: 'failed', error: { code: 'BACKGROUND_RECONSTRUCTION_FAILED', message: 'OpenAI image edit returned 500' } });
-    expect(run.refinement!.background!.reasons.join(' ')).toMatch(/Fell back to a graphic continuation of the surrounding background because the OpenAI image edit failed/);
+    expect(run.refinement!.background!.reasons.join(' ')).toMatch(/Fell back to a plain-field continuation of the surrounding background because the OpenAI image edit failed/);
     expect(run.warnings.some(w => w.startsWith('BACKGROUND_FALLBACK: '))).toBe(true);
     // The fallback still removes the products and continues the gradient (not a pretend-clean AI background).
     expect(await difference(readFileSync(join(s.dir, 'clean-background.png')), await offerBackground())).toBeLessThan(3);
@@ -301,9 +312,11 @@ describe('recursive decomposition: failures keep what worked', () => {
     await resumeRun(s.dir, s.deps);
     expect(s.reconstruct).toHaveBeenCalledTimes(1);
     expect(readRun(s.dir).refinement!.background!.status).toBe('fallback');
-    // Without any reconstructor the same fallback applies, with no call counted.
-    const none = await scenario({ edit: 'none', passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
-    expect(readRun(none.dir)).toMatchObject({ calls: { backgroundReconstruction: 0 }, refinement: { background: { status: 'fallback', method: 'graphic-fill' } } });
+    // Without any reconstructor the same fallback applies, with no call counted; by default the plain field needs none.
+    const none = await scenario({ edit: 'none', refinement: { deterministicBackground: false }, passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
+    expect(readRun(none.dir)).toMatchObject({ calls: { backgroundReconstruction: 0 }, refinement: { background: { status: 'fallback', method: 'plain-field' } } });
+    const plain = await scenario({ edit: 'none', passes: [{ parts: ALL_PARTS, base: ALL_PARTS }] });
+    expect(readRun(plain.dir)).toMatchObject({ calls: { backgroundReconstruction: 0 }, refinement: { background: { status: 'continued-clean', method: 'plain-field', fallbackUsed: false } } });
   }, 90_000);
 });
 
@@ -341,7 +354,7 @@ describe('recursive decomposition: unrefined runs are unchanged', () => {
       expect((await post()).body).not.toHaveProperty('refinement');
       expect((await post('false')).body).not.toHaveProperty('refinement');
       const refined = (await post('true')).body;
-      expect(refined.refinement).toMatchObject({ version: 1, state: 'pending', options: { maxDepth: 2, maxTotalLayers: 32, reconstructBackground: true } });
+      expect(refined.refinement).toMatchObject({ version: 1, state: 'pending', options: { maxDepth: 2, maxTotalLayers: 32, reconstructBackground: true, deterministicBackground: true } });
       expect(refined.calls).toEqual({ fitCheck: 0, planner: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 });
       expect(await post('maybe')).toMatchObject({ status: 400, body: { error: { code: 'INVALID_RECURSIVE' } } });
     } finally { server.close(); }

@@ -234,10 +234,11 @@ describe('runner with fake providers: planner, Seedream, recursion, background a
     const left = readFileSync(join(s.dir, layers.find(l => l.name?.startsWith('Left paired hands'))!.file));
     const { data } = await sharp(left).raw().toBuffer({ resolveWithObject: true }), px = (x: number, y: number) => Array.from(data.subarray((Math.round(y * 1.024) * 1024 + Math.round(x * 1.024)) * 4, (Math.round(y * 1.024) * 1024 + Math.round(x * 1.024)) * 4 + 3));
     expect(px(190, 548)).toEqual([0xd4, 0xa0, 0x17]);
-    // Seedream's base still showed the bangles: judged per layer (not per hands+bangles group), so the background is rebuilt.
+    // Seedream's base still showed the bangles: judged per layer (not per hands+bangles group), so the background is rebuilt
+    // (the red field around the hands is plain, so locally, with no image edit).
     expect(s.run.refinement!.background!.baseRetention.filter(r => /bangle (stack|cluster)/.test(r.name ?? '')).every(r => r.retainedPercent >= 90)).toBe(true);
-    expect(s.run.refinement!.background).toMatchObject({ status: 'ai-reconstructed', needed: true, contaminated: false });
-    expect(s.run.calls).toMatchObject({ seedreamResidual: 1, backgroundReconstruction: 1 });
-    expect(s.reconstruct).toHaveBeenCalledTimes(1);
+    expect(s.run.refinement!.background).toMatchObject({ status: 'continued-clean', method: 'plain-field', needed: true, contaminated: false });
+    expect(s.run.calls).toMatchObject({ seedreamResidual: 1, backgroundReconstruction: 0 });
+    expect(s.reconstruct).not.toHaveBeenCalled();
   }, 60_000);
 });
