@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'react-redux';
 import { ArrowLeft, ImagePlus, LoaderCircle, Sparkles } from 'lucide-react';
 import { createReferenceCreative, editReferenceChoices, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIOS, REFERENCE_CHANGE_FIELDS, REFERENCE_CHANGE_LIMIT, REFERENCE_PRESERVE_FIELDS,
   rebuildReferencePrompt, referenceBlueprint, resolveImageTemplateName, validateReferenceGeneration,
   type ReferenceChanges, type ReferenceCreativeDraft, type ReferencePreserve } from '@frameflow/shared';
 import { assets } from '../../lib/assets/runtimeAssets';
-import { useAppDispatch, useAppSelector } from '../../store';
-import { decomposedDesignImported } from '../../store/editorSlice';
+import { useAppDispatch, type RootState } from '../../store';
 import { variantSelected } from '../../store/uiSlice';
+import { useDesigns } from '../editor/designs';
 import { experimentApi, experimentFileUrl } from '../decomposition/layerizeExperiment';
 import { TemplateResults } from '../imageTemplates/CreateTemplateFromImage';
-import { imageTemplateApi, importAsVersion, productReferenceUrl, referenceUrl, resultStatus, templateInProgress, withTemplate,
+import { imageTemplateApi, openResultInEditor, productReferenceUrl, referenceUrl, resultStatus, templateInProgress, withTemplate,
   type ImageTemplate, type ImageTemplateInfo, type ImageTemplateVariant } from '../imageTemplates/imageTemplates';
 import { readReferenceEdits, REFERENCE_LAST_KEY, referenceRequestGuard, writeReferenceEdits } from './referenceDraft';
 import './referenceCreative.css';
@@ -19,7 +20,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 export function ReferenceCreative({ templateId, templateName, linkedSetId, onAssociate, onClose, onEditor }: {
   templateId: string; templateName: string; linkedSetId?: string; onAssociate: (id: string) => void; onClose: () => void; onEditor: () => void;
 }) {
-  const dispatch = useAppDispatch(), versions = useAppSelector(state => state.editor.document.variants.length);
+  const dispatch = useAppDispatch(), store = useStore<RootState>(), designs = useDesigns();
   const [info, setInfo] = useState<ImageTemplateInfo>(), [list, setList] = useState<ImageTemplate[]>([]);
   const [current, setCurrent] = useState<ImageTemplate>(), [draft, setDraft] = useState<ReferenceCreativeDraft>();
   const [name, setName] = useState(''), [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
@@ -147,16 +148,21 @@ export function ReferenceCreative({ templateId, templateName, linkedSetId, onAss
     if (!current || !window.confirm(`Decompose ${variants.length} image(s)? Each makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it.`)) return;
     void act('decompose', async valid => { for (const variant of variants) { if (!valid()) return; const result = await imageTemplateApi.decompose(current.id, variant.id); if (valid()) keep(result); } });
   };
+  // Same handoff as Create Template from Image (openResultInEditor): each result opens as a design of its own.
   const open = (variant: ImageTemplateVariant) => void act('open', async valid => {
-    if (!current || !variant.decomposition?.runId) return;
-    const run = await experimentApi.get(variant.decomposition.runId);
-    const version = await importAsVersion(run, `${current.name} · ${variant.aspectRatio}`, { versions, assets, fetchFile: async file => {
-      const response = await fetch(experimentFileUrl(run.id, file)); if (!response.ok) throw new Error('Could not download a layer.'); return response.blob();
-    } });
-    if (!valid()) { await Promise.all((version.layers ?? []).map(layer => layer.type === 'image' && layer.assetId ? assets.deleteAsset(layer.assetId) : undefined)); return; }
-    dispatch(decomposedDesignImported({ variant: version, timestamp: new Date().toISOString() })); dispatch(variantSelected(version.id));
-    await imageTemplateApi.opened(current.id, variant.id, run.id).catch(() => undefined);
-    if (valid()) onEditor();
+    if (!current) return;
+    const template = current;
+    if (!designs) throw new Error('The editor cannot open designs from here.');
+    const opened = await openResultInEditor(template, variant, {
+      current: () => store.getState().editor.document, stored: () => designs.designs(),
+      openStored: id => designs.openDesign(id), openNew: document => designs.openNewDesign(document),
+      select: id => dispatch(variantSelected(id)),
+      run: id => experimentApi.get(id),
+      file: async (runId, file) => { const response = await fetch(experimentFileUrl(runId, file)); if (!response.ok) throw new Error('Could not download a layer.'); return response.blob(); },
+      recordOpened: runId => imageTemplateApi.opened(template.id, variant.id, runId),
+      assets, wanted: valid,
+    });
+    if (opened && valid()) onEditor();
   });
   const ready = !!current?.analysis && current.promptGeneration?.status === 'done', frozen = !!current?.generatedAt;
   const analysis = current?.analysis;

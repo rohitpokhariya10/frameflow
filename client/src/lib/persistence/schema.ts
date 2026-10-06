@@ -54,6 +54,7 @@ const variant = object({
     background: object({ id, name: string, fit: choice('cover', 'contain'), focalPoint, editable }) }),
   sourceVariantId: id,
   decomposition: object({ jobId: id, mode: choice('blank', 'original') }),
+  importedFrom: object({ templateId: id, resultId: id, runId: id }),
   layers: (v) => array(layer, LAYER_LIMITS.maxLayers)(v) && uniqueIds(v),
   generation: object({ mode: choice('live', 'example'), promptUsed: string, requestedAspectRatio: string,
     returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { provider: choice('gemini', 'cloudflare'), model: string, sourceAssetId: id }),

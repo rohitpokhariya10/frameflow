@@ -1,6 +1,9 @@
 import { createEditorStore } from '../../store';
 import { recoveryWarningChanged, saveStatusChanged } from '../../store/saveSlice';
-import { createProjectSaver, restoreProject, type StorageAccess } from './projectStorage';
+import type { ProjectDocument } from '@frameflow/shared';
+import { createProjectSaver, restoreProject } from './projectStorage';
+import { forgetDesign, readDesign, storedAssetIds, storedDesigns, storeDesign, type StorageAccess } from './designLibrary';
+import { isProjectDocument } from './schema';
 import { createDocument } from '../../store/editorSlice';
 import { projectReset } from '../../store/projectReset';
 import { assets } from '../assets/runtimeAssets';
@@ -37,6 +40,22 @@ export function bootstrapEditor(storage: StorageAccess, artwork = assets) {
     previous = current;
     saver.schedule(current);
   });
+  /**
+   * Opens `next` in place of the open design, which is kept exactly as it is among the stored designs (designLibrary.ts):
+   * nothing is added to either. Storage refusing any step leaves the open design open and unchanged.
+   */
+  function activate(next: ProjectDocument) {
+    if (!isProjectDocument(next)) throw new Error('This design cannot be opened.');
+    const current = store.getState().editor.document;
+    if (next.id === current.id) return;
+    saver.flush();
+    storeDesign(storage, current);
+    try { saver.replace(next); }
+    catch (error) { forgetDesign(storage, current.id); throw error; }
+    forgetDesign(storage, next.id);
+    previous = next; // The subscription must not schedule another write of what is already saved.
+    store.dispatch(projectReset(next));
+  }
   const pendingCleanup = new Set<string>();
   async function cleanupArtwork() {
     const results = await Promise.allSettled([...pendingCleanup].map(async (id) => {
@@ -45,8 +64,19 @@ export function bootstrapEditor(storage: StorageAccess, artwork = assets) {
     return results.every((result) => result.status === 'fulfilled');
   }
   return { store, flush: saver.flush, cleanupArtwork,
+    /** The other designs on this device (never the open one), newest first. */
+    designs: () => storedDesigns(storage).filter((entry) => entry.id !== store.getState().editor.document.id),
+    /** Switches to a stored design; the open one is kept. */
+    openDesign(id: string) {
+      const document = readDesign(storage, id);
+      if (!document) throw new Error('This design could not be read from this device.');
+      activate(document);
+    },
+    /** Opens a new design (e.g. a decomposed template result) in place of the open one, which is kept. */
+    openNewDesign: (document: ProjectDocument) => activate(document),
     async newDesign() {
-      const ids = projectAssetIds(store.getState());
+      // Pictures another stored design still shows are never removed with this one.
+      const kept = storedAssetIds(storage), ids = [...projectAssetIds(store.getState())].filter((id) => !kept.has(id));
       const fresh = createDocument(crypto.randomUUID(), new Date().toISOString());
       saver.replace(fresh);
       previous = fresh; // The subscription must not schedule another old-document write.

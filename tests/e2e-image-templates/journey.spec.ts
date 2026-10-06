@@ -54,7 +54,10 @@ test('reviewer journey through real routes: reference → editable prompt → se
   await page.screenshot({ path: testInfo.outputPath('3-layers.png') });
   await card.getByRole('button', { name: 'Open in editor', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel('Active version').locator('option')).toHaveCount(2);
+  // The result opens as a design of its own (one version); the design that was open is kept, with no version added.
+  await expect(page.getByLabel('Open design').locator('option:checked')).toHaveText(`${name} · 1:1 · 1 version`);
+  await expect(page.getByLabel('Open design').locator('option')).toHaveCount(2);
+  await expect(page.getByLabel('Active version')).toHaveCount(0);
   const layers = page.getByRole('list', { name: 'Design layers' });
   await expect(layers.locator('li')).toHaveCount(2);
   await layers.locator('.layer-select').filter({ hasText: 'Lavender phone' }).click();
@@ -64,6 +67,7 @@ test('reviewer journey through real routes: reference → editable prompt → se
   await page.screenshot({ path: testInfo.outputPath('4-editor.png') });
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
   await page.reload();
+  await expect(page.getByLabel('Open design').locator('option:checked')).toHaveText(`${name} · 1:1 · 1 version`);
   await expect(page.getByRole('list', { name: 'Design layers' }).locator('li')).toHaveCount(2);
   await page.getByRole('list', { name: 'Design layers' }).locator('.layer-select').filter({ hasText: 'Lavender phone' }).click();
   await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toHaveValue('45');

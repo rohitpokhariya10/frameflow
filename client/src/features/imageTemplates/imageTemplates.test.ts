@@ -1,7 +1,12 @@
 import { IMAGE_TEMPLATE_LIMITS } from '@frameflow/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExperimentLayer } from '../decomposition/layerizeExperiment';
-import { generationBlockers, imageTemplateApi, importAsVersion, RESULT_STATUS_LABELS, resultStatus, templateInProgress, templateSummary, withRatio, withTemplate, type ImageTemplate, type ImageTemplateVariant } from './imageTemplates';
+import type { ExperimentLayer, ExperimentRun } from '../decomposition/layerizeExperiment';
+import { bootstrapEditor } from '../../lib/persistence/bootstrap';
+import { PROJECT_KEY } from '../../lib/persistence/projectStorage';
+import { assets as runtimeAssets } from '../../lib/assets/runtimeAssets';
+import { createDocument } from '../../store/editorSlice';
+import { variantSelected } from '../../store/uiSlice';
+import { generationBlockers, imageTemplateApi, importAsVersion, MAX_VERSIONS, openResultInEditor, RESULT_STATUS_LABELS, resultStatus, templateInProgress, templateSummary, withRatio, withTemplate, type ImageTemplate, type ImageTemplateVariant } from './imageTemplates';
 
 const PROMPT = 'A premium product advertisement: a lavender smartphone stands upright in the centre on a white platform.';
 const image = { file: '1x1.image.png', mimeType: 'image/png', width: 1024, height: 1024, bytes: 10, sha256: 'abc' };
@@ -135,5 +140,105 @@ describe('Create Template from Image: Open in editor', () => {
     await expect(importAsVersion(finished, 'Lavender', { versions: 30, assets, fetchFile: async () => new Blob(['x']) })).rejects.toThrow('This design already has 30 versions. Delete one and try again.');
     expect(removed).toEqual(put);
     await expect(importAsVersion({ ...finished, layers: [] }, 'Lavender', { versions: 1, assets, fetchFile: async () => new Blob(['x']) })).rejects.toThrow('This run has no layers yet.');
+  });
+});
+
+describe('Open in editor: a decomposed result opens as a design of its own, never a new version', () => {
+  const SIZES = { '1:1': [1024, 1024], '4:5': [1216, 1520], '16:9': [1536, 864] } as const;
+  const runOf = (id: string, [width, height]: readonly [number, number]): ExperimentRun => ({ id, stage: 'done', canvas: { width, height }, warnings: [], layers: [
+    { index: 0, file: 'clean-background.png', zIndex: 0, pixelWidth: width, pixelHeight: height, opaquePercent: 100, placement: { kind: 'base', x: 0, y: 0, width, height }, cleanBackground: { status: 'continued-clean', method: 'plain-field' } },
+    { index: 1, file: 'layer-01.png', zIndex: 1, name: 'Woman and child', pixelWidth: 200, pixelHeight: 300, opaquePercent: 60, placement: { kind: 'bbox-scaled', x: 100, y: 120, width: 200, height: 300 } },
+    { index: 2, file: 'layer-02.png', zIndex: 2, name: '"NOW" headline', pixelWidth: 300, pixelHeight: 80, opaquePercent: 40, placement: { kind: 'bbox-crop', x: 40, y: 30, width: 300, height: 80 } }] } as unknown as ExperimentRun);
+  const tpl = { id: 'tmpl-mom', name: 'mom and child' };
+  const result = (ratio: keyof typeof SIZES, runId = `run-${ratio}`, editor?: { runId: string; openedAt: string }) => ({ id: ratio.replace(':', 'x'), aspectRatio: ratio,
+    decomposition: { runId, templateKey: 'template-c', createdAt: '', state: 'done' as const, stage: 'done', layers: 3 }, ...(editor ? { editor } : {}) });
+  /** The real editor session on in-memory browser storage, opened on "My campaign" with `versions` versions; every server read counted. */
+  function harness(versions: number) {
+    const main = createDocument('my-campaign', '2026-10-06T00:00:00.000Z');
+    main.name = 'My campaign';
+    main.variants = Array.from({ length: versions }, (_, i) => ({ ...main.variants[0], id: `v${i + 1}`, name: `Version ${i + 1}` }));
+    const values = new Map([[PROJECT_KEY, JSON.stringify(main)]]);
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+    const removed: string[] = [], session = bootstrapEditor(() => storage, { ...runtimeAssets, deleteAsset: async (id: string) => { removed.push(id); } });
+    const runs = new Map(Object.entries(SIZES).map(([ratio, size]) => [`run-${ratio}`, runOf(`run-${ratio}`, size)]));
+    const reads = { runs: [] as string[], files: [] as string[], recorded: [] as string[] };
+    let n = 0;
+    const deps = {
+      current: () => session.store.getState().editor.document, stored: () => session.designs(),
+      openStored: (id: string) => session.openDesign(id), openNew: (document: Parameters<typeof session.openNewDesign>[0]) => session.openNewDesign(document),
+      select: (id: string) => session.store.dispatch(variantSelected(id)),
+      run: async (id: string) => { reads.runs.push(id); await Promise.resolve(); return runs.get(id)!; },
+      file: async (runId: string, file: string) => { reads.files.push(`${runId}/${file}`); return new Blob([file]); },
+      recordOpened: async (runId: string) => { reads.recorded.push(runId); },
+      assets: { putAsset: async () => undefined, deleteAsset: async (id: string) => { removed.push(id); } }, newId: () => `id-${++n}`,
+    };
+    const open = () => session.store.getState().editor.document;
+    /** "My campaign" as kept on this device (stored while another design is open, else open). */
+    const campaign = () => open().id === 'my-campaign' ? open() : JSON.parse(values.get('frameflow:design:v1:my-campaign')!);
+    return { session, deps, reads, removed, open, campaign, values };
+  }
+
+  it('1/7. the first open of 1:1, 4:5 and 16:9 creates a design each, on its own canvas with every layer; "My campaign" keeps its 28 versions', async () => {
+    const h = harness(28);
+    for (const ratio of ['4:5', '1:1', '16:9'] as const) {
+      const opened = (await openResultInEditor(tpl, result(ratio), h.deps))!;
+      expect(opened.created).toBe(true);
+      const design = h.open();
+      expect(design).toMatchObject({ id: opened.documentId, name: `mom and child · ${ratio}` });
+      expect(design.variants).toHaveLength(1);
+      expect(design.variants[0]).toMatchObject({ canvas: { width: SIZES[ratio][0], height: SIZES[ratio][1] }, importedFrom: { templateId: 'tmpl-mom', resultId: ratio.replace(':', 'x'), runId: `run-${ratio}` } });
+      expect(design.variants[0].layers!.map(l => l.name)).toEqual(['Clean background (z0)', 'Woman and child (z1)', '"NOW" headline (z2)']);
+      expect(h.campaign().variants).toHaveLength(28);
+    }
+    expect(h.session.designs().map(d => d.name).sort()).toEqual(['My campaign', 'mom and child · 1:1', 'mom and child · 4:5']);
+    expect(h.reads.recorded).toEqual(['run-4:5', 'run-1:1', 'run-16:9']);
+    // Back to the campaign: exactly as it was.
+    h.session.openDesign('my-campaign');
+    expect(h.open().variants.map(v => v.id)).toEqual(Array.from({ length: 28 }, (_, i) => `v${i + 1}`));
+  });
+
+  it('4. with 30 versions open, the first open still works, with no warning, and the campaign stays at 30', async () => {
+    const h = harness(MAX_VERSIONS);
+    const opened = (await openResultInEditor(tpl, result('4:5'), h.deps))!;
+    expect(opened.created).toBe(true);
+    expect(h.open().variants[0].canvas).toMatchObject({ width: 1216, height: 1520 });
+    expect(h.campaign().variants).toHaveLength(MAX_VERSIONS);
+  });
+
+  it('2. opening it again switches back to the same design: no new design, no version, no download or server write', async () => {
+    const h = harness(28);
+    const first = (await openResultInEditor(tpl, result('4:5'), h.deps))!;
+    await openResultInEditor(tpl, result('1:1'), h.deps);
+    const reads = { runs: h.reads.runs.length, files: h.reads.files.length }, designs = h.session.designs().length;
+    const opened = { runId: 'run-4:5', openedAt: '2026-10-06T08:30:00.000Z' };
+    expect(await openResultInEditor(tpl, result('4:5', 'run-4:5', opened), h.deps)).toEqual({ documentId: first.documentId, created: false });
+    expect(h.open().id).toBe(first.documentId);
+    expect(h.open().variants).toHaveLength(1);
+    // Already open: still the same design and its one version.
+    expect(await openResultInEditor(tpl, result('4:5', 'run-4:5', opened), h.deps)).toEqual({ documentId: first.documentId, created: false });
+    expect([h.reads.runs.length, h.reads.files.length, h.session.designs().length, h.reads.recorded.length]).toEqual([reads.runs, reads.files, designs, 2]);
+    expect(h.campaign().variants).toHaveLength(28);
+    // A later decomposition of the same result is a different run: a new design.
+    expect((await openResultInEditor(tpl, result('4:5', 'run-4:5-b'), { ...h.deps, run: async () => runOf('run-4:5-b', SIZES['4:5']) }))!.created).toBe(true);
+  });
+
+  it('6. two clicks while one open is on its way make one design, not two', async () => {
+    const h = harness(28);
+    const [a, b] = await Promise.all([openResultInEditor(tpl, result('4:5'), h.deps), openResultInEditor(tpl, result('4:5'), h.deps)]);
+    expect(a!.documentId).toBe(b!.documentId);
+    expect(h.session.designs().map(d => d.name)).toEqual(['My campaign']);
+    expect(h.reads.runs).toEqual(['run-4:5']);
+  });
+
+  it('never pretends: storage refusing the new design is an error, its pictures are removed and the open design is unchanged', async () => {
+    const h = harness(28);
+    await expect(openResultInEditor(tpl, result('4:5'), { ...h.deps, openNew: () => { throw new Error('quota exceeded'); } })).rejects.toThrow('The 4:5 result could not be opened: quota exceeded. The design that was open is unchanged.');
+    expect(h.removed).toHaveLength(3);
+    expect(h.open()).toMatchObject({ id: 'my-campaign' });
+    expect(h.open().variants).toHaveLength(28);
+    await expect(openResultInEditor(tpl, { ...result('4:5'), decomposition: { ...result('4:5').decomposition, state: 'running' as const } }, h.deps)).rejects.toThrow('This image has no finished decomposition yet.');
+    // Closed before it finished: nothing is opened.
+    expect(await openResultInEditor(tpl, result('16:9'), { ...h.deps, wanted: () => false })).toBeUndefined();
+    expect(h.open().id).toBe('my-campaign');
   });
 });

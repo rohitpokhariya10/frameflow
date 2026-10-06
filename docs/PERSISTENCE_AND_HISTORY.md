@@ -8,6 +8,15 @@ save status) is separate. Image Blobs belong in IndexedDB and never enter the
 document or history. Base64 would expand image data and consume limited synchronous
 localStorage capacity; documents instead reference stable `assetId` strings.
 
+## Several designs on one device
+
+The open design is the document above (`frameflow:project:v1`). A decomposed template result opens as a design of its
+own: the design that was open is kept as it is under `frameflow:design:v1:<id>`, listed in `frameflow:designs:v1`
+(name, versions, update time, and the template result it came from), and the new one becomes the open design. The
+**Design** menu switches between them; a reload reopens whichever was open. Each kept design is validated like the open
+one when read; an unreadable index lists nothing and is never overwritten except by the next switch. Switching never adds
+a version and never removes artwork.
+
 ## Restore and save
 
 `bootstrapEditor` validates saved JSON before creating the store. The focused

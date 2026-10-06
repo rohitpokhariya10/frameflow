@@ -1,4 +1,4 @@
-import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ReferenceCreativeDraft, type ImageVisualAnalysis, type DesignVariant, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
+import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ReferenceCreativeDraft, type ImageVisualAnalysis, type DesignVariant, type ProjectDocument, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { experimentToVariant, type ExperimentRun } from '../decomposition/layerizeExperiment';
 import type { GenerationVariant } from '../decomposition/templateGeneration';
@@ -130,16 +130,84 @@ export function templateSummary(template: ImageTemplate): string {
 export const withTemplate = (list: ImageTemplate[], template: ImageTemplate) => list.some(item => item.id === template.id) ? list.map(item => item.id === template.id ? template : item) : [template, ...list];
 
 type Assets = { putAsset(id: string, blob: Blob): Promise<unknown>; deleteAsset(id: string): Promise<unknown> };
+/** The most versions a design keeps (the persisted document's limit). */
+export const MAX_VERSIONS = 30;
+const removeAssets = (variant: DesignVariant, assets: Assets) => Promise.all((variant.layers ?? []).map(layer => layer.type === 'image' && layer.assetId ? assets.deleteAsset(layer.assetId).catch(() => undefined) : undefined));
 /**
- * A finished decomposition as a new editor version, named after the template and its ratio. The layers are imported
- * by the same function the OpenAI + Seedream test panel uses (experimentToVariant), with the same checks: the editor
- * keeps at most 30 versions, and on any failure the stored layer pictures are removed again.
+ * A finished decomposition as an editor version, named after the template and its ratio. The layers are imported by the
+ * same function the OpenAI + Seedream test panel uses (experimentToVariant); on any failure the stored layer pictures
+ * are removed again. `versions`: the design it would join, which keeps at most 30 (omitted for a design of its own).
+ * `importedFrom`: the template result it comes from.
  */
-export async function importAsVersion(run: Pick<ExperimentRun, 'id' | 'canvas' | 'layers' | 'outputLayers'>, name: string, options: { versions: number; fetchFile: (file: string) => Promise<Blob>; assets: Assets; newId?: () => string }): Promise<DesignVariant> {
-  const variant = { ...(await experimentToVariant(run, options.fetchFile, options.assets, options.newId)), name: name.slice(0, 120) };
-  if (!isDesignVariant(variant) || options.versions >= 30) {
-    await Promise.all((variant.layers ?? []).map(layer => layer.type === 'image' && layer.assetId ? options.assets.deleteAsset(layer.assetId).catch(() => undefined) : undefined));
-    throw new Error(options.versions >= 30 ? 'This design already has 30 versions. Delete one and try again.' : 'The layers could not be opened as a design version.');
+export async function importAsVersion(run: Pick<ExperimentRun, 'id' | 'canvas' | 'layers' | 'outputLayers'>, name: string, options: { versions?: number; fetchFile: (file: string) => Promise<Blob>; assets: Assets; newId?: () => string; importedFrom?: ResultSource }): Promise<DesignVariant> {
+  const variant: DesignVariant = { ...(await experimentToVariant(run, options.fetchFile, options.assets, options.newId)), name: name.slice(0, 120), ...(options.importedFrom ? { importedFrom: options.importedFrom } : {}) };
+  const full = options.versions !== undefined && options.versions >= MAX_VERSIONS;
+  if (!isDesignVariant(variant) || full) {
+    await removeAssets(variant, options.assets);
+    throw new Error(full ? 'This design already has 30 versions. Delete one and try again.' : 'The layers could not be opened as a design version.');
   }
   return variant;
+}
+
+/** A decomposed template result: the template, the result (its ratio) and the decomposition run it was opened from. */
+export type ResultSource = { templateId: string; resultId: string; runId: string };
+const sameSource = (a: ResultSource | undefined, b: ResultSource) => !!a && a.templateId === b.templateId && a.resultId === b.resultId && a.runId === b.runId;
+
+export type OpenInEditorDeps = {
+  /** The design open in the editor now, and the other designs kept on this device (lib/persistence/designLibrary.ts). */
+  current: () => ProjectDocument; stored: () => { id: string; importedFrom?: ResultSource }[];
+  /** Switch to a stored design, or open a new one; either way the design that was open is kept as it is. */
+  openStored: (id: string) => void; openNew: (document: ProjectDocument) => void;
+  select: (versionId: string) => void;
+  /** Reads of the app's own server: the stored decomposition run and its files. Never a provider call. */
+  run: (runId: string) => Promise<ExperimentRun>; file: (runId: string, file: string) => Promise<Blob>;
+  /** Records on the server that this result was opened (for "Ready in editor"); its failure does not undo the open. */
+  recordOpened: (runId: string) => Promise<unknown>;
+  assets: Assets; newId?: () => string; now?: () => string;
+  /** False once the caller no longer wants the result (closed, switched template): nothing is opened then. */
+  wanted?: () => boolean;
+};
+export type OpenedResult = { documentId: string; created: boolean };
+const opening = new Map<string, Promise<OpenedResult | undefined>>();
+/**
+ * Opens a decomposed template result in the editor, the same way for every ratio, from what is already stored: no
+ * planner, image or decomposition request is ever made. A result is a design of its own: the first open creates it (one
+ * version, the result's canvas and layers) and the editor switches to it; opening it again switches back to that same
+ * design. It never adds a version to the design that was open, so that design's version limit never applies. A second
+ * click while one is opening joins it (one design, never two).
+ */
+export function openResultInEditor(template: { id: string; name: string }, result: Pick<ImageTemplateVariant, 'id' | 'aspectRatio' | 'decomposition' | 'editor'>, deps: OpenInEditorDeps): Promise<OpenedResult | undefined> {
+  const runId = result.decomposition?.state === 'done' ? result.decomposition.runId : undefined;
+  if (!runId) return Promise.reject(new Error('This image has no finished decomposition yet.'));
+  const source: ResultSource = { templateId: template.id, resultId: result.id, runId }, key = JSON.stringify(source), name = `${template.name} · ${result.aspectRatio}`.slice(0, 120);
+  const pending = opening.get(key);
+  if (pending) return pending;
+  const work = (async (): Promise<OpenedResult | undefined> => {
+    const record = () => result.editor?.runId === runId ? undefined : deps.recordOpened(runId).catch(() => undefined);
+    // Already open: show its version.
+    const open = deps.current(), version = open.variants.find(variant => sameSource(variant.importedFrom, source));
+    if (version) { deps.select(version.id); await record(); return { documentId: open.id, created: false }; }
+    // Opened before: switch back to it.
+    const stored = deps.stored().find(entry => sameSource(entry.importedFrom, source));
+    if (stored) {
+      if (deps.wanted && !deps.wanted()) return undefined;
+      deps.openStored(stored.id);
+      await record();
+      return { documentId: stored.id, created: false };
+    }
+    // First open: a new design from the stored decomposition.
+    const run = await deps.run(runId), newId = deps.newId ?? (() => crypto.randomUUID()), at = deps.now?.() ?? new Date().toISOString();
+    const imported = await importAsVersion(run, name, { fetchFile: file => deps.file(run.id, file), assets: deps.assets, newId, importedFrom: source });
+    const document: ProjectDocument = { schemaVersion: 1, id: `design-${newId()}`, name, createdAt: at, updatedAt: at, variants: [imported] };
+    if (deps.wanted && !deps.wanted()) { await removeAssets(imported, deps.assets); return undefined; }
+    try { deps.openNew(document); }
+    catch (error) {
+      await removeAssets(imported, deps.assets);
+      throw new Error(`The ${result.aspectRatio} result could not be opened: ${error instanceof Error ? error.message : 'browser storage refused it'}. The design that was open is unchanged.`, { cause: error });
+    }
+    await record();
+    return { documentId: document.id, created: true };
+  })().finally(() => opening.delete(key));
+  opening.set(key, work);
+  return work;
 }

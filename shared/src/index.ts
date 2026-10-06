@@ -100,6 +100,12 @@ export interface DesignVariant {
   /** Opened from an "Image to layers" job: which job, and whether it started on a blank canvas or the original image. */
   decomposition?: { jobId: string; mode: 'blank' | 'original' };
   /**
+   * Imported from a decomposed template result (Create Template from Image, reference creatives): which template, which
+   * of its results (ratio) and which decomposition run. Opening that result again selects this version instead of adding
+   * another one.
+   */
+  importedFrom?: { templateId: string; resultId: string; runId: string };
+  /**
    * Opened from a template creative: which template version and creative. From then on this is an independent design:
    * editing it never changes the template or the creative. `background` keeps the template's background element (its
    * content is the canvas colour and the background artwork above).

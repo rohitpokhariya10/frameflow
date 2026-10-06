@@ -287,12 +287,14 @@ test('create a template from an image: name, reference, prompt, sizes, results, 
   await expect(card(page, '1:1').locator('.cti-layer-previews img')).toHaveCount(2);
   await page.screenshot({ path: testInfo.outputPath('3-results.png') });
 
-  // 9. Open in editor: a new version of the design, selected, named after the template and the size; the dialog closes onto it.
+  // 9. Open in editor: a design of its own, named after the template and the size (one version); the design that was
+  // open is kept with no version added; the dialog closes onto it.
   await card(page, '1:1').getByRole('button', { name: 'Open in editor' }).click();
   await expect(dialog(page)).toHaveCount(0);
-  const versions = page.getByLabel('Active version');
-  await expect(versions.locator('option')).toHaveCount(2);
-  await expect(versions.locator('option:checked')).toHaveText(/^2\. .*1024 × 1024$/);
+  await expect(page.getByLabel('Open design').locator('option:checked')).toHaveText('Lavender launch · 1:1 · 1 version');
+  await expect(page.getByLabel('Open design').locator('option')).toHaveCount(2);
+  await expect(page.getByLabel('Active version')).toHaveCount(0);
+  await expect(page.locator('.workspace-unit')).toHaveText('1024 × 1024 px');
   await expect.poll(() => api.posts.at(-1)).toEqual({ method: 'POST', path: `/${api.templates[0].id}/variants/1x1/opened`, body: { runId: api.templates[0].variants[0].decompositions[0].runId } });
   // Back in the dialog, the template is where it was left, and the result says it is in the editor.
   await openFromPanel(page);

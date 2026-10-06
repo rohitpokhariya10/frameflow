@@ -13,11 +13,19 @@ import { BackgroundArtwork } from './BackgroundArtwork';
 
 import { VariantComparison } from '../variants/VariantComparison';
 import { formatLabel, variantLabel } from '../variants/variantLabel';
+import { useDesigns } from '../editor/designs';
+
+const versionCount = (count: number) => `${count} version${count === 1 ? '' : 's'}`;
 
 export function CanvasWorkspace() {
   const dispatch = useAppDispatch();
   const variants = useAppSelector((state) => state.editor.document.variants);
   const [compare, setCompare] = useState(false);
+  // The other designs on this device (a decomposed template result opens as one): read once per open design, since the
+  // editor is mounted again whenever another design opens.
+  const library = useDesigns(), documentId = useAppSelector((state) => state.editor.document.id), documentName = useAppSelector((state) => state.editor.document.name);
+  const [others] = useState(() => library?.designs() ?? []);
+  const [designError, setDesignError] = useState('');
   const current = useAppSelector(selectActiveVariant);
   const preview = useAppSelector((state) => state.ui.activeLeftTab === 'ai' ? state.ai.preview : null);
   const relative = current.sourceVariantId ? variants.find((item) => item.id === current.sourceVariantId) : variants.find((item) => item.sourceVariantId === current.id);
@@ -51,7 +59,11 @@ export function CanvasWorkspace() {
   return (
     <main className="canvas-workspace" aria-label="Canvas workspace" id="canvas-interaction" tabIndex={0} data-selection-owner>
       <div className="workspace-heading"><span>{preview ? preview.adaptation ? 'Adapted preview' : 'Generated preview' : formatLabel(canvas)}<span className="workspace-heading-separator">/</span><span className="muted">{preview ? 'Review, then apply' : layers?.length ? `${layers.length} layers` : elements.length ? `${elements.length} text ${elements.length === 1 ? 'element' : 'elements'}` : background ? 'Artwork' : 'Blank canvas'}</span></span><span className="workspace-unit">{canvas.width} × {canvas.height} px</span></div>
-      {variants.length > 1 && <div className="variant-switcher"><label>Version<select aria-label="Active version" value={current.id} onChange={(event) => { dispatch(variantSelected(event.target.value)); setCompare(false); }}>{variants.map((variant, index) => <option key={variant.id} value={variant.id}>{variantLabel(variant, index)}</option>)}</select></label>{relative && !preview && <button className="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Back to editing' : 'Compare versions'}</button>}</div>}
+      {(variants.length > 1 || others.length > 0) && <div className="variant-switcher">{others.length > 0 && <label>Design<select aria-label="Open design" value={documentId} onChange={(event) => {
+        try { library?.openDesign(event.target.value); } catch (error) { setDesignError(error instanceof Error ? error.message : 'That design could not be opened.'); }
+      }}><option value={documentId}>{documentName} · {versionCount(variants.length)}</option>{others.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {versionCount(entry.versions)}</option>)}</select></label>}
+        {variants.length > 1 && <label>Version<select aria-label="Active version" value={current.id} onChange={(event) => { dispatch(variantSelected(event.target.value)); setCompare(false); }}>{variants.map((variant, index) => <option key={variant.id} value={variant.id}>{variantLabel(variant, index)}</option>)}</select></label>}{variants.length > 1 && relative && !preview && <button className="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Back to editing' : 'Compare versions'}</button>}</div>}
+      {designError && <div className="artwork-error" role="alert">{designError}</div>}
       {background && artworkError && <div className="artwork-error" role="alert">{artworkError}</div>}
       {pair ? <VariantComparison source={pair.source} target={pair.target} /> : <div className="canvas-viewport" ref={viewportRef} data-testid="canvas-viewport" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>
         <div className="canvas-scroll-content" onMouseDown={(event) => { if (event.target === event.currentTarget) { actions.select(null); focusCanvas(); } }}>

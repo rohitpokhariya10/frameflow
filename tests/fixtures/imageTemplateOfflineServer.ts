@@ -34,7 +34,10 @@ async function artwork(width: number, height: number, part: 'all' | 'background'
   const phone = '<rect x="345" y="190" width="310" height="570" rx="45" fill="#514661"/><rect x="357" y="202" width="286" height="546" rx="37" fill="#b294d2"/><rect x="375" y="222" width="105" height="130" rx="28" fill="#9a7aba"/><circle cx="405" cy="255" r="20" fill="#292431"/><circle cx="447" cy="305" r="20" fill="#292431"/><circle cx="505" cy="495" r="40" fill="#cbb4e2"/>';
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 1000 1000" preserveAspectRatio="none">${part !== 'phone' ? backdrop : ''}${part !== 'background' ? phone : ''}</svg>`)).png().toBuffer();
 }
+/** Every fake provider request, by provider (fal includes Seedream's uploads, polls and downloads): an action that must spend nothing is checked against it. */
+const callCounts = { openai: 0, fal: 0, seedream: 0 };
 const generate = async (request: { size: string; prompt: string; image?: File | File[] }) => {
+  callCounts.openai++;
   const images = request.image ? Array.isArray(request.image) ? request.image : [request.image] : [];
   const inputs = await Promise.all(images.map(async image => digest(Buffer.from(await image.arrayBuffer()))));
   const source = inputs[0] ?? '';
@@ -61,8 +64,9 @@ async function complexLayers(requestId: string, base: readonly OfferPart[], part
   return entries.map(([name, png], z_index) => { const url = `https://v3b.fal.media/files/offline/${requestId}-${z_index}.png`; files.set(url, png); return { image: { url }, z_index, name }; });
 }
 const transport: FalTransport = {
-  upload: async bytes => { const url = `https://v3b.fal.media/files/offline/input-${inputs.size}.png`; inputs.set(url, bytes); return url; },
+  upload: async bytes => { callCounts.fal++; const url = `https://v3b.fal.media/files/offline/input-${inputs.size}.png`; inputs.set(url, bytes); return url; },
   submit: async (_endpoint, input) => {
+    callCounts.fal++; callCounts.seedream++;
     const bytes = inputs.get(String(input.image_url))!, residual = String(input.prompt ?? '').startsWith(RESIDUAL_PROMPT.slice(0, 60));
     const { width = 1024, height = 1024 } = await sharp(bytes).metadata();
     const requestId = `offline-${results.size}`;
@@ -97,8 +101,8 @@ const transport: FalTransport = {
     results.set(requestId, { layers });
     return { requestId };
   },
-  status: async () => 'COMPLETED', result: async (_endpoint, id) => { await pause(); return results.get(id); }, cancel: async () => undefined,
-  download: async url => { const bytes = files.get(url); if (!bytes) throw new Error('Unknown fixture layer.'); return bytes; },
+  status: async () => { callCounts.fal++; return 'COMPLETED'; }, result: async (_endpoint, id) => { callCounts.fal++; await pause(); return results.get(id); }, cancel: async () => undefined,
+  download: async url => { callCounts.fal++; const bytes = files.get(url); if (!bytes) throw new Error('Unknown fixture layer.'); return bytes; },
 };
 // Image-template decompositions ask for the semantic analysis (semanticPlanner.ts); the test panel's runs for the plain plan.
 const semanticAnalysis: SemanticAnalysis = { image_type: 'product photograph', scene_summary: 'A lavender smartphone standing in a lavender studio.',
@@ -108,7 +112,7 @@ const semanticAnalysis: SemanticAnalysis = { image_type: 'product photograph', s
   ],
   relationships: [{ source: 'lavender_phone', relationship: 'in_front_of', target: 'studio_background' }], ambiguities: [], recommended_layer_count: 2,
   decomposition_strategy: 'Separate the phone from the studio.', downstream_decomposition_prompt: 'Extract the lavender phone as a whole object. Separate the studio background.' };
-const planner = createOpenAIPlanner({ client: { responses: { create: async (request: { text: { format: { schema: unknown } } }) => ({ status: 'completed', output: [], output_text: JSON.stringify(request.text.format.schema === SEMANTIC_SCHEMA ? semanticAnalysis : {
+const planner = createOpenAIPlanner({ client: { responses: { create: async (request: { text: { format: { schema: unknown } } }) => (callCounts.openai++, { status: 'completed', output: [], output_text: JSON.stringify(request.text.format.schema === SEMANTIC_SCHEMA ? semanticAnalysis : {
   prompt: 'Extract the lavender phone as a whole object. Separate the studio background.', planned_layers: [{ name: 'Lavender phone', description: 'The main product, in one layer.' }], warnings: [],
 }) }) } } as never });
 const router = createLayerizeRouter({
@@ -117,7 +121,7 @@ const router = createLayerizeRouter({
   access: { production: true, clientOrigin: origin },
   generation: (): GenerationConfig => ({ model: 'gpt-image-2', client: () => ({ images: { generate: async () => { throw new Error('Image templates must use images.edit.'); }, edit: generate } }) as unknown as ReturnType<GenerationConfig['client']> }),
   imagePrompt: () => createOpenAIImagePromptWriter({ model: 'offline-prompt-fixture', client: { responses: { create: async (request: { input: { content: { image_url?: string }[] }[] }) => {
-    await pause();
+    callCounts.openai++; await pause();
     const image = request.input[0].content.find(item => item.image_url)!.image_url!;
     const input = Buffer.from(image.split(',')[1], 'base64');
     const source = sources.get(digest(input)) ?? digest(input);
@@ -130,7 +134,7 @@ const router = createLayerizeRouter({
   } } } as never }),
   // The clean-background edit: a local row fill (exact for the complex offer's vertical gradient); never a network call.
   deps: () => ({ planner, transport: () => transport, backgroundReconstructor: { model: 'offline-image-edit', reconstruct: async ({ image, mask }) => {
-    providerCalls.push({ kind: 'background-edit' }); await pause();
+    providerCalls.push({ kind: 'background-edit' }); callCounts.openai++; await pause();
     const black = blackEditNext; blackEditNext = false;
     return { image: black ? await blackSilhouetteEdit(image, mask) : await rowFillEdit(image, mask), requestId: `offline-edit-${providerCalls.length}` };
   } } }),
@@ -161,6 +165,7 @@ app.get('/__test__/background-check', async (req, res) => {
   res.json({ file: run.outputLayers[0].file, area, matchShare: Math.round(1000 * match / Math.max(1, area)) / 1000, black });
 });
 app.get('/__test__/provider-calls', (_req, res) => res.json(providerCalls));
+app.get('/__test__/call-counts', (_req, res) => res.json(callCounts));
 app.get('/__test__/reference-events', (req, res) => res.json(events.filter(event => event.source === String(req.query.source))));
 app.get('/__test__/offer-reference.png', async (req, res) => {
   const seed = String(req.query.seed ?? ''), color = createHash('sha256').update(seed).digest('hex').slice(0, 6);
