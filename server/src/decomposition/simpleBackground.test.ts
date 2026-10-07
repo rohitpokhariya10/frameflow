@@ -39,6 +39,8 @@ describe('a person on a plain branded wall (blue-purple)', () => {
     expect(s.run.calls).toMatchObject({ seedreamResidual: 0, backgroundReconstruction: 0 });
     // Her shadow goes with her, not into a layer of its own.
     expect(names(s.run)).toEqual(['Background', 'Woman in yellow top + Soft shadow of the woman', 'White NEW ARRIVALS headline text']);
+    expect(s.run.outputLayers![1].semantic).toMatchObject({ id: 'woman', type: 'person' });
+    expect(s.run.outputLayers![1].grouping?.parent).toBe('layer-02.png');
   }, 60_000);
 
   it('7. a wall panel returned with a grey slab hidden behind her is not kept: hiding her shows the panel continued, never grey', async () => {
@@ -68,11 +70,11 @@ describe('a gradient product shot (lavender): the background\'s own design is no
     expect(s.run.outputLayers![0].cleanBackground).toEqual({ status: 'provider-clean', method: 'provider-base' });
   }, 60_000);
 
-  it('when a planned element is missing, the same leftover still gets the residual check: missed products are still looked for', async () => {
+  it('a missing planned element alone does not spend a residual call on the background’s soft shapes', async () => {
     const s = await refinedRun(await creative(LAVENDER_PARTS), plan([['gift_box', 'product']]), [{ base: [L('backdrop')], layers: [L('phone')] }, { base: [L('backdrop')], layers: [] }]);
     expect(s.run.refinement!.planCoverage).toMatchObject({ complete: false });
-    expect(s.run.calls!.seedreamResidual).toBe(1);
-    expect(s.run.refinement).toMatchObject({ stopReason: 'no-new-layers' });
+    expect(s.run.calls!.seedreamResidual).toBe(0);
+    expect(s.run.refinement).toMatchObject({ stopReason: 'residue-only' });
   }, 60_000);
 
   it('2. Seedream\'s base still shows the phone: the gradient and platform continue where it stood, with no call and no trace of it', async () => {

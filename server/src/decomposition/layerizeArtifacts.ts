@@ -25,6 +25,8 @@ export type LayerInfo = {
     source?: 'original' | 'base'; enclosedPercent?: number };
   /** Runs with the recursive refinement (recursiveDecomposition.ts) only: which pass made this layer, and from what. */
   provenance?: LayerProvenance;
+  /** Reconciled planner identity; type takes precedence over ambiguous provider names. */
+  semantic?: { id: string; type: string; editableIndependently: boolean };
   /** A group made to protect a person or an interaction (interactionGrouping.ts): which layers it holds and why. */
   grouping?: LayerGrouping;
   /** The base layer of a refined run: how its clean background was made and whether it is verified clean. */
@@ -40,7 +42,7 @@ export type LayerProvenance = { sourcePass: number; sourceImage: string; parentR
   role: string; bbox?: [number, number, number, number]; mask: string; areaPercent?: number; confidence?: number; groupedFrom?: string[] };
 /** Why a layer is part of a group: the parent, an object held with an interleaved grip, a worn ornament, a finger fragment,
  * a body part cut from its person, content on a held object, a tiny attached piece, or a small decoration. */
-export type GroupMemberRole = 'parent' | 'held_object' | 'worn_ornament' | 'finger_fragment' | 'body_part' | 'object_content' | 'attached_fragment' | 'decoration' | 'cast_shadow';
+export type GroupMemberRole = 'parent' | 'held_object' | 'worn_ornament' | 'finger_fragment' | 'body_part' | 'object_content' | 'attached_fragment' | 'decoration' | 'cast_shadow' | 'text_effect';
 /** groupedWithParent: members stay with `parent`; protectedInteraction: a hand and what it holds kept intact. */
 export type LayerGrouping = { groupedWithParent: boolean; parent: string; protectedInteraction?: 'hand_holding_object'; attachmentReason: string;
   members: { file: string; name?: string; role: GroupMemberRole; reason: string }[] };
@@ -158,6 +160,7 @@ export async function renderLayerizeOutputs(dir: string, raw: unknown, download:
   const { canvas, placements, warnings } = placeLayers(decoded);
   const layers: LayerInfo[] = decoded.map((d, i) => ({ index: i, file: d.file, zIndex: d.meta.zIndex, name: d.meta.name, description: d.meta.description, bboxAbsolute: d.meta.bboxAbsolute, bboxNormalized: d.meta.bboxNormalized,
     pixelWidth: d.width, pixelHeight: d.height, opaquePercent: Math.round(d.opaque * 1000) / 10, placement: placements[i] }));
+  writeFileSync(join(dir, 'raw-layers.json'), JSON.stringify({ canvas, warnings, layers }, null, 2));
   // Framed layouts: replace the provider's outer background (a placeholder so far) with a clean full-canvas rebuild from
   // the base, filled under the inner backdrop and border. Needs the base and at least one resolved inner backdrop.
   const pngs = decoded.map(d => d.png);

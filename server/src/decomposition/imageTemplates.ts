@@ -26,12 +26,17 @@ import type OpenAI from 'openai';
 import { createOpenAIClient } from '../services/openAIClient.js';
 import sharp from 'sharp';
 import { createReferenceCreative, parseReferenceCreative, validateReferenceGeneration, validateImageTemplateRequestPrompt, type ReferenceCreativeDraft,
-  GENERATION_TEMPLATE_KEYS, generationVariantId, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
+  compareSignatures, validateMatch, GENERATION_TEMPLATE_KEYS, generationVariantId, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
   IMAGE_ANALYSIS_LIMITS, IMAGE_ANALYSIS_SCHEMA, buildImageTemplatePrompt, parseImageAnalysisResponse, type ImageVisualAnalysis,
   IMAGE_TEMPLATE_VERSION, imageTemplateVariantPrompt, isImageTemplateRatio, resolveImageTemplateName, resolveImageTemplatePrompt, resolveImageTemplateRatios, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
 import { plannerModel } from './aiModels.js';
 import { allowOnly, supportsProductReference, generateVariant, queueVariant, recordDecomposition, variantImage, type GenerationConfig, type GenerationVariant, type VariantDecomposition } from './generationGroups.js';
-import { createRun, executeRun, MAX_UPLOAD_BYTES, readRun, resumeRun, RunError, validRunId, type RunnerDeps, type RunRecord } from './layerizeExperiment.js';
+import { createRun, executeRun, MAX_UPLOAD_BYTES, readRun, resumeRun, RunError, saveRunRecord, validRunId, type RunnerDeps, type RunRecord } from './layerizeExperiment.js';
+import { blueprintRefText, blueprintSummary, compileGenerationPrompt, planSlotChanges, slotFormModel, slotValuesFor, BLUEPRINT_PROMPT_VERSION, type TemplateBlueprint, type TemplateFamily } from '@frameflow/shared';
+import { readRunDiagnostics } from './runDiagnostics.js';
+import { detectTemplateFamily, libraryDetection, type FamilyServices } from './templateFamilies/familyMatcher.js';
+import { familyDecomposition, recordFamilyGeneration, recordFamilyRun, validateGeneratedFamily, type FamilyAssignment } from './templateFamilies/familyRuns.js';
+import { ensureSeedFamilies, hashOf, slotSchemaHash, validFamilyId } from './templateFamilies/store.js';
 import type { PlannerUsage } from './layerizePlanner.js';
 import { requireTemplate, TEMPLATES } from './layerizeTemplates.js';
 
@@ -53,7 +58,9 @@ export type PromptGeneration = {
   responseId?: string; usage?: PlannerUsage; requestFile?: string; responseFile?: string; error?: { code: string; message: string; status?: number };
 };
 /** A ratio of the template: a generation variant, and when one of its decompositions was opened in the editor. */
-export type ImageTemplateVariant = GenerationVariant & { decompositions: (VariantDecomposition & { templateKey?: string })[]; editor?: { runId: string; openedAt: string } };
+export type ImageTemplateVariant = GenerationVariant & { decompositions: (VariantDecomposition & { templateKey?: string })[]; editor?: { runId: string; openedAt: string };
+  /** 'reference': the uploaded creative itself, decomposed with no image generation (template family workflow). */
+  source?: 'reference' };
 /**
  * One template made from a reference image (group.json). Before it is generated it is a draft: its prompt and ratios
  * can still change. Generating fixes them and creates the ratios; what is decomposed and opened is recorded per ratio.
@@ -61,7 +68,9 @@ export type ImageTemplateVariant = GenerationVariant & { decompositions: (Varian
 export type ImageTemplate = {
   id: string; kind: 'image-template'; version: string; createdAt: string; updatedAt: string;
   name: string;
-  workflow?: 'offer-reference'; referenceCreative?: ReferenceCreativeDraft;
+  /** 'template-family': the reusable layout family flow (templateFamilies/): detect → slot fields → generate or use as is → decompose. */
+  workflow?: 'offer-reference' | 'template-family'; referenceCreative?: ReferenceCreativeDraft;
+  family?: FamilyAssignment;
   productReference?: ImageTemplate['reference'];
   originTemplate?: { id: string; name: string };
   generationSnapshot?: { id: string; referenceSha256: string; blueprintVersion: 1; settings: ReferenceCreativeDraft; analysis: ImageVisualAnalysis; productSha256?: string; model: string; instruction: string; aspectRatios: ImageTemplateRatio[] };
@@ -272,9 +281,25 @@ export async function describeReference(root: string, id: string, writer: ImageP
  * Changes what may still change. The name (empty only on a draft) and the layer style always; the working prompt and the
  * chosen ratios only before generation. Over-long values are refused, never cut.
  */
-export function changeImageTemplate(root: string, id: string, body: Record<string, unknown>): ImageTemplate {
-  allowOnly(body, ['name', 'prompt', 'aspectRatios', 'decomposeWith', 'referenceCreative', 'originTemplate'], 'A template');
+export function changeImageTemplate(root: string, id: string, body: Record<string, unknown>, family?: FamilyServices): ImageTemplate {
+  allowOnly(body, ['name', 'prompt', 'aspectRatios', 'decomposeWith', 'referenceCreative', 'originTemplate', 'familySlots'], 'A template');
   return update(root, id, (template) => {
+    if (body.familySlots !== undefined) {
+      if (template.workflow !== 'template-family' || !family) throw new RunError('INVALID_REQUEST', 'Layout fields belong to a layout-family creative.');
+      if (template.generatedAt) throw new RunError('ALREADY_GENERATED', 'Generation settings are fixed. Start a new creative to change them.');
+      const blueprint = assignedBlueprint(template, family), raw = body.familySlots as Record<string, unknown>;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new RunError('INVALID_REQUEST', 'familySlots must be an object of field values.');
+      for (const [key, value] of Object.entries(raw)) {
+        const slot = blueprint.slots.find(item => item.id === key);
+        if (!slot) throw new RunError('INVALID_REQUEST', `This layout has no "${key}" field.`);
+        if (typeof value !== 'string' || value.length > slot.maxLength) throw new RunError('INVALID_REQUEST', `${slot.label} must be text of at most ${slot.maxLength} characters.`);
+      }
+      // Local compilation of the family's prompt template: no model call.
+      template.family!.slotValues = slotValuesFor(blueprint, raw);
+      template.prompt = template.generatedPrompt = compileGenerationPrompt(blueprint, template.family!.slotValues);
+      template.promptEdited = false;
+    }
+    if (body.prompt !== undefined && template.workflow === 'template-family') throw new RunError('INVALID_REQUEST', 'This prompt is compiled from the layout fields; change the fields instead.');
     if (body.originTemplate !== undefined) {
       const origin = body.originTemplate as { id?: unknown; name?: unknown };
       if (!origin || typeof origin.id !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(origin.id) || typeof origin.name !== 'string' || origin.name.length > 200) throw new RunError('INVALID_REQUEST', 'Invalid template association.');
@@ -318,7 +343,7 @@ export function changeImageTemplate(root: string, id: string, body: Record<strin
  * Starts generation: fixes the name, the prompt and the chosen ratios (body values win over what the draft has), and
  * creates every offered ratio with its exact prompt. Returns the ratios to generate now. Nothing is sent here.
  */
-export function startImageTemplateGeneration(root: string, id: string, body: Record<string, unknown>, config: Pick<GenerationConfig, 'model' | 'referenceRatios'>, promptInProgress: boolean): { template: ImageTemplate; requested: string[] } {
+export function startImageTemplateGeneration(root: string, id: string, body: Record<string, unknown>, config: Pick<GenerationConfig, 'model' | 'referenceRatios'>, promptInProgress: boolean, family?: FamilyServices): { template: ImageTemplate; requested: string[] } {
   allowOnly(body, ['name', 'prompt', 'aspectRatios', 'referenceCreative'], 'Generating a template');
   let requested: string[] = [];
   const template = update(root, id, (draft) => {
@@ -333,20 +358,32 @@ export function startImageTemplateGeneration(root: string, id: string, body: Rec
       draft.prompt = draft.referenceCreative.prompt;
       const selected = resolveImageTemplateRatios(body.aspectRatios ?? draft.aspectRatios);
       if (selected.ratios.length !== 3) throw new RunError('INVALID_ASPECT_RATIO', 'Generate all three campaign ratios: 1:1, 4:5 and 16:9.');
+    } else if (draft.workflow === 'template-family') {
+      if (!family) throw new RunError('NOT_CONFIGURED', 'Template families are not available on this server.');
+      const blueprint = assignedBlueprint(draft, family);
+      if (body.referenceCreative !== undefined) throw new RunError('INVALID_REQUEST', 'Guided settings require an offer reference draft.');
+      // The prompt is the family's template with this creative's values, compiled here: never sent by the client, never a model call.
+      const values = slotValuesFor(blueprint, draft.family!.slotValues), prompt = compileGenerationPrompt(blueprint, values);
+      if (body.prompt !== undefined && body.prompt !== prompt) throw new RunError('INVALID_PROMPT', 'The prompt is compiled from the layout fields; change the fields instead.');
+      const ref = draft.family!.ref!, cache = { purpose: 'generation-prompt' as const, promptVersion: BLUEPRINT_PROMPT_VERSION, blueprint: blueprintRefText(ref), slotSchema: slotSchemaHash(blueprint), values: hashOf(values) };
+      family.store.cache.put(cache, prompt);
+      draft.family!.generation = { ref, slotValues: values, prompt, compiledAt: new Date().toISOString(), cacheKey: hashOf(cache) };
+      draft.prompt = draft.generatedPrompt = prompt;
     } else if (body.referenceCreative !== undefined) throw new RunError('INVALID_REQUEST', 'Guided settings require an offer reference draft.');
     const name = resolveImageTemplateName(body.name ?? draft.name), prompt = resolveImageTemplatePrompt(body.prompt ?? draft.prompt), ratios = resolveImageTemplateRatios(body.aspectRatios ?? draft.aspectRatios);
     const problems = [name.error, prompt.error, ratios.error].filter(Boolean);
     if (problems.length) throw new RunError(name.error ? 'INVALID_NAME' : prompt.error ? 'INVALID_PROMPT' : 'INVALID_ASPECT_RATIO', problems.join(' '));
     let variants: ImageTemplateVariant[];
     try {
-      variants = IMAGE_TEMPLATE_RATIOS.map(ratio => ({ id: generationVariantId(ratio), aspectRatio: ratio, size: { ...IMAGE_TEMPLATE_SIZES[ratio] }, status: 'pending' as const, framing: IMAGE_TEMPLATE_FRAMING[ratio],
-        prompt: imageTemplateVariantPrompt(prompt.prompt, ratio), generator: { provider: 'openai', model: config.model }, attempts: 0, decompositions: [] }));
+      // The uploaded creative used as is (family workflow) stays alongside the generated ratios.
+      variants = [...draft.variants.filter(v => v.source === 'reference'), ...IMAGE_TEMPLATE_RATIOS.map(ratio => ({ id: generationVariantId(ratio), aspectRatio: ratio, size: { ...IMAGE_TEMPLATE_SIZES[ratio] }, status: 'pending' as const, framing: IMAGE_TEMPLATE_FRAMING[ratio],
+        prompt: imageTemplateVariantPrompt(prompt.prompt, ratio), generator: { provider: 'openai', model: config.model }, attempts: 0, decompositions: [] }))];
     } catch (error) { throw new RunError('INVALID_PROMPT', `${error instanceof Error ? error.message : String(error)} Shorten the prompt.`); }
     Object.assign(draft, { name: name.name, prompt: prompt.prompt, promptEdited: prompt.prompt !== (draft.generatedPrompt ?? '').trim(), aspectRatios: ratios.ratios, generatedAt: new Date().toISOString(), variants,
       ratioStrategy: 'uploaded-reference' as const });
     const instruction = referenceInstruction(draft);
     if (draft.referenceCreative && draft.analysis) draft.generationSnapshot = { id: draft.id, referenceSha256: draft.reference.sha256, blueprintVersion: 1, settings: structuredClone(draft.referenceCreative), analysis: structuredClone(draft.analysis), ...(draft.productReference ? { productSha256: draft.productReference.sha256 } : {}), model: config.model, instruction, aspectRatios: [...ratios.ratios] };
-    try { for (const variant of variants) validateImageTemplateRequestPrompt(`${variant.prompt} ${instruction}`); }
+    try { for (const variant of variants.filter(v => v.source !== 'reference')) validateImageTemplateRequestPrompt(`${variant.prompt} ${instruction}`); }
     catch (error) { throw new RunError('INVALID_PROMPT', (error as Error).message); }
     draft.decomposeWith ??= FALLBACK_LAYER_STYLE;
     requested = ratios.ratios.map(generationVariantId);
@@ -354,10 +391,58 @@ export function startImageTemplateGeneration(root: string, id: string, body: Rec
   return { template, requested };
 }
 // Stay within the existing 2,000-character editable / 3,000-character request budgets, even with two images.
-const referenceInstruction = (template: ImageTemplate) => template.workflow === 'offer-reference' || template.productReference
+const referenceInstruction = (template: ImageTemplate) => template.workflow === 'offer-reference' || template.workflow === 'template-family' || template.productReference
   ? 'Use original image 1 for every ratio, never generated outputs. Explicit changes and allowed adaptations override preservation.'
     + (template.productReference ? ' Image 2 is the replacement product: its design overrides the original subject; ignore its backdrop.' : '')
   : IMAGE_TEMPLATE_REFERENCE_INSTRUCTION;
+
+/** The blueprint version a family creative uses: the one fixed when generation started, else the detected one. */
+export function assignedBlueprint(template: ImageTemplate, family: FamilyServices): TemplateBlueprint {
+  const ref = template.family?.generation?.ref ?? template.family?.ref, blueprint = ref && family.store.blueprint(ref);
+  if (!template.family || template.family.detection?.status !== 'done' || !blueprint) throw new RunError('NOT_DETECTED', 'Detect the layout first.');
+  return blueprint;
+}
+/** After a detection (or a library choice): the layout's fields and the locally compiled prompt. */
+function applyFamily(draft: ImageTemplate, family: FamilyServices) {
+  const blueprint = family.store.blueprint(draft.family!.ref!)!;
+  draft.family!.slotValues = slotValuesFor(blueprint, draft.family!.slotValues);
+  draft.prompt = draft.generatedPrompt = compileGenerationPrompt(blueprint, draft.family!.slotValues);
+  draft.promptEdited = false;
+  draft.detected = { templateKey: blueprint.decompositionRecipe, reason: `${blueprint.name} layout` };
+  if (!draft.decomposeWithChosen) draft.decomposeWith = blueprint.decompositionRecipe;
+  if (!draft.name) draft.name = blueprint.name.slice(0, IMAGE_TEMPLATE_LIMITS.name);
+}
+/**
+ * Finds the creative's layout family (templateFamilies/familyMatcher.ts): 0 calls for a known structure, at most one
+ * low-cost and one strong structural analysis otherwise. Saved on the draft; a failure is saved, never thrown.
+ */
+export async function detectFamilyLayout(root: string, id: string, family: FamilyServices): Promise<ImageTemplate> {
+  const startedAt = new Date().toISOString();
+  const template = update(root, id, (draft) => {
+    if (draft.workflow !== 'template-family') throw new RunError('INVALID_REQUEST', 'Only a layout-family creative detects its layout.');
+    if (draft.generatedAt) throw new RunError('ALREADY_GENERATED', 'This creative has been generated; its layout is fixed.');
+    draft.family = { ...(draft.family ?? { slotValues: {} }), previousCalls: [...(draft.family?.previousCalls ?? []), ...(draft.family?.detection?.calls ?? [])], detection: { status: 'detecting', startedAt, candidates: [], calls: [], detectedValues: {} } };
+  });
+  const dir = join(root, id);
+  let detection: NonNullable<FamilyAssignment['detection']>;
+  try { detection = await detectTemplateFamily({ image: readFileSync(join(dir, template.reference.file)), sha256: template.reference.sha256, services: family, groupId: id, artifactPrefix: `${Date.now()}-`, save: (file, value) => write(dir, file, value) }); }
+  catch (error) { detection = { status: 'failed', startedAt, finishedAt: new Date().toISOString(), candidates: [], calls: [], detectedValues: {}, error: { code: 'DETECTION_FAILED', message: error instanceof Error ? error.message : String(error) } }; }
+  return update(root, id, (draft) => {
+    draft.family = { ...draft.family!, detection, ...(detection.ref ? { ref: detection.ref } : {}) };
+    if (detection.status === 'done' && detection.ref) applyFamily(draft, family);
+  });
+}
+/** The uploaded creative itself as a result to decompose: no image generation (its changes are native edits, or none). */
+export function useReferenceAsIs(root: string, id: string): ImageTemplate {
+  return update(root, id, (t) => {
+    if (t.workflow !== 'template-family') throw new RunError('INVALID_REQUEST', 'Only a layout-family creative can be used as is.');
+    if (t.family?.detection?.status !== 'done') throw new RunError('NOT_DETECTED', 'Detect the layout first.');
+    if (t.variants.some(v => v.id === ORIGINAL)) return;
+    t.variants.unshift({ id: ORIGINAL, aspectRatio: ORIGINAL, source: 'reference', size: { width: t.reference.width, height: t.reference.height }, status: 'done', framing: '', prompt: '', generator: { provider: 'none', model: 'none' }, attempts: 0,
+      image: { file: t.reference.file, mimeType: t.reference.mimeType, width: t.reference.width, height: t.reference.height, bytes: t.reference.bytes, sha256: t.reference.sha256 }, decompositions: [] });
+  });
+}
+const ORIGINAL = 'original';
 
 /** A ratio not chosen at first, asked for later: it joins the template's ratios. */
 export function addRatio(root: string, id: string, variantId: string): ImageTemplate {
@@ -375,7 +460,9 @@ export function decompositionSettings(templateKey: GenerationTemplateKey) {
 }
 
 /** A ratio's latest decomposition as shown: waiting its turn, running, done (with its layer count) or failed. */
-export type DecompositionState = { runId: string; templateKey: string; createdAt: string; state: 'waiting' | 'running' | 'done' | 'failed'; stage: string; layers?: number; error?: { code: string; message: string }; resumable?: boolean };
+export type DecompositionState = { runId: string; templateKey: string; createdAt: string; state: 'waiting' | 'running' | 'done' | 'failed'; stage: string; layers?: number; error?: { code: string; message: string }; resumable?: boolean;
+  /** A layout-family run: whether it reused the family's plan, why a generated image was planned fresh, and its quality gate once checked. */
+  reuse?: { familyName: string; version: number; planReused: boolean; drift?: string[]; passed?: boolean; problems?: string[] } };
 /** fal's stored answer for these is final: resuming would read the same error. */
 const FINAL_ERRORS = new Set(['PROVIDER_DECOMPOSITION_REJECTED', 'PROVIDER_SAFETY_REJECTED', 'TEMPLATE_NOT_SUITABLE']);
 export function decompositionState(runsDir: string, entry: { runId: string; createdAt: string; templateKey?: string }, runState: (runId: string) => 'active' | 'waiting' | undefined): DecompositionState {
@@ -383,7 +470,10 @@ export function decompositionState(runsDir: string, entry: { runId: string; crea
   const dir = join(runsDir, entry.runId);
   if (!validRunId(entry.runId) || !existsSync(join(dir, 'run.json'))) return { ...base, state: 'failed', stage: 'missing', error: { code: 'RUN_MISSING', message: 'This decomposition is no longer on the server. Decompose again.' } };
   const run: RunRecord = readRun(dir), state = runState(run.id), requestId = Boolean(run.seedream.requestId);
-  const shown = { ...base, templateKey: run.templateKey ?? base.templateKey, stage: run.stage };
+  const reuse = run.templateReuse && { familyName: run.templateReuse.familyName, version: run.templateReuse.version, planReused: run.templateReuse.decompositionPlanReused,
+    ...(run.templateReuse.imageValidation?.passed === false ? { drift: run.templateReuse.imageValidation.problems } : {}),
+    ...(run.templateReuse.validation ? { passed: run.templateReuse.validation.passed, problems: run.templateReuse.validation.problems } : {}) };
+  const shown = { ...base, templateKey: run.templateKey ?? base.templateKey, stage: run.stage, ...(reuse ? { reuse } : {}) };
   if (state === 'waiting') return { ...shown, state: 'waiting' };
   if (state === 'active') return { ...shown, state: 'running' };
   if (run.stage === 'done') return { ...shown, state: 'done', layers: (run.outputLayers ?? run.layers ?? []).length };
@@ -400,6 +490,8 @@ export type ImageTemplateRouteContext = {
   /** Starts a run's work now if no run is active, otherwise as soon as none is, one at a time, in the order asked. */
   runInTurn: (runId: string, work: () => Promise<unknown>) => void;
   runState: (runId: string) => 'active' | 'waiting' | undefined;
+  /** The template family library and its structural planners; without it the layout-family routes answer NOT_CONFIGURED. */
+  families?: FamilyServices;
 };
 
 function readReference(req: Request): Promise<{ bytes: Buffer; name?: string; fileName?: string; mimeType?: string; aspectRatios?: string }> {
@@ -432,10 +524,24 @@ const bodyOf = (req: Request) => req.body && typeof req.body === 'object' && !Ar
 export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRouteContext): void {
   const { dir: root, runsDir } = ctx, at = '/image-templates';
   /** Ratios this process has queued or is generating ("template/ratio"), and drafts whose prompt it is writing. */
-  const generating = new Set<string>(), describing = new Set<string>(), startingRuns = new Set<string>();
+  const generating = new Set<string>(), describing = new Set<string>(), startingRuns = new Set<string>(), detecting = new Set<string>();
+  const families = ctx.families;
+  const needFamilies = () => { if (!families) throw new RunError('NOT_CONFIGURED', 'Template families are not available on this server.'); return families; };
+  /** What the screen shows of a family creative's layout: name, version, the dynamic fields and what a change needs. */
+  const familyView = (template: ImageTemplate) => {
+    const ref = template.family?.generation?.ref ?? template.family?.ref, blueprint = families && ref && families.store.blueprint(ref), family = families && ref && families.store.get(ref.familyId);
+    if (!blueprint || !family) return undefined;
+    const values = template.family!.generation?.slotValues ?? template.family!.slotValues;
+    return { familyId: blueprint.familyId, name: blueprint.name, version: blueprint.version, status: family.status, pattern: blueprint.pattern, layout: blueprintSummary(blueprint),
+      fields: slotFormModel(blueprint, template.family!.detection?.detectedValues), values, changes: planSlotChanges(blueprint, values), expectedLayerRoles: blueprint.expectedLayerRoles,
+      expectedEditorLayers: blueprint.curationPolicy.expectedEditorLayers, uses: family.stats.matches + family.stats.created, seed: family.seed?.key };
+  };
   /** A template as shown: work a stopped server left behind is shown as failed (interrupted), and each ratio carries its latest decomposition. */
   const shown = (template: ImageTemplate) => ({
     ...template,
+    ...(template.family ? { family: { ...template.family,
+      ...(template.family.detection?.status === 'detecting' && !detecting.has(template.id) ? { detection: { ...template.family.detection, status: 'failed' as const, error: { code: 'INTERRUPTED', message: 'The server stopped before the layout was detected. Detect it again.' } } } : {}),
+      view: familyView(template) } } : {}),
     ...(template.promptGeneration?.status === 'generating' && !describing.has(template.id)
       ? { promptGeneration: { ...template.promptGeneration, status: 'failed' as const, error: { code: 'INTERRUPTED', message: 'The server stopped before the prompt was written. Generate it again.' } } } : {}),
     variants: template.variants.map((variant) => {
@@ -453,6 +559,8 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   const enqueue = (id: string, variantIds: string[]) => {
     const config = ctx.generation();
     const record = readImageTemplate(root, id), { reference, productReference } = record;
+    if (variantIds.some(variantId => variantOf(record, variantId).source === 'reference')) throw new RunError('INVALID_REQUEST', 'Your uploaded creative is used as is; it is never generated.');
+    const familyRef = record.family?.generation?.ref;
     for (const variantId of variantIds) {
       const key = `${id}/${variantId}`;
       queueVariant(root, id, variantId, generating.has(key));
@@ -467,8 +575,23 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       ctx.enqueueImage(key, () => generateVariant(root, id, variantId, { ...config, model: record.generationSnapshot?.model ?? config.model }, {
         sourceReference: { file: reference.file, sha256: reference.sha256, instruction: record.generationSnapshot?.instruction ?? referenceInstruction(record) },
         ...(productReference ? { productReference: { file: productReference.file, sha256: productReference.sha256 } } : {}),
-      }), () => generating.delete(key));
+      }).then((group) => { if (families && familyRef) recordFamilyGeneration(families.store, familyRef, group.variants.find(v => v.id === variantId)?.status === 'done'); return group; },
+        (error: unknown) => { if (families && familyRef) recordFamilyGeneration(families.store, familyRef, false); throw error; }), () => generating.delete(key));
     }
+  };
+  /** A family run's quality gate and statistics, recorded once it has finished (read from disk; no provider call). */
+  const finishFamilyRun = async (dir: string) => {
+    const run = readRun(dir);
+    if (!families || !run.templateReuse) return run;
+    const diagnostics = await readRunDiagnostics(dir, { imageTemplatesDir: root, families: families.store }).catch(() => undefined);
+    const recorded = recordFamilyRun(families.store, run, diagnostics);
+    saveRunRecord(dir, recorded);
+    return recorded;
+  };
+  const detect = (id: string) => {
+    const services = needFamilies();
+    detecting.add(id);
+    return detectFamilyLayout(root, id, services).catch(error => console.error('template family detection', id, error)).finally(() => detecting.delete(id));
   };
   const latestRun = (template: ImageTemplate, variantId: string) => {
     const entry = variantOf(template, variantId).decompositions.at(-1);
@@ -481,6 +604,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       const config = ctx.generation();
       res.json({ ratios: IMAGE_TEMPLATE_RATIOS.map(ratio => ({ ratio, name: IMAGE_TEMPLATE_RATIO_NAMES[ratio], ...IMAGE_TEMPLATE_SIZES[ratio] })), limits: IMAGE_TEMPLATE_LIMITS,
         productReferenceSupported: supportsProductReference(config.model), imageModel: config.model, promptModel: ctx.promptWriter().model, ratioReference: true,
+        ...(families ? { families: { cheapModel: families.planners().cheap?.model ?? null, strongModel: families.planners().strong?.model ?? null, thresholds: families.thresholds } } : {}),
         layerStyles: LAYER_STYLES.map(template => ({ key: template.key, name: template.name, summary: LAYER_STYLE_SUMMARIES[template.key as GenerationTemplateKey] })) });
     } catch (error) { next(error); }
   });
@@ -500,8 +624,9 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   });
   // A new draft from an uploaded reference (multipart: image, and optionally name), and its prompt asked for at once:
   // one OpenAI request. Answers at once; the prompt follows.
-  const uploadRoute = (deferred: boolean): express.RequestHandler => async (req, res, next) => {
+  const uploadRoute = (deferred: boolean, workflow: 'offer-reference' | 'template-family' = 'offer-reference'): express.RequestHandler => async (req, res, next) => {
     try {
+      if (workflow === 'template-family') needFamilies();
       const upload = await readReference(req);
       let aspectRatios: unknown;
       if (upload.aspectRatios !== undefined) {
@@ -509,13 +634,29 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
         if (!Array.isArray(aspectRatios)) throw new RunError('INVALID_ASPECT_RATIO', 'Sizes must be a JSON array.');
       }
       const template = await createImageTemplate(root, upload.bytes, { checkExtension: deferred, mimeType: upload.mimeType, ...(upload.name !== undefined ? { name: upload.name } : {}), ...(upload.fileName ? { originalName: upload.fileName } : {}), ...(aspectRatios !== undefined ? { aspectRatios } : {}) });
-      if (deferred) update(root, template.id, draft => { draft.workflow = 'offer-reference'; });
+      if (deferred) update(root, template.id, draft => { draft.workflow = workflow; if (workflow === 'template-family') draft.family = { slotValues: {} }; });
       else void describe(template.id);
       res.status(deferred ? 201 : 202).json(shown(readImageTemplate(root, template.id)));
     } catch (error) { next(error); }
   };
   router.post(at, uploadRoute(false));
   router.post(`${at}/draft`, uploadRoute(true));
+  // A layout-family creative: upload only (no call). Detecting its layout is the next, explicit step.
+  router.post(`${at}/family-draft`, uploadRoute(true, 'template-family'));
+  router.post(`${at}/:id/detect-layout`, (req, res, next) => {
+    try {
+      const template = readImageTemplate(root, req.params.id);
+      needFamilies();
+      if (template.workflow !== 'template-family') throw new RunError('INVALID_REQUEST', 'Only a layout-family creative detects its layout.');
+      if (template.generatedAt) throw new RunError('ALREADY_GENERATED', 'This creative has been generated; its layout is fixed.');
+      if (template.family?.detection?.status === 'done') return void res.json(shown(template));
+      if (detecting.has(template.id)) throw new RunError('BUSY', 'The layout is already being detected.');
+      void detect(template.id);
+      res.status(202).json(shown(readImageTemplate(root, template.id)));
+    } catch (error) { next(error); }
+  });
+  // Use the uploaded creative itself (no image generation): it can be decomposed with the layout's plan right away.
+  router.post(`${at}/:id/original`, (req, res, next) => { try { res.json(shown(useReferenceAsIs(root, req.params.id))); } catch (error) { next(error); } });
   router.get(`${at}/:id/product-reference`, (req, res, next) => {
     try { const t = readImageTemplate(root, req.params.id); if (!t.productReference) throw notFound(); res.setHeader('Cache-Control', 'no-store'); res.sendFile(join(root, t.id, t.productReference.file)); }
     catch (error) { next(error); }
@@ -544,6 +685,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
   router.post(`${at}/:id/prompt`, (req, res, next) => {
     try {
       const template = readImageTemplate(root, req.params.id);
+      if (template.workflow === 'template-family') throw new RunError('INVALID_REQUEST', 'Family prompts are compiled locally. Edit the layout fields instead.');
       if (template.generatedAt) throw new RunError('ALREADY_GENERATED', 'This template has been generated; its prompt is fixed.');
       if (describing.has(template.id)) throw new RunError('BUSY', 'The prompt is already being generated.');
       void describe(template.id);
@@ -555,13 +697,14 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
     try {
       const body = bodyOf(req);
       if ((body.prompt !== undefined || body.referenceCreative !== undefined) && describing.has(req.params.id)) throw new RunError('BUSY', 'Wait for the prompt to finish before editing it.');
-      res.json(shown(changeImageTemplate(root, req.params.id, body)));
+      if (body.familySlots !== undefined && detecting.has(req.params.id)) throw new RunError('BUSY', 'Wait for the layout to be detected before editing its fields.');
+      res.json(shown(changeImageTemplate(root, req.params.id, body, families)));
     } catch (error) { next(error); }
   });
   // Body: { name, prompt, aspectRatios }. Fixes them and generates each chosen ratio: one OpenAI image request each, queued.
   router.post(`${at}/:id/generate`, express.json({ limit: '16kb' }), (req, res, next) => {
     try {
-      const { template, requested } = startImageTemplateGeneration(root, req.params.id, bodyOf(req), ctx.generation(), describing.has(req.params.id));
+      const { template, requested } = startImageTemplateGeneration(root, req.params.id, bodyOf(req), ctx.generation(), describing.has(req.params.id) || detecting.has(req.params.id), families);
       enqueue(template.id, requested);
       res.status(202).json(shown(readImageTemplate(root, template.id)));
     } catch (error) { next(error); }
@@ -574,6 +717,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       allowOnly(body, ['independent'], 'Generating a ratio');
       if (body.independent !== undefined && typeof body.independent !== 'boolean') throw new RunError('INVALID_REQUEST', 'independent must be true or false.');
       if (body.independent === true) throw new RunError('INVALID_REQUEST', 'Image templates always use the original uploaded reference. Retry with the reference image.');
+      if (variantOf(readImageTemplate(root, req.params.id), req.params.variant).source === 'reference') throw new RunError('INVALID_REQUEST', 'Your uploaded creative is used as is; it is never generated.');
       addRatio(root, req.params.id, req.params.variant);
       enqueue(req.params.id, [req.params.variant]);
       res.status(202).json(shown(readImageTemplate(root, req.params.id)));
@@ -589,17 +733,27 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
     if (startingRuns.has(key)) return next(new RunError('BUSY', 'This image is already being decomposed.'));
     startingRuns.add(key);
     try {
-      allowOnly(bodyOf(req), [], 'Decomposing a ratio');
-      const template = readImageTemplate(root, req.params.id), previous = latestRun(template, req.params.variant);
+      const template = readImageTemplate(root, req.params.id), body = bodyOf(req), familyRun = template.workflow === 'template-family';
+      // planFresh (layout-family creatives): plan this image with the full planner instead of the family's saved plan.
+      allowOnly(body, familyRun ? ['planFresh'] : [], 'Decomposing a ratio');
+      if (body.planFresh !== undefined && typeof body.planFresh !== 'boolean') throw new RunError('INVALID_REQUEST', 'planFresh must be true or false.');
+      const previous = latestRun(template, req.params.variant);
       if (previous?.state === 'waiting' || previous?.state === 'running') throw new RunError('BUSY', 'This image is already being decomposed.');
       const { variant, bytes } = variantImage(root, template.id, req.params.variant);
-      const settings = decompositionSettings(template.decomposeWith ?? FALLBACK_LAYER_STYLE);
-      const { dir, run } = await createRun(runsDir, bytes, { mode: 'generated' }, { semanticPlanning: true, refinement: true, templateKey: settings.templateKey, separateHeldObject: true,
-        origin: { kind: 'image-template', generationId: template.id, variantId: variant.id, aspectRatio: variant.aspectRatio } });
+      const origin = { kind: 'image-template' as const, generationId: template.id, variantId: variant.id, aspectRatio: variant.aspectRatio };
+      // A layout-family creative: its family's compiled plan (no planner call), or the full planner when the family is
+      // provisional, a fresh plan was asked for, or a generated image no longer shows the family's layout (checked
+      // locally, no call). Everything else is unchanged.
+      const planFresh = body.planFresh === true, assignment = template.family ?? { slotValues: {} };
+      const imageValidation = familyRun && variant.id !== 'original' && !planFresh ? await validateGeneratedFamily(needFamilies().store, assignment, bytes, needFamilies().thresholds.localHigh) : undefined;
+      const plan = familyRun ? familyDecomposition(needFamilies().store, assignment, variant, { planFresh, imageValidation }) : undefined;
+      const settings = decompositionSettings(plan ? plan.templateKey as GenerationTemplateKey : template.decomposeWith ?? FALLBACK_LAYER_STYLE);
+      const { dir, run } = await createRun(runsDir, bytes, plan?.promptSource ?? { mode: 'generated' }, { semanticPlanning: true, refinement: true, templateKey: settings.templateKey, separateHeldObject: true, origin,
+        ...(plan ? { blueprint: { familyId: plan.blueprint.familyId, version: plan.blueprint.version }, templateReuse: plan.templateReuse } : {}) });
       const entry: VariantDecomposition & { templateKey: string } = { runId: run.id, createdAt: run.createdAt, templateKey: settings.templateKey, ...(settings.hasGrouping ? { separateHeldObject: settings.separateHeldObject } : {}),
         ...(run.templateOptions ? { templateOptions: run.templateOptions } : {}) };
       recordDecomposition(root, template.id, variant.id, entry);
-      ctx.runInTurn(run.id, () => executeRun(dir, ctx.deps()));
+      ctx.runInTurn(run.id, () => executeRun(dir, ctx.deps()).then(() => finishFamilyRun(dir)));
       res.status(202).json(shown(readImageTemplate(root, template.id)));
     } catch (error) { next(error); }
     finally { startingRuns.delete(key); }
@@ -611,7 +765,7 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       const template = readImageTemplate(root, req.params.id), latest = latestRun(template, req.params.variant);
       if (!latest?.resumable) throw new RunError('NOT_RESUMABLE', 'This decomposition cannot be resumed; decompose the image again.');
       const dir = join(runsDir, latest.runId);
-      ctx.runInTurn(latest.runId, () => resumeRun(dir, ctx.deps()));
+      ctx.runInTurn(latest.runId, () => resumeRun(dir, ctx.deps()).then(() => finishFamilyRun(dir)));
       res.status(202).json(shown(readImageTemplate(root, template.id)));
     } catch (error) { next(error); }
   });
@@ -629,4 +783,51 @@ export function registerImageTemplateRoutes(router: Router, ctx: ImageTemplateRo
       res.json(shown(template));
     } catch (error) { next(error); }
   });
+  // The reusable layout library: every family with its versions and statistics (reads only), and a new creative
+  // started from one of a family's own example creatives (no detection, no call).
+  const exampleOf = (family: TemplateFamily) => [...family.exemplars].reverse().find((e) => {
+    if (!e.groupId || family.status === 'retired') return false;
+    const blueprint = families!.store.current(family.id);
+    if (!blueprint || !validateMatch(blueprint.signature, e.signature, blueprint.slots.filter(s => s.required && s.elementId).map(s => s.elementId!), compareSignatures(blueprint.signature, e.signature)).passed) return false;
+    try { const group = readImageTemplate(root, e.groupId); return group.reference.sha256 === e.sha256 && existsSync(join(root, group.id, group.reference.file)); } catch { return false; }
+  });
+  const librarySummary = (family: TemplateFamily) => {
+    const blueprint = families!.store.current(family.id), s = family.stats, example = exampleOf(family);
+    return { id: family.id, name: family.name, status: family.status, currentVersion: family.currentVersion, versions: family.versions, seed: family.seed?.key ?? null, createdAt: family.createdAt, updatedAt: family.updatedAt,
+      pattern: blueprint?.pattern, layout: blueprint ? blueprintSummary(blueprint) : '', fields: blueprint?.slots.map(slot => slot.label) ?? [], uses: s.matches + s.created,
+      averageConfidence: s.matches ? s.confidenceSum / s.matches : null, averageCostUsd: s.costedRuns ? s.totalUsd / s.costedRuns : null,
+      averageRawLayers: s.decompositionsMeasured ? s.rawLayers / s.decompositionsMeasured : null, averageEditorLayers: s.decompositionsMeasured ? s.editorLayers / s.decompositionsMeasured : null,
+      stats: s, exampleGroupId: example?.groupId ?? null, recentFailures: family.failures.slice(-5) };
+  };
+  router.get('/template-families', (_req, res, next) => {
+    try { const services = needFamilies(); ensureSeedFamilies(services.store); res.json({ families: services.store.list().map(librarySummary), thresholds: services.thresholds }); }
+    catch (error) { next(error); }
+  });
+  router.get('/template-families/:id', (req, res, next) => {
+    try {
+      const services = needFamilies(), family = validFamilyId(req.params.id) ? services.store.get(req.params.id) : undefined;
+      if (!family) throw new RunError('NOT_FOUND', 'Layout family not found.');
+      res.json({ family: librarySummary(family), blueprint: services.store.current(family.id) });
+    } catch (error) { next(error); }
+  });
+  router.get('/template-families/:id/versions/:version', (req, res, next) => {
+    try {
+      const blueprint = validFamilyId(req.params.id) ? needFamilies().store.blueprint({ familyId: req.params.id, version: Number(req.params.version) }) : undefined;
+      if (!blueprint) throw new RunError('NOT_FOUND', 'Layout version not found.');
+      res.json(blueprint);
+    } catch (error) { next(error); }
+  });
+  router.post('/template-families/:id/use', async (req, res, next) => {
+    try {
+      const services = needFamilies(), family = validFamilyId(req.params.id) ? services.store.get(req.params.id) : undefined;
+      if (!family) throw new RunError('NOT_FOUND', 'Layout family not found.');
+      const example = exampleOf(family);
+      if (!example?.groupId) throw new RunError('NO_EXAMPLE', 'This layout has no saved example creative to start from yet. Upload a creative with this layout instead.');
+      const source = readImageTemplate(root, example.groupId);
+      const created = await createImageTemplate(root, readFileSync(join(root, source.id, source.reference.file)), { mimeType: source.reference.mimeType, ...(source.reference.originalName ? { originalName: source.reference.originalName } : {}) });
+      const detection = libraryDetection(services.store, family.id);
+      res.status(201).json(shown(update(root, created.id, (draft) => { draft.workflow = 'template-family'; draft.family = { slotValues: {}, detection, ref: detection.ref }; applyFamily(draft, services); })));
+    } catch (error) { next(error); }
+  });
+
 }

@@ -13,6 +13,9 @@
  *                        into a wall panel where the person stood): hiding the person would show it           → fold
  *   background-fragment  a small scene or decoration piece that barely shows (background noise, a faint patch);
  *                        looser on a simple background, where fewer layers serve the editor better          → fold
+ *   unexplained-generic  a layer with no telling name ("Layer 0", unnamed) that barely changes the image       → fold
+ *   duplicate            90% of its opaque pixels are another kept layer's, in the same colors (people,
+ *                        products and text only when the two are near-identical)                           → fold
  *   faint-remnant        a small, soft layer that barely changes the image (a blur remnant, a smudge; an
  *                        opaque object colored like its background, a white product on white, is kept)      → fold
  *   detached-shadow      a shadow stain that no subject casts (attached shadows are grouped with it)        → remove
@@ -28,10 +31,10 @@ import { backgroundModel, type Grid, type LayerShape } from './backgroundContami
 import { palette } from './backgroundRecovery.js';
 import { grow } from './outerBackground.js';
 import { EFFECT, idWords, PERSON, TEXTISH } from './interactionTerms.js';
-import { isShadowLayer } from './interactionGrouping.js';
+import { isShadowLayer, isSemanticText, isTextEffectLayer } from './interactionGrouping.js';
 
 export type LayerCategory = 'person' | 'product' | 'text' | 'scene' | 'decoration' | 'support' | 'object' | 'effect';
-export type DropReason = 'not-in-original' | 'hidden' | 'filler-behind-subject' | 'faint-remnant' | 'background-fragment' | 'detached-shadow' | 'merged-into-background' | 'duplicates-background' | 'replaced-by-clean-background';
+export type DropReason = 'not-in-original' | 'hidden' | 'filler-behind-subject' | 'faint-remnant' | 'background-fragment' | 'unexplained-generic' | 'duplicate' | 'detached-shadow' | 'merged-into-background' | 'duplicates-background' | 'replaced-by-clean-background';
 export type UsefulnessDecision = {
   file: string; name?: string; category: LayerCategory; kept: boolean; reason?: DropReason; detail: string;
   /** Dropped layers: fold keeps their pixels in the background, remove rebuilds their area with the foreground's. */
@@ -42,6 +45,7 @@ export type UsefulnessDecision = {
   changeMean?: number;
   /** Plates: share of their opaque pixels the chosen clean background already has. */
   backgroundMatchPercent?: number;
+  duplicateOf?: string;
 };
 /**
  * What the editor gets: the layers screened (after grouping), the meaningful ones (the background counts as one) by
@@ -52,11 +56,18 @@ export type LayerPlan = { screenedLayers: number; editableLayers: number; byCate
 export type ScreenItem = { layer: LayerInfo; shape: LayerShape; kind: 'background' | 'foreground'; role: string };
 
 const round = (value: number, digits = 1) => Math.round(value * 10 ** digits) / 10 ** digits;
+/** A name that says nothing about what the layer is ("Layer 0", "Image 3", "Untitled"): its content has to. */
+export const isGenericName = (name?: string) => !name?.trim() || /^(?:layer|image|group|element|object|item|shape|untitled|unnamed|copy)?[\s_#-]*\d*$/i.test(name.trim());
 const maxDiff = (rgba: ArrayLike<number>, i: number, rgb: ArrayLike<number>) => Math.max(Math.abs(rgba[i * 4] - rgb[i * 3]), Math.abs(rgba[i * 4 + 1] - rgb[i * 3 + 1]), Math.abs(rgba[i * 4 + 2] - rgb[i * 3 + 2]));
 
 /** What a layer is for the editor, from its kind, grouping, name and role (`n`: pixels of the grid its shape is on). */
 export function layerCategory(item: ScreenItem, n: number): LayerCategory {
-  const words = idWords(`${item.layer.name ?? ''}`);
+  const words = isGenericName(item.layer.name) ? '' : idWords(`${item.layer.name ?? ''}`);
+  const semanticType = idWords(item.layer.semantic?.type ?? '');
+  if (!item.layer.grouping && isTextEffectLayer(item.layer)) return 'effect';
+  if (isSemanticText(item.layer) || /\b(?:cta|badge|call to action)\b/i.test(semanticType)) return 'text';
+  if (PERSON.test(semanticType)) return 'person';
+  if (/\bproduct\b/i.test(semanticType)) return 'product';
   if (TEXTISH.test(words) || item.role === 'text') return 'text';
   if (item.kind === 'background') return 'scene';
   if (item.layer.grouping) return PERSON.test(words) || item.layer.grouping.members.some(m => ['held_object', 'finger_fragment', 'body_part', 'worn_ornament'].includes(m.role)) ? 'person' : item.role === 'decor' ? 'decoration' : 'object';
@@ -68,13 +79,13 @@ export function layerCategory(item: ScreenItem, n: number): LayerCategory {
   if (item.role === 'decor') return 'decoration';
   return 'object';
 }
-const isProtected = (item: ScreenItem, category: LayerCategory) => !!item.layer.grouping || category === 'person' || category === 'product' || category === 'text';
+const isProtected = (item: ScreenItem, category: LayerCategory) => !!item.layer.grouping || category === 'person' || category === 'product' || category === 'text' || /\bbutton\b/i.test(item.layer.semantic?.type ?? '');
 
 /**
  * Before the background: fillers, hidden guesses, faint remnants and detached shadow stains (see the module comment).
  * `original`: the creative as raw RGB on `grid`. Returns one decision per item, in the items' order.
  */
-export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, grid: Grid): UsefulnessDecision[] {
+export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, grid: Grid, verifyOriginal = true): UsefulnessDecision[] {
   const n = grid.width * grid.height;
   // A simple background (a few flat colors where no layer is): fragments of it are folded in more readily.
   const bare: number[] = [];
@@ -89,6 +100,25 @@ export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, 
     for (let i = 0; i < n; i++) if (alpha[i]) next[i] = 1;
     cover = next;
   }
+  // Visually lossless duplicates: a layer whose opaque pixels another layer repeats, in place and in the same colors.
+  const opaque = new Map(items.map(item => { let c = 0; for (let i = 0; i < n; i++) if (item.shape.rgba[i * 4 + 3] >= 240) c++; return [item, c]; }));
+  const duplicateOf = new Map<ScreenItem, ScreenItem>();
+  for (const a of items) {
+    const own = opaque.get(a)!, boxA = a.shape.box;
+    if (!own || !boxA) continue;
+    const essential = isProtected(a, layerCategory(a, n));
+    for (const b of items) {
+      const other = opaque.get(b)!, boxB = b.shape.box;
+      if (b === a || !boxB || other < own || (other === own && items.indexOf(b) > items.indexOf(a))) continue;
+      if (boxB.x0 > boxA.x1 || boxB.x1 < boxA.x0 || boxB.y0 > boxA.y1 || boxB.y1 < boxA.y0) continue;
+      let same = 0;
+      for (let y = boxA.y0; y < boxA.y1; y++) for (let x = boxA.x0; x < boxA.x1; x++) {
+        const i = y * grid.width + x;
+        if (a.shape.rgba[i * 4 + 3] >= 240 && b.shape.rgba[i * 4 + 3] >= 240 && Math.max(Math.abs(a.shape.rgba[i * 4] - b.shape.rgba[i * 4]), Math.abs(a.shape.rgba[i * 4 + 1] - b.shape.rgba[i * 4 + 1]), Math.abs(a.shape.rgba[i * 4 + 2] - b.shape.rgba[i * 4 + 2])) <= (essential ? 8 : 24)) same++;
+      }
+      if (same >= (essential ? 0.985 : 0.9) * own && (!essential || own >= 0.98 * other)) { duplicateOf.set(a, b); break; }
+    }
+  }
   // The background under small layers, estimated without any layer (only when a small layer needs it).
   let model: Float32Array | undefined;
   const modelOf = () => {
@@ -99,7 +129,7 @@ export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, 
     }
     return model;
   };
-  return items.map((item): UsefulnessDecision => {
+  const decisions = items.map((item): UsefulnessDecision => {
     const category = layerCategory(item, n), base = { file: item.layer.file, ...(item.layer.name ? { name: item.layer.name } : {}), category };
     const { alpha, rgba, count } = item.shape, f = front.get(item)!;
     let visible = 0, opaqueVisible = 0, match = 0, faint = 0, alphaSum = 0;
@@ -113,9 +143,11 @@ export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, 
     const metrics = { visiblePercent, ...(evidencePercent !== undefined ? { evidencePercent } : {}) };
     if (isProtected(item, category)) return { ...base, kept: true, detail: `${category}: always an editable layer`, ...metrics };
     const drop = (reason: DropReason, action: 'fold' | 'remove', detail: string, extra: Partial<UsefulnessDecision> = {}): UsefulnessDecision => ({ ...base, kept: false, reason, action, detail, ...metrics, ...extra });
-    if (item.kind === 'foreground' && isShadowLayer(item.layer, rgba, n))
+    if (!faint) return drop('faint-remnant', 'fold', 'no visible alpha above 16/255: an empty helper or near-invisible residue');
+    const intentionalGraphic = item.layer.semantic?.editableIndependently && /\bgraphic\b/i.test(item.layer.semantic.type) && alphaSum / faint >= 0.95 * 255 && faint >= 0.02 * n;
+    if (item.kind === 'foreground' && isShadowLayer(item.layer, rgba, n) && !intentionalGraphic)
       return drop('detached-shadow', 'remove', 'a shadow stain that touches no subject: removed from the background with the foreground instead of kept as a layer');
-    if (opaqueVisible >= Math.max(0.0015 * n, 0.03 * count) && match < 0.25 * opaqueVisible)
+    if (verifyOriginal && opaqueVisible >= Math.max(0.0015 * n, 0.03 * count) && match < 0.25 * opaqueVisible)
       return drop('not-in-original', 'fold', `only ${evidencePercent}% of its visible pixels are what the creative shows there: a filler the provider invented, not an element of the design`);
     if (count > 0 && visible < 0.03 * count)
       return drop('hidden', 'fold', `only ${visiblePercent}% of it is ever visible in the design (the rest is behind other layers): a guess at what lies behind them, which the clean background replaces`);
@@ -146,6 +178,11 @@ export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, 
       const changeMean = changeOf();
       if (changeMean < 10) return drop('faint-remnant', 'fold', `barely changes the image (mean ${changeMean}/255 over its pixels): a remnant, kept in the background`, { changeMean });
     }
+    // A layer with no telling name that barely changes the image: provider residue, not an element of the design.
+    if (isGenericName(item.layer.name) && faint > 0 && faint < 0.1 * n) {
+      const changeMean = changeOf();
+      if (changeMean < 20) return drop('unexplained-generic', 'fold', `"${item.layer.name ?? 'unnamed'}" names nothing and barely changes the image (mean ${changeMean}/255): provider residue`, { changeMean });
+    }
     // A small piece of the scene or of its decoration that barely shows: background, not an editable layer.
     if ((category === 'scene' || category === 'decoration' || category === 'effect') && faint > 0 && faint < 0.1 * n && !isPlate(item, grid)) {
       const changeMean = changeOf(), limit = simpleBackground ? 16 : 10;
@@ -153,14 +190,20 @@ export function screenFillers(items: ScreenItem[], original: ArrayLike<number>, 
     }
     return { ...base, kept: true, detail: `holds what the creative shows (${visiblePercent}% visible${evidencePercent !== undefined ? `, ${evidencePercent}% matching` : ''})`, ...metrics };
   });
+  // Then duplicates, only of a layer that is itself kept (never both), and never a group in favour of a plain layer.
+  return decisions.map((decision, k) => {
+    const item = items[k], twin = duplicateOf.get(item);
+    if (!decision.kept || !twin || !decisions[items.indexOf(twin)].kept || (item.layer.grouping && !twin.layer.grouping)) return decision;
+    return { ...decision, kept: false, reason: 'duplicate', action: 'fold', duplicateOf: twin.layer.file, detail: `${twin.layer.name ?? twin.layer.file} already shows the same pixels in the same place: a duplicate, not a layer of its own` };
+  });
 }
 
-/** A full background plate: covers (almost) the whole canvas, mostly opaque. */
+/** A background plate: a scene layer opaque over at least half the canvas (whatever its box): it is the background. */
 export function isPlate(item: ScreenItem, grid: Grid): boolean {
-  const n = grid.width * grid.height, box = item.shape.box;
-  if (item.kind !== 'background' || !box || box.x1 - box.x0 < 0.85 * grid.width || box.y1 - box.y0 < 0.85 * grid.height) return false;
+  const n = grid.width * grid.height;
+  if (item.kind !== 'background' || !item.shape.box) return false;
   let opaque = 0; for (let i = 0; i < n; i++) if (item.shape.rgba[i * 4 + 3] >= 240) opaque++;
-  return opaque >= 0.6 * n;
+  return opaque >= 0.5 * n;
 }
 
 /**

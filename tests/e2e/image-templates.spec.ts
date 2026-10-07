@@ -53,6 +53,7 @@ async function fakeApi(page: Page, options: { failFirst?: boolean } = {}) {
     if (method !== 'GET') posts.push({ method, path: path.replace(BASE, ''), ...(body ? { body } : {}) });
     // What the OpenAI + Seedream test panel reads when it opens.
     if (path === `${API}/runs` && method === 'GET') return json({ active: null, runs: [] });
+    if (path === `${API}/template-families`) return json({ families: [] });
     if (path === `${API}/templates`) return json({ templates: [], fitCheck: false });
     if (path === `${BASE}/info`) return json(INFO);
     if (path === BASE && method === 'GET') return json({ templates });
@@ -120,8 +121,10 @@ const ratioBox = (page: Page, ratio: string) => dialog(page).getByRole('checkbox
 /** The flow opens from the OpenAI + Seedream test panel, which closes behind it. */
 const openFromPanel = async (page: Page) => {
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await page.getByRole('dialog', { name: 'OpenAI + Seedream test' }).getByRole('button', { name: 'Create Template from Image' }).click();
   await expect(dialog(page)).toBeVisible();
+  await dialog(page).getByLabel('Legacy prompt workflow').check();
   await expect(page.getByRole('dialog', { name: 'OpenAI + Seedream test' })).toHaveCount(0);
 };
 const open = async (page: Page) => { await page.goto('/'); await openFromPanel(page); };
@@ -161,35 +164,36 @@ test('immediate prompt edits and repeated Generate clicks submit one request wit
   expect([api.unknown, api.outside, api.pageErrors]).toEqual([[], [], []]);
 });
 
-test('a failed layer-style save blocks a waiting decomposition until Retry save succeeds (fake providers)', async ({ page }) => {
+test('a failed template rename blocks a waiting decomposition until Retry save succeeds (fake providers)', async ({ page }) => {
   const api = await fakeApi(page), template = savedSquare('Save protection');
   api.templates.push(template);
   let releaseSave!: () => void, intercepted = false;
   const saveGate = new Promise<void>(resolve => { releaseSave = resolve; });
   await page.route(`**${BASE}/${template.id}`, async route => {
     if (route.request().method() !== 'PATCH' || intercepted) return route.fallback();
-    expect(route.request().postDataJSON()).toEqual({ decomposeWith: 'template-c' });
+    expect(route.request().postDataJSON()).toEqual({ name: 'Renamed saved template' });
     intercepted = true;
     await saveGate;
-    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Layer style save unavailable.' } }) });
+    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Template save unavailable.' } }) });
   });
   await open(page);
   const d = dialog(page), result = card(page, '1:1');
-  await d.getByTestId('layer-style').locator('summary').click();
-  await d.getByTestId('layer-style').getByRole('combobox').selectOption('template-c');
+  await d.getByRole('button', { name: 'Rename', exact: true }).click();
+  await d.getByLabel('Template name').fill('Renamed saved template');
+  await d.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(() => intercepted).toBe(true);
-  // Decompose waits for this exact PATCH; its failure must never fall through to a paid POST using the old style.
+  // Decompose waits for this exact PATCH; a failed edit must never fall through to a paid POST.
   await result.getByRole('button', { name: 'Decompose into layers' }).click();
   await expect(result.getByRole('button', { name: 'Decompose into layers' })).toBeDisabled();
   releaseSave();
-  await expect(d.getByRole('alert')).toContainText('Layer style save unavailable.');
+  await expect(d.getByRole('alert')).toContainText('Template save unavailable.');
   await expect(result.getByTestId('status-1x1')).toHaveText('Generated');
   expect(api.posts.filter(post => post.path.endsWith('/decompose'))).toEqual([]);
-  expect(template.decomposeWith).toBe('template-b');
+  expect(template.name).toBe('Save protection');
 
   await d.getByRole('button', { name: 'Retry save', exact: true }).click();
-  await expect(d.getByTestId('layer-style').locator('summary')).toContainText('People and campaign (Template C)');
-  expect(template.decomposeWith).toBe('template-c');
+  await expect(d.getByRole('heading', { name: 'Renamed saved template', exact: true })).toBeVisible();
+  expect(template.name).toBe('Renamed saved template');
   await result.getByRole('button', { name: 'Decompose into layers' }).click();
   await expect(result.getByTestId('status-1x1')).toHaveText('Decomposed', { timeout: 10_000 });
   expect(api.posts.filter(post => post.path.endsWith('/decompose'))).toHaveLength(1);
@@ -248,7 +252,7 @@ test('create a template from an image: name, reference, prompt, sizes, results, 
   await expect(prompt).toHaveValue(GENERATED, { timeout: 10_000 });
   await expect(d.getByTestId('prompt-state')).toHaveText('Written from your image');
   await expect(d.getByLabel('Template name')).toHaveValue('Lavender launch');
-  await expect(d.getByTestId('layer-style').locator('summary')).toHaveText('Layer style: Product (Template B) · detected from your image');
+  await expect(d.getByTestId('layer-style').locator('summary')).toHaveText('Image-aware decomposition · Reference style: Product (Template B) · detected from your image');
   await expect(d.getByRole('list').getByRole('button')).toHaveCount(1);
   await prompt.fill(`${GENERATED} Golden hour light.`);
   await expect(d.getByTestId('prompt-state')).toHaveText('Edited');
@@ -325,11 +329,11 @@ test('failures are shown where they happen and can be retried; several templates
   await expect(d.getByRole('button', { name: /^Generate selected templates/ })).toBeDisabled();
   await expect(d.getByTestId('generate-hint')).toHaveText('Name your template.');
   await d.getByLabel('Template name').fill('Spring sale');
-  // The layer style can be changed; it applies when results are decomposed.
+  // The reference style is informational: the existing pipeline analyzes each generated image separately.
   await d.getByTestId('layer-style').locator('summary').click();
-  await d.getByTestId('layer-style').getByRole('combobox').selectOption('template-c');
-  await expect.poll(() => api.posts.at(-1)).toMatchObject({ method: 'PATCH', body: { decomposeWith: 'template-c' } });
-  await expect(d.getByTestId('layer-style').locator('summary')).toHaveText('Layer style: People and campaign (Template C) · chosen by you');
+  await expect(d.getByTestId('layer-style').getByRole('combobox')).toHaveCount(0);
+  await expect(d.getByTestId('layer-style')).toContainText('Each result is analyzed individually');
+  await expect(d.getByTestId('layer-style').locator('summary')).toHaveText('Image-aware decomposition · Reference style: Product (Template B) · detected from your image');
 
   // All three sizes; the 4:5 image fails, the others are kept, and only it is generated again.
   await d.getByRole('button', { name: 'Generate selected templates (3)' }).click();
@@ -382,10 +386,12 @@ test('10. the launchers are unchanged; the OpenAI + Seedream test panel keeps it
   await expect(page.getByRole('button', { name: 'Create Template from Image' })).toHaveCount(0);
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   for (const name of ['Create Template from Image', 'Create Template A', 'Create Template B', 'Create Template C']) await expect(panel.getByRole('button', { name, exact: true })).toBeVisible();
   await expect(panel.getByRole('alert')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('panel-entry.png') });
   // Closing the new flow returns to the editor; nothing was sent.
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await panel.getByRole('button', { name: 'Create Template from Image', exact: true }).click();
   await dialog(page).getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);

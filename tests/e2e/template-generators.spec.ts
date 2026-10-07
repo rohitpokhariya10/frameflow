@@ -84,6 +84,7 @@ async function fakeExperimentApi(page: Page) {
       variant.decompositions.push({ runId: lastRun.id, createdAt: now, ...settings, ...(key === 'template-a' ? { targetLayers: body.separateHeldObject ? 6 : 5 } : {}) });
       return json(lastRun, 202);
     }
+    if (/\/runs\/[^/]+\/diagnostics$/.test(path)) return json({ error: { message: 'Usage unavailable in this browser fixture.' } }, 404);
     // A run is over as soon as it is read again: nothing is ever planned or sent.
     if (/\/runs\/[^/]+$/.test(path) && lastRun) return json(Object.assign(lastRun, { stage: 'failed', active: false, error: { code: 'FAKE_STOPPED', stage: 'planning', message: 'Stopped by the in-browser fake: nothing is planned or sent.' } }));
     if (/\/runs\/[^/]+\/files\//.test(path)) return route.fulfill({ status: 200, contentType: 'image/png', body: PIXEL });
@@ -101,6 +102,7 @@ const openPanel = async (page: Page) => {
   page.on('dialog', dialog => void dialog.accept());
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
 };
 
 /** What the user types for a complete creative: nothing for Templates A and C, which start from a default one; Template B's two required inputs. */
@@ -117,9 +119,9 @@ const ALL_CONTROLS = CASES.flatMap(item => item.controls);
 
 for (const { key, controls, choose, body, run } of CASES) {
   const profile = GENERATION_PROFILES[key], name = profile.name, values = typedValues(key), base = profile.buildBasePrompt(values), plain = Boolean(profile.tagline);
-  const generateAll = plain ? 'Generate 3 variants (OpenAI gpt-image-2, 3 paid calls)' : 'Generate 3 aspect-ratio variants (OpenAI gpt-image-2, 3 paid calls)';
+  const generateAll = 'Generate 3 variants';
 
-  test(`${name}: one creative, three ratios, each decomposed with ${name}'s own controls (fake providers)`, async ({ page }) => {
+  test(`${name}: one creative, three ratios, each decomposed with ${name}'s own controls (fake providers)`, async ({ page }, testInfo) => {
     const api = await fakeExperimentApi(page);
     await openPanel(page);
     for (const other of GENERATION_TEMPLATE_KEYS) await expect(page.getByRole('button', { name: `Create ${GENERATION_PROFILES[other].name}` })).toBeVisible();
@@ -161,17 +163,34 @@ for (const { key, controls, choose, body, run } of CASES) {
 
     // Every card has this template's decomposition controls and no other template's.
     for (const ratio of GENERATION_ASPECT_RATIOS) {
+      await expect(card(page, ratio).getByRole('link', { name: `${ratio} variant of this creative`, exact: true })).toHaveAttribute('target', '_blank');
+      await expect(card(page, ratio).getByRole('img', { name: `${ratio} variant of this creative`, exact: true })).toBeVisible();
       expect((await card(page, ratio).locator('label').allInnerTexts()).map(text => text.trim())).toEqual(controls);
       for (const foreign of ALL_CONTROLS.filter(label => !controls.includes(label))) await expect(card(page, ratio)).not.toContainText(foreign);
-      await expect(card(page, ratio).getByRole('button', { name: `Decompose ${ratio} image (${name}: OpenAI planner + 1 paid Seedream call)` })).toBeEnabled();
+      await expect(card(page, ratio).getByRole('button', { name: `Decompose ${ratio} image` })).toBeEnabled();
     }
+    await page.getByRole('region', { name: 'Generated results', exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('generated-results.png'), animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await card(page, '1:1').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('generated-results-mobile.png'), animations: 'disabled' });
+    const overflow = await page.locator('.ff-lab-body').evaluate(el => {
+      const edge = el.getBoundingClientRect().left + el.clientWidth;
+      return { fits: el.scrollWidth <= el.clientWidth + 1, elements: [...el.querySelectorAll('*')].filter(child => child.getBoundingClientRect().right > edge + 1).slice(0, 12).map(child => `${child.tagName}.${child.className}: ${Math.round(child.getBoundingClientRect().width)}px`) };
+    });
+    expect(overflow.fits, JSON.stringify(overflow.elements)).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
     // Decompose one variant: that variant only, to this template's endpoint, with this template's settings only.
     await card(page, '4:5').getByRole('checkbox', { name: choose }).click();
     await card(page, '4:5').getByRole('button', { name: /^Decompose 4:5 image/ }).click();
+    await page.getByText('Developer details', { exact: true }).click();
+    await page.getByText('Advanced details · metrics, artifacts and run controls', { exact: true }).click();
     await expect(page.getByText(`Image: ${name} test generation`)).toContainText('its 4:5 variant');
     expect(api.posts.at(-1)).toEqual({ path: `/${key}/groups/${group.id}/variants/4x5/decompose`, body });
     await expect(page.getByText(new RegExp(`^Template: ${name} ·`))).toBeVisible();
-    await expect(page.locator('label', { hasText: /^Template:/ }).locator('select')).toHaveValue(key);
+    await page.getByRole('tab', { name: 'Decompose/Test', exact: true }).click();
+    await expect(page.getByLabel('Template', { exact: true })).toHaveValue(key);
+    await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
     await expect(card(page, '4:5').getByRole('button', { name: run })).toBeVisible();
     await expect(card(page, '1:1').getByText('Decompositions of this image')).toHaveCount(0);
     await expect(card(page, '16:9').getByText('Decompositions of this image')).toHaveCount(0);
@@ -190,20 +209,22 @@ test('switching generators starts each template from its own form and history; a
   await page.getByRole('button', { name: 'Create Template C' }).click();
   await page.getByLabel(/^Repeated panels \/ modules/).fill('three square panels along the bottom, each showing a hand with a different bracelet');
   await page.getByLabel(/^Headline text/).fill('New Season');
+  await page.getByTestId('prompt-review').locator('summary').first().click();
   const notes = page.getByRole('list', { name: 'Notes on this creative' });
   await expect(notes).toContainText('"Separate repeated subject / showcase panels"');
   await expect(notes).toContainText('"Separate individual people / human subjects"');
   await expect(notes).toContainText('Generated lettering is often misspelt');
   await expect(notes).not.toContainText(/held object|touching/i);
-  await page.getByRole('button', { name: /^Generate 3 aspect-ratio variants/ }).click();
+  await page.getByRole('button', { name: /^Generate 3 variants/ }).click();
   await expect.poll(() => statuses(page), { timeout: 15_000 }).toEqual(['Ready', 'Failed', 'Ready']);
   // The shared prompt edited by hand, one ratio: a new creative; the first is not touched.
+  if (!await page.getByRole('button', { name: 'Edit shared prompt' }).isVisible()) await page.getByTestId('prompt-review').locator('summary').first().click();
   await page.getByRole('button', { name: 'Edit shared prompt' }).click();
   const box = page.getByLabel('Shared creative prompt');
   await box.fill(`${await box.inputValue()} Everyone wears white trainers.`);
   await page.getByRole('checkbox', { name: /^16:9 \(/ }).uncheck();
   await page.getByRole('checkbox', { name: /^4:5 \(/ }).uncheck();
-  await page.getByRole('button', { name: 'Generate 1 aspect-ratio variant (OpenAI gpt-image-2, 1 paid call)' }).click();
+  await page.getByRole('button', { name: 'Generate 1 variant' }).click();
   await expect(page.getByText('prompt edited')).toBeVisible();
   await expect.poll(() => statuses(page), { timeout: 15_000 }).toEqual(['Ready', 'Not generated', 'Not generated']);
   const created = api.posts.at(-1)!;
@@ -235,7 +256,7 @@ test('Template B is a three-input form: main product, scene / visual style, extr
   const api = await fakeExperimentApi(page), b = GENERATION_PROFILES['template-b'];
   await openPanel(page);
   await page.getByRole('button', { name: 'Create Template B' }).click();
-  const form = page.locator('section[data-generator="template-b"]'), generate = page.getByRole('button', { name: /^Generate \d variants? \(OpenAI gpt-image-2/ });
+  const form = page.locator('section[data-generator="template-b"]'), generate = page.getByRole('button', { name: /^Generate \d variants?$/ });
   const input = (label: string) => form.getByLabel(label, { exact: true });
 
   // The heading says what this is and what Template B does; three inputs are shown, the two advanced choices are folded away.
@@ -268,6 +289,7 @@ test('Template B is a three-input form: main product, scene / visual style, extr
   // An untouched empty form shows no error; it says what is missing, and cannot be generated.
   await expect(form.getByRole('alert')).toHaveCount(0);
   await expect(form.getByText('This field is required.')).toHaveCount(0);
+  await form.getByTestId('prompt-review').locator('summary').first().click();
   await expect(form.getByTestId('generate-hint')).toHaveText('To generate, fill in: Main product, Scene / visual style.');
   await expect(form.getByTestId('shared-prompt-empty')).toHaveText('The prompt appears here once Main product and Scene / visual style are filled in.');
   await expect(generate).toBeDisabled();
@@ -315,6 +337,7 @@ test('Template B is a three-input form: main product, scene / visual style, extr
   await expect(page.getByTestId('shared-prompt')).toHaveText(built);
 
   // Editing the prompt by hand is obvious, overrides the inputs, and can be undone: the rebuild is from the inputs, deterministically.
+  if (!await page.getByRole('button', { name: 'Edit shared prompt' }).isVisible()) await page.getByTestId('prompt-review').locator('summary').first().click();
   await page.getByRole('button', { name: 'Edit shared prompt' }).click();
   const box = page.getByLabel('Shared creative prompt');
   await expect(box).toHaveValue(built);
@@ -333,9 +356,9 @@ test('Template B is a three-input form: main product, scene / visual style, extr
   await expect(form.getByText('Generate sizes', { exact: true })).toBeVisible();
   for (const ratio of ['1:1', '16:9', '4:5']) await expect(page.getByRole('checkbox', { name: new RegExp(`^${ratio} \\(`) })).toBeChecked();
   await page.getByRole('checkbox', { name: /^4:5 \(/ }).uncheck();
-  await expect(page.getByRole('button', { name: 'Generate 2 variants (OpenAI gpt-image-2, 2 paid calls)' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Generate 2 variants' })).toBeEnabled();
   await page.getByRole('checkbox', { name: /^4:5 \(/ }).check();
-  await page.getByRole('button', { name: 'Generate 3 variants (OpenAI gpt-image-2, 3 paid calls)' }).click();
+  await page.getByRole('button', { name: 'Generate 3 variants' }).click();
   await expect(page.locator('article[data-variant]')).toHaveCount(3);
   // Only the inputs are sent; the server builds the prompt.
   expect(api.posts).toEqual([{ path: '/template-b/groups', body: { fields: phone, aspectRatios: ['1:1', '16:9', '4:5'] } }]);
@@ -350,7 +373,7 @@ test('Template B is a three-input form: main product, scene / visual style, extr
   // Every card still carries Template B's own decomposition option, and its own Decompose button.
   for (const ratio of ['1:1', '16:9', '4:5']) {
     expect((await card(page, ratio).locator('label').allInnerTexts()).map(text => text.trim())).toEqual(['Separate touching / overlapping independent objects']);
-    await expect(card(page, ratio).getByRole('button', { name: `Decompose ${ratio} image (Template B: OpenAI planner + 1 paid Seedream call)` })).toBeEnabled();
+    await expect(card(page, ratio).getByRole('button', { name: `Decompose ${ratio} image` })).toBeEnabled();
   }
 
   // Templates A and C keep the form they had: all their fields, one flat grid, the asterisk for required, no advanced options.
@@ -363,7 +386,7 @@ test('Template B is a three-input form: main product, scene / visual style, extr
     for (const id of ['field-requirement', 'generator-tagline', 'advanced-options', 'prompt-help', 'generate-hint', 'ratio-consistency']) await expect(other.getByTestId(id)).toHaveCount(0);
     await expect(other).toContainText('* = required.');
     await expect(other.getByText('Generate now:', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Generate 3 aspect-ratio variants (OpenAI gpt-image-2, 3 paid calls)' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Generate 3 variants' })).toBeEnabled();
     await expect(page.getByTestId('shared-prompt')).toHaveText(GENERATION_PROFILES[key].buildBasePrompt(GENERATION_PROFILES[key].defaults));
   }
   expect([api.unknown, api.outside, api.pageErrors]).toEqual([[], [], []]);
@@ -385,13 +408,13 @@ test('Template B: a creative stored by an earlier form is listed as stored, and 
   const form = page.locator('section[data-generator="template-b"]');
   // It is in the history and shown as it was stored: its name, its prompt, its fourteen fields, its image, its decomposition link.
   await expect(page.getByLabel('Generated creative').locator('option')).toHaveText([/b1c2d3 — ceramic table lamp — 1:1 ready, 16:9 not generated, 4:5 not generated/]);
-  await expect(page.getByText('Creative 2026-09-30T09-40-12-345Z-b1c2d3')).toBeVisible();
+  await expect(page.getByText('ceramic table lamp', { exact: true })).toBeVisible();
   await expect.poll(() => statuses(page)).toEqual(['Ready', 'Not generated', 'Not generated']);
-  await expect(card(page, '1:1').getByRole('button', { name: /^Decompose 1:1 image \(Template B:/ })).toBeEnabled();
+  await expect(card(page, '1:1').getByRole('button', { name: 'Decompose 1:1 image', exact: true })).toBeEnabled();
   await expect(card(page, '1:1').getByRole('button', { name: /0ldrun \(Separate touching \/ overlapping independent objects: on\)/ })).toBeVisible();
   await page.getByText(/^Shared creative prompt \(\d+ characters, built from the fields\)$/).click();
   await expect(page.locator('details', { hasText: /^Shared creative prompt \(/ }).locator('pre').first()).toHaveText(base);
-  await page.getByText('Field values').click();
+  await page.getByText('Creative details', { exact: true }).click();
   await expect(page.locator('details', { hasText: 'Field values' }).locator('pre')).toContainText('"heroDescription": "matte cream body with a linen shade and a brass switch"');
   // Loading it fills today's three inputs from its fourteen fields; nothing is sent, and the stored record is not touched.
   await page.getByRole('button', { name: 'Load this creative into the form' }).click();

@@ -1,3 +1,4 @@
+import { FamilyDraft } from './FamilyDraft';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from 'react-redux';
 import { CircleAlert, ExternalLink, ImagePlus, Layers, LoaderCircle, Plus, RotateCcw, Sparkles, X } from 'lucide-react';
@@ -6,7 +7,7 @@ import { useAppDispatch, type RootState } from '../../store';
 import { assets } from '../../lib/assets/runtimeAssets';
 import { variantSelected } from '../../store/uiSlice';
 import { useDesigns } from '../editor/designs';
-import { experimentApi, experimentFileUrl, type ExperimentRun } from '../decomposition/layerizeExperiment';
+import { editorLayersOf, experimentApi, experimentFileUrl, type ExperimentRun } from '../decomposition/layerizeExperiment';
 import '../decomposition/workspace/workspace.css';
 import './imageTemplates.css';
 import { generationBlockers, imageTemplateApi, openResultInEditor, referenceUrl, RESULT_STATUS_LABELS, resultImageUrl, resultStatus, templateInProgress, templateSummary, withRatio, withTemplate,
@@ -26,6 +27,7 @@ const spinner = <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /
  */
 export function CreateTemplateFromImage({ onClose }: { onClose: () => void }) {
   const dispatch = useAppDispatch(), store = useStore<RootState>(), designs = useDesigns();
+  const [legacy, setLegacy] = useState(false);
   const [info, setInfo] = useState<ImageTemplateInfo>();
   const [templates, setTemplates] = useState<ImageTemplate[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -128,10 +130,10 @@ export function CreateTemplateFromImage({ onClose }: { onClose: () => void }) {
   };
   const generateRatio = (template: ImageTemplate, variant: ImageTemplateVariant) => window.confirm(`Generate the ${variant.aspectRatio} image${variant.attempts ? ' again' : ''} from the original reference? This makes 1 paid OpenAI image request.`)
     && act(`generate-${variant.id}`, async () => keep(await imageTemplateApi.generateRatio(template.id, variant.id)));
-  const decompose = (template: ImageTemplate, list: ImageTemplateVariant[]) => window.confirm(list.length === 1
-    ? `Decompose the ${list[0].aspectRatio} image into layers? This makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it.`
-    : `Decompose ${plural(list.length, 'image')} into layers (${list.map(variant => variant.aspectRatio).join(', ')})? Each makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it; they run one at a time.`)
-    && act(list.length === 1 ? `decompose-${list[0].id}` : 'decompose-all', async () => { for (const variant of list) keep(await imageTemplateApi.decompose(template.id, variant.id)); });
+  const decompose = (template: ImageTemplate, list: ImageTemplateVariant[], planFresh = false) => window.confirm(planFresh ? 'Decompose again with a fresh plan? This adds one paid planner call plus Seedream and any required cleanup.' : list.length === 1
+    ? `Decompose the ${list[0].aspectRatio} image into layers? This makes ${template.family?.view?.status === 'active' ? '0 planner requests when the family plan passes validation' : '1 OpenAI planner request'} and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it.`
+    : `Decompose ${plural(list.length, 'image')} into layers (${list.map(variant => variant.aspectRatio).join(', ')})? Each makes ${template.family?.view?.status === 'active' ? '0 planner requests when reuse validates' : '1 OpenAI planner request'} and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it; they run one at a time.`)
+    && act(list.length === 1 ? `decompose-${list[0].id}` : 'decompose-all', async () => { for (const variant of list) keep(await imageTemplateApi.decompose(template.id, variant.id, planFresh)); });
   const resume = (template: ImageTemplate, variant: ImageTemplateVariant) => act(`resume-${variant.id}`, async () => keep(await imageTemplateApi.resume(template.id, variant.id)));
   // The finished decomposition opens in the editor (openResultInEditor) as a design of its own, never a new version of the
   // open design: the first open creates it, later ones switch back to it; the dialog closes onto it. Only stored results are read.
@@ -163,6 +165,7 @@ export function CreateTemplateFromImage({ onClose }: { onClose: () => void }) {
     <div className="cti-body">
       <aside className="cti-sidebar" aria-label="Your templates">
         <button className="ws-btn ws-btn-primary" aria-pressed={selected === NEW} onClick={() => select(NEW)}><Plus size={16} aria-hidden="true" /> New template</button>
+        <label className="ws-hint"><input type="checkbox" checked={legacy} onChange={e => setLegacy(e.target.checked)} /> Legacy prompt workflow</label>
         <div className="cti-side-head">Your templates <span className="ws-count">{templates.length}</span></div>
         {!loaded ? <p className="ws-muted">Loading…</p> : templates.length === 0 ? <p className="cti-side-empty">No templates yet. Upload a reference image to create your first one.</p>
           : <ul className="cti-list">{templates.map(template => <li key={template.id}>
@@ -177,8 +180,21 @@ export function CreateTemplateFromImage({ onClose }: { onClose: () => void }) {
         </p>}
         {!loaded ? <p role="status">Loading templates…</p> : current?.generatedAt
           ? <TemplateResults key={current.id} template={current} info={info} busy={busy} openError={openError} onRename={name => change(current, { name })} onLayerStyle={key => change(current, { decomposeWith: key })}
-            onGenerateRatio={variant => void generateRatio(current, variant)} onDecompose={list => void decompose(current, list)} onResume={variant => void resume(current, variant)} onOpen={variant => void open(current, variant)} />
-          : <TemplateDraft key={current?.id ?? NEW} template={current} info={info} busy={busy} onCreate={(file, name, ratios) => void create(file, name, ratios)} onChange={value => current && void change(current, value)}
+            onGenerateRatio={variant => void generateRatio(current, variant)} onDecompose={(list, fresh) => void decompose(current, list, fresh)} onResume={variant => void resume(current, variant)} onOpen={variant => void open(current, variant)} />
+          : (current?.workflow === 'template-family' || !current && !legacy) ? <>
+            <FamilyDraft key={current?.id ?? NEW} template={current} busy={busy}
+              onCreate={(file, name) => void act('create', async () => { const t = await imageTemplateApi.createFamily(file, name); keep(t); select(t.id); })}
+              onUse={id => void act('library', async () => { const t = await imageTemplateApi.useFamily(id); keep(t); select(t.id); })}
+              onDetect={() => current && window.confirm('Detect this layout? A local match costs nothing; otherwise up to one cheap and one strong structure call may be made.') && void act('detect', async () => keep(await imageTemplateApi.detect(current.id)))}
+              onChange={value => current && change(current, value)}
+              onOriginal={() => current && void act('original', async () => keep(await imageTemplateApi.original(current.id)))}
+              onGenerate={() => current && window.confirm('Generate the selected sizes? Each size makes one paid image request; prompt compilation is local.') && void act('generate', async () => {
+                const saved = await imageTemplateApi.get(current.id);
+                keep(await imageTemplateApi.generate(saved.id, { name: saved.name, aspectRatios: saved.aspectRatios }));
+              })} />
+            {current?.variants.some(v => v.source === 'reference') && <TemplateResults template={current} info={info} busy={busy} openError={openError} onRename={name => change(current, { name })} onLayerStyle={() => undefined}
+              onGenerateRatio={variant => void generateRatio(current, variant)} onDecompose={(list, fresh) => void decompose(current, list, fresh)} onResume={variant => void resume(current, variant)} onOpen={variant => void open(current, variant)} />}
+          </> : <TemplateDraft key={current?.id ?? NEW} template={current} info={info} busy={busy} onCreate={(file, name, ratios) => void create(file, name, ratios)} onChange={value => current && void change(current, value)}
             onRegenerate={() => current ? regenerate(current) : Promise.resolve(false)} onGenerate={request => current && void generate(current, request)} onInvalid={setMessage} />}
       </main>
     </div>
@@ -307,11 +323,11 @@ function LayerStyle({ template, info }: { template: ImageTemplate; info?: ImageT
 /** A generated template: what it was made from, and one card per size with its status and its next step. */
 export function TemplateResults({ template, info, busy, openError, onRename, onLayerStyle, onGenerateRatio, onDecompose, onResume, onOpen }: {
   template: ImageTemplate; info?: ImageTemplateInfo; busy: string; openError?: { variantId: string; message: string }; onRename: (name: string) => void; onLayerStyle: (key: GenerationTemplateKey) => void;
-  onGenerateRatio: (variant: ImageTemplateVariant) => void; onDecompose: (list: ImageTemplateVariant[]) => void; onResume: (variant: ImageTemplateVariant) => void; onOpen: (variant: ImageTemplateVariant) => void;
+  onGenerateRatio: (variant: ImageTemplateVariant) => void; onDecompose: (list: ImageTemplateVariant[], planFresh?: boolean) => void; onResume: (variant: ImageTemplateVariant) => void; onOpen: (variant: ImageTemplateVariant) => void;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
-  const shown = template.variants.filter(variant => template.aspectRatios.includes(variant.aspectRatio as ImageTemplateRatio));
-  const missing = template.variants.filter(variant => !template.aspectRatios.includes(variant.aspectRatio as ImageTemplateRatio));
+  const shown = template.variants.filter(variant => variant.source === 'reference' || template.aspectRatios.includes(variant.aspectRatio as ImageTemplateRatio));
+  const missing = template.variants.filter(variant => variant.source !== 'reference' && !template.aspectRatios.includes(variant.aspectRatio as ImageTemplateRatio));
   const ready = shown.filter(variant => resultStatus(variant).status === 'generated');
   return <div className="cti-inner">
     <header className="cti-summary">
@@ -324,7 +340,7 @@ export function TemplateResults({ template, info, busy, openError, onRename, onL
             <button className="ws-btn ws-btn-primary" type="submit" disabled={!renaming.trim()}>Save</button><button className="ws-btn ws-btn-quiet" type="button" onClick={() => setRenaming(null)}>Cancel</button></form>}
         <div className="cti-meta">Created {new Date(template.createdAt).toLocaleString()} · {template.aspectRatios.join(' · ')}{template.promptEdited ? ' · prompt edited' : ''}</div>
         <details className="cti-advanced"><summary>Prompt used{template.promptEdited ? ' (edited)' : ''}</summary><p className="cti-prompt-text" data-testid="prompt-used">{template.prompt}</p></details>
-        <LayerStyle template={template} info={info} disabled={!!busy} onChange={onLayerStyle} />
+        {template.workflow === 'template-family' ? <p className="ws-hint">{template.family?.view?.name} v{template.family?.view?.version} · Reusable layout</p> : <LayerStyle template={template} info={info} disabled={!!busy} onChange={onLayerStyle} />}
       </div>
     </header>
 
@@ -333,7 +349,7 @@ export function TemplateResults({ template, info, busy, openError, onRename, onL
         {ready.length > 1 && <button className="ws-btn" disabled={!!busy} onClick={() => onDecompose(ready)}><Layers size={16} aria-hidden="true" /> Decompose all ({ready.length})</button>}</div>
       <div className="cti-results">{shown.map(variant => <ResultCard key={variant.id} template={template} variant={variant} busy={busy}
         openError={openError?.variantId === variant.id ? openError.message : undefined}
-        onGenerate={() => onGenerateRatio(variant)} onDecompose={() => onDecompose([variant])} onResume={() => onResume(variant)} onOpen={() => onOpen(variant)} />)}</div>
+        onGenerate={() => onGenerateRatio(variant)} onDecompose={fresh => onDecompose([variant], fresh)} onResume={() => onResume(variant)} onOpen={() => onOpen(variant)} />)}</div>
       {missing.length > 0 && <div className="cti-add">Add another size:
         {missing.map(variant => <button key={variant.id} className="ws-btn" disabled={!!busy} onClick={() => onGenerateRatio(variant)}><Plus size={14} aria-hidden="true" /> {variant.aspectRatio} {IMAGE_TEMPLATE_RATIO_NAMES[variant.aspectRatio as ImageTemplateRatio]}</button>)}
         <span className="ws-hint">1 paid image request each.</span></div>}
@@ -342,7 +358,7 @@ export function TemplateResults({ template, info, busy, openError, onRename, onL
 }
 
 function ResultCard({ template, variant, busy, openError, onGenerate, onDecompose, onResume, onOpen }: {
-  template: ImageTemplate; variant: ImageTemplateVariant; busy: string; openError?: string; onGenerate: () => void; onDecompose: () => void; onResume: () => void; onOpen: () => void;
+  template: ImageTemplate; variant: ImageTemplateVariant; busy: string; openError?: string; onGenerate: () => void; onDecompose: (planFresh?: boolean) => void; onResume: () => void; onOpen: () => void;
 }) {
   const { status, detail, failure } = resultStatus(variant), ratio = variant.aspectRatio as ImageTemplateRatio, working = busy.endsWith(`-${variant.id}`);
   return <article className="cti-result" aria-label={`${ratio} result`} data-ratio={variant.id}>
@@ -355,18 +371,21 @@ function ResultCard({ template, variant, busy, openError, onGenerate, onDecompos
       <div className="cti-result-head"><strong>{ratio}</strong><span className="cti-result-size">{IMAGE_TEMPLATE_RATIO_NAMES[ratio]} · {variant.size.width} × {variant.size.height}</span>
         <span className={`cti-status is-${status}`} data-testid={`status-${variant.id}`}>{RESULT_STATUS_LABELS[status]}</span></div>
       <p className={failure ? 'cti-result-error' : 'cti-result-detail'} role={failure ? 'alert' : undefined}>{detail}</p>
+      {variant.decomposition?.reuse?.drift && <p className="ws-hint" data-testid={`drift-${variant.id}`}>This image drifted from the saved layout, so it was planned fresh: {variant.decomposition.reuse.drift.join(' ')}</p>}
+      {variant.decomposition?.reuse?.passed === false && <p role="alert">Reused plan needs review: {variant.decomposition.reuse.problems?.join(' ')}</p>}
       {variant.decomposition?.state === 'done' && <LayerPreview key={variant.decomposition.runId} runId={variant.decomposition.runId} />}
       <div className="cti-result-actions">
-        {status === 'generated' && <button className="ws-btn ws-btn-primary" disabled={!!busy} onClick={onDecompose}>{working ? spinner : <Layers size={16} aria-hidden="true" />} Decompose into layers</button>}
+        {template.workflow === 'template-family' && variant.decomposition && !['waiting', 'running'].includes(variant.decomposition.state) && <button className="ws-btn" disabled={!!busy} onClick={() => onDecompose(true)}>Plan fresh & decompose</button>}
+        {status === 'generated' && <button className="ws-btn ws-btn-primary" disabled={!!busy} onClick={() => onDecompose()}>{working ? spinner : <Layers size={16} aria-hidden="true" />} Decompose into layers</button>}
         {status === 'decomposed' && <button className="ws-btn ws-btn-primary" disabled={!!busy} onClick={onOpen}>{working ? spinner : <ExternalLink size={16} aria-hidden="true" />} Open in editor</button>}
         {status === 'in-editor' && <button className="ws-btn" disabled={!!busy} onClick={onOpen}>{working ? spinner : <ExternalLink size={16} aria-hidden="true" />} Open in editor again</button>}
         {status === 'not-generated' && <button className="ws-btn" disabled={!!busy} onClick={onGenerate}>Generate</button>}
         {failure === 'generation' && <button className="ws-btn" disabled={!!busy} onClick={onGenerate}><RotateCcw size={14} aria-hidden="true" /> Try again</button>}
         {failure === 'decomposition' && variant.decomposition?.resumable && <button className="ws-btn ws-btn-primary" disabled={!!busy} onClick={onResume}>Resume (no new charge)</button>}
-        {failure === 'decomposition' && <button className="ws-btn" disabled={!!busy} onClick={onDecompose}><RotateCcw size={14} aria-hidden="true" /> Decompose again</button>}
+        {failure === 'decomposition' && <button className="ws-btn" disabled={!!busy} onClick={() => onDecompose()}><RotateCcw size={14} aria-hidden="true" /> Decompose again</button>}
       </div>
       {openError && <p className="cti-result-error" role="alert" data-testid={`open-error-${variant.id}`}>{openError}</p>}
-      {(status === 'generated' || failure === 'decomposition') && <span className="ws-hint">Decomposing makes 1 OpenAI planner request and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it (at most 5 calls).</span>}
+      {(status === 'generated' || failure === 'decomposition') && <span className="ws-hint">Decomposing uses {template.family?.view?.status === 'active' ? 'the saved plan when compatible, otherwise 1 planner request' : '1 OpenAI planner request'} and 1 paid Seedream call; if the base is still contaminated, up to 2 more Seedream calls and 1 OpenAI image edit clean it (at most 5 calls).</span>}
     </div>
   </article>;
 }
@@ -379,7 +398,7 @@ function LayerPreview({ runId }: { runId: string }) {
   useEffect(() => {
     if (!expanded || run) return;
     let current = true;
-    void experimentApi.get(runId).then(value => { if (current) { setRun(value); setError(''); } }).catch((reason: Error) => { if (current) setError(reason.message); });
+    void experimentApi.get(runId).then(value => { if (current) { setRun({ ...value, outputLayers: editorLayersOf(value) }); setError(''); } }).catch((reason: Error) => { if (current) setError(reason.message); });
     return () => { current = false; };
   }, [expanded, run, runId]);
   return <details className="cti-advanced" onToggle={event => setExpanded(event.currentTarget.open)}>
@@ -390,7 +409,7 @@ function LayerPreview({ runId }: { runId: string }) {
           <img src={experimentFileUrl(run.id, layer.file)} alt={layer.name ?? `Layer ${layer.zIndex}`} loading="lazy" />
           <figcaption>{layer.name ?? `Layer ${layer.zIndex}`}{layer.placement.kind === 'unresolved' ? ' · placement needs review' : ''}</figcaption>
         </figure>)}</div>
-        {run.warnings.map(warning => <p key={warning} className="ws-hint">{warning}</p>)}
+        {run.refinement?.background && ['fallback', 'contaminated'].includes(run.refinement.background.status) && <p className="ws-hint">The recovered background may need touch-ups.</p>}
         <p className="ws-hint">Each output opens as an image layer you can move, resize or replace. Text within an image remains pixels.</p>
       </>}
     </>}

@@ -17,12 +17,15 @@ test('recursive decomposition of a complex offer: missed products found once, on
 
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
-  await panel.locator('label', { hasText: 'Template:' }).locator('select').selectOption('template-b');
+  await page.waitForLoadState('networkidle');
+  await panel.getByRole('tab', { name: 'Decompose/Test' }).click();
+  await panel.getByText('Advanced test settings', { exact: true }).click();
+  await panel.getByLabel('Template', { exact: true }).selectOption('template-b');
   const offer = await request.get('/__test__/complex-offer.png');
   await panel.getByLabel('Image to decompose').setInputFiles({ name: 'complex-offer.png', mimeType: 'image/png', buffer: await offer.body() });
   await expect(panel.getByRole('checkbox', { name: /Recursive cleanup \+ clean background/ })).toBeChecked();
-  const runButton = panel.getByRole('button', { name: /^Run: generate prompt/ });
-  await expect(runButton).toContainText('+ cleanup (≤2 Seedream, ≤1 image edit)');
+  const runButton = panel.getByRole('button', { name: 'Run decomposition' });
+  await expect(panel.getByText('Cleanup enabled:', { exact: false })).toContainText('up to 2 extra Seedream calls and 1 image edit');
 
   // One active run at a time on the shared server: wait until it is idle, then start; another project may get there first.
   let runId: string | undefined;
@@ -38,7 +41,10 @@ test('recursive decomposition of a complex offer: missed products found once, on
     else expect(response.status()).toBe(409);
   }
   expect(runId).toBeTruthy();
-  await expect(panel.getByText('Stage: done', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(panel.getByRole('status')).toHaveText(/READY FOR EDITOR|PARTIAL/, { timeout: 60_000 });
+  await panel.getByText('Developer details', { exact: true }).click();
+  await panel.getByText('Advanced details · metrics, artifacts and run controls', { exact: true }).click();
+  await expect(panel.getByText('Stage: done', { exact: true })).toBeVisible();
 
   // Debug view: passes, final layers, residual cleanup, background and every provider call.
   const debug = panel.getByTestId('refinement-debug');

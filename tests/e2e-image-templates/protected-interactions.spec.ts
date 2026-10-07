@@ -14,10 +14,13 @@ async function decompose(page: Page, request: APIRequestContext, image: string, 
   const headers = { Origin: new URL(page.url()).origin };
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
-  await panel.locator('label', { hasText: 'Template:' }).locator('select').selectOption('template-b');
+  await page.waitForLoadState('networkidle');
+  await panel.getByRole('tab', { name: 'Decompose/Test' }).click();
+  await panel.getByText('Advanced test settings', { exact: true }).click();
+  await panel.getByLabel('Template', { exact: true }).selectOption('template-b');
   await panel.getByLabel('Image to decompose').setInputFiles({ name: file, mimeType: 'image/png', buffer: await (await request.get(image)).body() });
   await expect(panel.getByRole('checkbox', { name: /Recursive cleanup \+ clean background/ })).toBeChecked();
-  const runButton = panel.getByRole('button', { name: /^Run: generate prompt/ });
+  const runButton = panel.getByRole('button', { name: 'Run decomposition' });
   // One active run at a time on the shared server: wait until it is idle, then start; another project may get there first.
   let runId: string | undefined;
   for (let attempt = 0; attempt < 30 && !runId; attempt++) {
@@ -32,7 +35,10 @@ async function decompose(page: Page, request: APIRequestContext, image: string, 
     else expect(response.status()).toBe(409);
   }
   expect(runId).toBeTruthy();
-  await expect(panel.getByText('Stage: done', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(panel.getByRole('status')).toHaveText(/READY FOR EDITOR|PARTIAL/, { timeout: 60_000 });
+  await panel.getByText('Developer details', { exact: true }).click();
+  await panel.getByText('Advanced details · metrics, artifacts and run controls', { exact: true }).click();
+  await expect(panel.getByText('Stage: done', { exact: true })).toBeVisible();
   return { panel, runId: runId!, run: await (await request.get(`/api/layerize-experiment/runs/${runId}`, { headers })).json() };
 }
 

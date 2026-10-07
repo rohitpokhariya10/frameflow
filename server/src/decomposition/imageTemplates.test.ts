@@ -1,3 +1,7 @@
+import { matchThresholds } from '@frameflow/shared';
+import { analysisOf, CREATIVES, renderCreative } from './templateFamilies/creatives.fixture.js';
+import { fileFamilyStore } from './templateFamilies/store.js';
+import type { FamilyServices } from './templateFamilies/familyMatcher.js';
 import { PROTECTION_CLAUSE, SEMANTIC_SCHEMA } from './semanticPlanner.js';
 import { semanticFixture } from './semanticPlanner.fixture.js';
 import { referenceCreativeFixture } from './referenceCreative.fixture.js';
@@ -76,7 +80,7 @@ function writerFake(answer: Partial<{ prompt: string; suggestedName: string; tem
 }
 
 /** The experiment router with every provider faked, and helpers to talk to it. */
-async function server(options: { images?: ReturnType<typeof imageFake>; writer?: ReturnType<typeof writerFake>; config?: Partial<GenerationConfig>; slowResult?: () => Promise<void> } = {}) {
+async function server(options: { families?: FamilyServices; images?: ReturnType<typeof imageFake>; writer?: ReturnType<typeof writerFake>; config?: Partial<GenerationConfig>; slowResult?: () => Promise<void> } = {}) {
   const images = options.images ?? imageFake(), writer = options.writer ?? writerFake();
   const runsDir = tmp('layerize-'), dir = tmp('image-templates-'), dirs = { 'template-a': tmp('a-'), 'template-b': tmp('b-'), 'template-c': tmp('c-') };
   const uploads: Buffer[] = [], submitted: Record<string, unknown>[] = [];
@@ -93,7 +97,7 @@ async function server(options: { images?: ReturnType<typeof imageFake>; writer?:
     cancel: async () => undefined, download: async (url) => uploads[Number(/base-(\d+)/.exec(url)![1]) - 1],
   };
   const deps = (): RunnerDeps => ({ planner, transport: () => transport, sleep: async () => undefined });
-  const app = express().use('/x', createLayerizeRouter({ runsDir, deps, generationsDir: dirs['template-a'], generationDirs: { 'template-b': dirs['template-b'], 'template-c': dirs['template-c'] },
+  const app = express().use('/x', createLayerizeRouter({ families: options.families, runsDir, deps, generationsDir: dirs['template-a'], generationDirs: { 'template-b': dirs['template-b'], 'template-c': dirs['template-c'] },
     generation: () => ({ ...images.config, ...options.config }), imageTemplatesDir: dir, imagePrompt: () => writer.writer })).listen(0, '127.0.0.1');
   await new Promise(done => app.once('listening', done));
   const { port } = app.address() as AddressInfo;
@@ -860,5 +864,64 @@ describe('integrated reference campaigns using the existing routes', () => {
       expect((await s.upload(Buffer.from('corrupt'), {}, 'broken.png', 'image/png', path)).status).toBe(400);
       expect(s.writer.seen).toHaveLength(0); expect(s.images.send).toHaveBeenCalledTimes(0);
     } finally { s.app.close(); }
+  });
+});
+
+
+describe('family workflow through real HTTP routes (offline)', () => {
+  it('creates once, reuses headphones → iPhone locally, pins versions, compiles slots and accounts for original at zero image cost', async () => {
+    const familyRoot = tmp('family-integration-'), store = fileFamilyStore(familyRoot);
+    const cheap = vi.fn(async () => ({ analysis: analysisOf(CREATIVES.headphonesBlue), model: 'gpt-5.6-luna', tier: 'cheap' as const,
+      usage: { input_tokens: 1800, output_tokens: 700 }, request: { model: 'gpt-5.6-luna' }, raw: { model: 'gpt-5.6-luna', usage: { input_tokens: 1800, output_tokens: 700, input_tokens_details: { cached_tokens: 0 } } }, durationMs: 1 }));
+    const strong = vi.fn(async () => { throw new Error('Strong planner must not run'); });
+    const families: FamilyServices = { store, thresholds: matchThresholds(), planners: () => ({ cheap: { model: 'gpt-5.6-luna', tier: 'cheap', analyze: cheap }, strong: { model: 'gpt-5.6-sol', tier: 'strong', analyze: strong } }) };
+    const t = await server({ families });
+    try {
+      const create = async (bytes: Buffer) => {
+        const result = await t.upload(bytes, { name: 'Family creative', aspectRatios: '["1:1"]' }, 'reference.png', 'image/png', '/image-templates/family-draft');
+        expect(result.status).toBe(201);
+        await t.post(`/image-templates/${result.body.id}/detect-layout`);
+        return t.wait(() => t.template(result.body.id), value => value.family?.detection?.status === 'done');
+      };
+      const first = await create(await renderCreative(CREATIVES.headphonesBlue));
+      expect(first.family?.detection).toMatchObject({ outcome: 'created', method: 'cheap-planner' });
+      expect(cheap).toHaveBeenCalledTimes(1); expect(strong).not.toHaveBeenCalled();
+      const ref = first.family!.ref!, v1 = store.blueprint(ref)!;
+      const reloaded = fileFamilyStore(familyRoot);
+      expect(reloaded.blueprint(ref)).toEqual(v1);
+      // Fixture marks the new family validated; output-quality activation itself is covered by the core suite.
+      store.update(ref.familyId, family => { family.status = 'active'; });
+      const second = await create(await renderCreative(CREATIVES.iphoneRed));
+      expect(second.family?.detection).toMatchObject({ outcome: 'reused', method: 'local-fingerprint', calls: [], ref });
+      expect(cheap).toHaveBeenCalledTimes(1);
+      const slots = { product: 'iPhone', background: 'red gradient', headline: 'Mega Sale', cta: 'Buy Now' };
+      const changed = await t.patch(`/image-templates/${second.id}`, { familySlots: slots });
+      expect(changed.status).toBe(200); expect(changed.body.prompt).toContain('iPhone'); expect(changed.body.prompt).not.toMatch(/headphones/i);
+      expect(changed.body.family.view.fields.map((f: { id: string }) => f.id)).toEqual(expect.arrayContaining(['product', 'headline', 'cta', 'background']));
+      expect((await t.post(`/image-templates/${second.id}/prompt`)).status).toBe(400);
+      await t.post(`/image-templates/${second.id}/detect-layout`); expect(cheap).toHaveBeenCalledTimes(1);
+      await t.post(`/image-templates/${second.id}/original`);
+      expect((await t.post(`/image-templates/${second.id}/variants/original/decompose`)).status).toBe(202);
+      const original = await t.decomposed(second.id), originalRun = original.variants.find(v => v.id === 'original')!.decomposition!.runId;
+      const run = readRun(join(t.runsDir, originalRun));
+      expect(run.calls?.planner).toBe(0); expect(run.promptSource?.mode).toBe('blueprint');
+      const diagnostics = (await t.get(`/runs/${originalRun}/diagnostics`)).body;
+      expect(diagnostics.stages.find((s: { id: string }) => s.id === 'generation')).toMatchObject({ calls: [], cost: { usd: 0 } });
+      expect(diagnostics.reuse).toMatchObject({ analysisReused: true, decompositionPlanReused: true, avoided: { analysis: 1, planner: 1 } });
+      expect(diagnostics.reuseSaving).toBeUndefined(); // no observed full-planner baseline yet
+      expect((await t.post(`/image-templates/${second.id}/generate`, { name: 'iPhone launch', aspectRatios: ['1:1'] })).status).toBe(202);
+      const generated = await t.settled(second.id);
+      expect(generated.family?.generation?.prompt).toContain('iPhone');
+      expect(t.images.requests[0].prompt).not.toMatch(/headphones/i);
+      expect(t.writer.seen).toHaveLength(0);
+      store.addVersion(ref.familyId, version => ({ ...v1, version, name: 'Updated family' }));
+      expect((await t.get(`/image-templates/${second.id}`)).body.family.view.version).toBe(1);
+      expect((await t.get(`/template-families/${ref.familyId}/versions/1`)).body).toEqual(v1);
+      expect((await t.get('/template-families')).body.families.find((f: { id: string }) => f.id === ref.familyId).currentVersion).toBe(2);
+      expect(readRun(join(t.runsDir, originalRun)).blueprint).toEqual(ref);
+      const used = await t.post(`/template-families/${ref.familyId}/use`);
+      expect(used.status).toBe(201); expect(used.body.family.detection.method).toBe('library');
+      expect(strong).not.toHaveBeenCalled(); expect(cheap).toHaveBeenCalledTimes(1);
+    } finally { t.app.close(); }
   });
 });

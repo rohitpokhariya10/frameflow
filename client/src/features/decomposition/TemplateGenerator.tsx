@@ -4,11 +4,10 @@ import type { ExperimentRun, TemplateEntry } from './layerizeExperiment';
 import { creationRequestFor, decomposeRequestFor, decompositionControlsFor, decompositionLabel, generationApiFor, generatorReducerFor, HELD_OBJECT_CHOICE, initialFormFor, isUnderway, resolvedCreativeFor, variantImageUrlFor,
   type DecompositionControls, type GenerationGroup, type GenerationVariant, type GeneratorInfo } from './templateGeneration';
 
-const box: React.CSSProperties = { padding: 16, borderTop: '1px solid var(--color-line)', display: 'grid', gap: 10 };
 const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', background: '#fff', padding: 10, borderRadius: 8, margin: 0, fontSize: 12 };
 const muted: React.CSSProperties = { color: 'var(--color-muted)' };
 const note: React.CSSProperties = { color: '#8a5a00' };
-const card: React.CSSProperties = { display: 'grid', gap: 8, alignContent: 'start', padding: 12, border: '1px solid var(--color-line)', borderRadius: 10, background: 'var(--color-panel)', minWidth: 0 };
+
 const STATUS: Record<GenerationVariant['status'], { label: string; color: string }> = {
   pending: { label: 'Not generated', color: '#7a8087' }, queued: { label: 'Queued', color: '#2f6fb3' }, generating: { label: 'Generating…', color: '#2f6fb3' },
   done: { label: 'Ready', color: '#285443' }, failed: { label: 'Failed', color: '#b42318' },
@@ -109,8 +108,8 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
       {resolved.prompts && <details><summary>Exact {ratio} prompt ({resolved.prompts[ratio].length} characters)</summary><pre style={pre}>{resolved.prompts[ratio]}</pre></details>}</div>)}
   </div>;
 
-  return <>
-    <section style={box} data-generator={templateKey}>
+  return <div className="ff-lab-generator">
+    <section className="ff-lab-card" data-generator={templateKey}>
       {plain ? <>
         <div>
           <strong style={{ fontSize: 16 }}>{profile.name}</strong>
@@ -121,7 +120,7 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
           onChange={(key, value) => dispatch({ type: 'field', key, value })} onTouch={key => setTouched(all => all[key] ? all : { ...all, [key]: true })} />
 
         {/* The prompt is built for the user: something to look over, not something to write. */}
-        <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--color-line)', paddingTop: 12 }}>
+        <details className="ff-lab-prompt-review" data-testid="prompt-review"><summary>Review prompt and generation details</summary><div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong>Shared creative prompt</strong>
             {edited && <span style={badge('#8a5a00')} data-testid="prompt-edited">Edited by hand</span>}
@@ -143,7 +142,7 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
           {info && <details><summary>What {profile.name} adds for you ({info.version}, read-only)</summary>
             <p style={{ ...muted, margin: '6px 0' }}>{profile.family} You describe the creative; the fixed structure below adds the rest, the same way every time.</p><pre style={pre}>{info.skeleton}</pre></details>}
           <details><summary>What each size adds to the prompt (fixed text; the only difference between them)</summary>{ratioDetails}</details>
-        </div>
+        </div></details>
 
         <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--color-line)', paddingTop: 12 }}>
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}><strong>Generate sizes</strong>{ratioPicker}</div>
@@ -151,20 +150,21 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
             ? `You describe the creative once. The first size is generated from the prompt; each further size is made from that image, so ${profile.sameAcrossRatios} stay the same and only the framing changes. They are the same creative, not pixel-identical copies.`
             : `You describe the creative once. What stays the same: ${profile.sameAcrossRatios}. Each size is generated on its own from this one description, so what it does not pin down (${profile.mayDiffer}) can still differ between them.`}</span>
           <div><button className="ws-btn ws-btn-primary" disabled={!!busy || !resolved.prompts || !info || !count} onClick={() => void generate()}>
-            {busy === 'generate' ? 'Starting…' : `Generate ${plural(count, 'variant')} (OpenAI ${info?.generator.model ?? ''}, ${plural(count, 'paid call')})`}</button></div>
+            {busy === 'generate' ? 'Starting…' : `Generate ${plural(count, 'variant')}`}</button></div>
           {missing.length > 0 && <span style={muted} data-testid="generate-hint">To generate, fill in: {missing.map(field => field.label).join(', ')}.</span>}
         </div>
       </> : <>
         <strong>{profile.name} test generator: one creative, three aspect ratios</strong>
         <span style={muted}>{profile.name}: {lowerFirst(profile.family)} Define the creative once; it is generated as {ratios.join(', ')} variants of that same creative. * = required.</span>
         {info && <details><summary>Fixed {profile.name} structure ({info.version}, read-only)</summary><pre style={pre}>{info.skeleton}</pre></details>}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }}>
+        <div className="ff-lab-basic-fields">
           {(info?.fields ?? []).map(field => <label key={field.key} style={{ display: 'grid', gap: 2 }}>
             <span><span data-testid="field-label">{field.label}</span>{field.required ? ' *' : ''} {field.help && <span style={muted}>({field.help})</span>}</span>
             <input value={form.values[field.key] ?? ''} maxLength={field.maxLength} onChange={event => dispatch({ type: 'field', key: field.key, value: event.target.value })} style={{ width: '100%' }} />
           </label>)}
         </div>
 
+        <details className="ff-lab-prompt-review" data-testid="prompt-review"><summary>Review prompt and generation details</summary><div>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <strong>Shared creative prompt</strong>
           <span style={muted}>{form.editedPrompt === null ? '(built from the fields; the same for every aspect ratio)' : '(edited by hand; used as it is for every aspect ratio)'}</span>
@@ -183,22 +183,24 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
         <details><summary>What each aspect ratio adds to the shared prompt (fixed text; the only difference between the variants)</summary>{ratioDetails}</details>
         <span style={muted}>What stays the same: {profile.sameAcrossRatios}. Each ratio is generated on its own from this one description, so what the description does not pin down ({profile.mayDiffer}) can still differ between the three.</span>
 
+        </div></details>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}><strong>Generate now:</strong>{ratioPicker}</div>
         <div><button className="ws-btn ws-btn-primary" disabled={!!busy || !resolved.prompts || !info || !count} onClick={() => void generate()}>
-          {busy === 'generate' ? 'Starting…' : `Generate ${plural(count, 'aspect-ratio variant')} (OpenAI ${info?.generator.model ?? ''}, ${plural(count, 'paid call')})`}</button></div>
+          {busy === 'generate' ? 'Starting…' : `Generate ${plural(count, 'variant')}`}</button></div>
       </>}
+      <small style={muted}>{info?.generator.model ?? 'Image generator'} · {plural(count, 'paid image call')} when you generate.</small>
       {message && <div role="alert" style={{ color: 'var(--color-error)' }}>{message}</div>}
     </section>
 
-    <section style={box}>
+    <section className="ff-lab-card ff-lab-generated-results" aria-label="Generated results">
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <strong>Generated {profile.name} creatives</strong>
+        <h3>Generated {profile.name} creatives</h3>
         {groups.length > 0 && <select aria-label="Generated creative" value={current?.id ?? ''} onChange={event => setCurrentId(event.target.value)}>
           {groups.map(group => <option key={group.id} value={group.id}>{group.id} — {profile.summarize(group.fields)} — {group.legacy ? `single image (${group.variants[0].aspectRatio})` : group.variants.map(variant => `${variant.aspectRatio} ${STATUS[variant.status].label.toLowerCase()}`).join(', ')}</option>)}</select>}
       </div>
       {!current ? <span style={muted}>No creative generated yet.</span> : <>
         <div style={{ display: 'grid', gap: 6 }}>
-          <div><strong>Creative {current.id}</strong> · {profile.summarize(current.fields)} · created {new Date(current.createdAt).toLocaleString()} {current.promptEdited && <span style={badge('#7a3fb0')}>prompt edited</span>}</div>
+          <div className="ff-lab-result-meta"><strong>{profile.summarize(current.fields)}</strong><span style={muted}>{new Date(current.createdAt).toLocaleString()}</span> {current.promptEdited && <span style={badge('#7a3fb0')}>prompt edited</span>}</div>
           {current.legacy
             ? <span style={muted}>An earlier single-image generation ({current.variants[0].aspectRatio}), made before creatives had aspect-ratio variants. It can still be decomposed; to get the three ratios, load its fields into the form and generate a new creative.</span>
             : <span style={muted}>One creative, {plural(current.variants.length, 'aspect-ratio variant')}. All of them use the shared prompt below; each can be decomposed on its own.{current.ratioStrategy === 'reference'
@@ -206,10 +208,10 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
           {(current.notes ?? []).map(text => <span key={text} style={note}>{text}</span>)}
           <details><summary>Shared creative prompt ({current.basePrompt.length} characters{current.promptEdited ? ', edited by hand' : ', built from the fields'})</summary><pre style={pre}>{current.basePrompt}</pre>
             {current.promptEdited && <details><summary>The prompt the fields build (not used)</summary><pre style={pre}>{current.builtPrompt}</pre></details>}</details>
-          <details><summary>Field values</summary><pre style={pre}>{JSON.stringify(current.fields, null, 2)}</pre></details>
+          <details><summary>Creative details</summary><p style={muted}>Run group: {current.id}</p><strong>Field values</strong><pre style={pre}>{JSON.stringify(current.fields, null, 2)}</pre></details>
           <div><button className="ws-btn" disabled={!!busy} onClick={() => dispatch({ type: 'load', group: current })}>Load this creative into the form</button></div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+        <div className="ff-lab-result-grid">
           {current.variants.map((variant) => {
             const id = `${current.id}/${variant.id}`;
             return <VariantCard key={variant.id} profile={profile} template={template} group={current} variant={variant} busy={busy} runActive={runActive} fitCheck={fitCheck}
@@ -219,7 +221,7 @@ export function TemplateGenerator({ templateKey, template, runActive, fitCheck, 
         </div>
       </>}
     </section>
-  </>;
+  </div>;
 }
 
 const small: React.CSSProperties = { ...muted, fontSize: 12, lineHeight: 1.45 };
@@ -254,11 +256,11 @@ function PlainFields({ templateKey, fields, values, defaults, touched, onChange,
       {missing && <span style={{ fontSize: 12, color: 'var(--color-error)' }}>This field is required.</span>}
     </div>;
   };
-  return <div style={{ display: 'grid', gap: 16, maxWidth: 820 }}>
+  return <div className="ff-lab-basic-fields">
     {fields.filter(field => !field.advanced).map(row)}
     {advanced.length > 0 && <details data-testid="advanced-options">
       <summary>Advanced options{changed > 0 && ` (${changed} changed)`}</summary>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 10 }}>{advanced.map(row)}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(240px, 100%), 1fr))', gap: 14, marginTop: 10 }}>{advanced.map(row)}</div>
     </details>}
   </div>;
 }
@@ -278,20 +280,21 @@ function VariantCard({ profile, template, group, variant, busy, runActive, fitCh
   const status = STATUS[variant.status], ready = variant.status === 'done' && !!variant.image;
   const canGenerate = !group.legacy && (variant.status === 'pending' || variant.status === 'failed');
   const imageUrl = variantImageUrlFor(profile.templateKey)(group.id, variant.id);
-  return <article style={card} aria-label={`${variant.aspectRatio} variant`} data-variant={variant.id}>
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+  return <article className="ff-lab-variant" aria-label={`${variant.aspectRatio} variant`} data-variant={variant.id}>
+    <div className="ff-lab-variant-heading">
       <strong style={{ fontSize: 15 }}>{variant.aspectRatio}</strong><span style={muted}>{variant.size.width}×{variant.size.height}</span>
       <span style={badge(status.color)} data-testid={`status-${variant.id}`}>{status.label}</span>
     </div>
     {ready
-      ? <a href={imageUrl} target="_blank" rel="noreferrer"><img src={imageUrl} alt={`${variant.aspectRatio} variant of this creative`} style={{ width: '100%', maxHeight: 320, objectFit: 'contain', background: '#eee' }} /></a>
-      : <div style={{ padding: 20, background: '#f4f4f4', aspectRatio: `${variant.size.width || 1} / ${variant.size.height || 1}`, maxHeight: 320, display: 'grid', placeItems: 'center', textAlign: 'center' }}>
+      ? <a className="ff-lab-variant-media" href={imageUrl} target="_blank" rel="noreferrer"><img src={imageUrl} alt={`${variant.aspectRatio} variant of this creative`} /></a>
+      : <div className="ff-lab-variant-media">
         {variant.status === 'failed' ? 'No image' : variant.status === 'pending' ? 'Not generated yet' : status.label}</div>}
+    <div className="ff-lab-variant-body">
     {variant.error && <div role="alert" style={{ color: 'var(--color-error)' }}>{variant.error.code}{variant.error.status ? ` (${variant.generator.provider} HTTP ${variant.error.status})` : ''}: {variant.error.message}</div>}
     <div style={muted}>{variant.generator.provider} {variant.generator.model}{variant.attempts > 1 ? ` · ${variant.attempts} attempts` : ''}{variant.durationMs !== undefined ? ` · ${(variant.durationMs / 1000).toFixed(1)} s` : ''}
-      {variant.generator.requestId && <> · request <code>{variant.generator.requestId}</code></>}</div>
+      </div>
     {variant.reference && <div style={muted} data-testid={`reference-${variant.id}`}>{ready ? 'Made' : 'Last attempt made'} from the {variant.reference.aspectRatio} image of this creative.</div>}
-    <details><summary>{variant.attempts ? 'Prompt sent' : 'Prompt to be sent'} ({variant.prompt.length} characters)</summary><pre style={pre}>{variant.prompt}</pre>
+    <details><summary>{variant.attempts ? 'Prompt sent' : 'Prompt to be sent'} ({variant.prompt.length} characters)</summary><pre style={pre}>{variant.prompt}</pre>{variant.generator.requestId && <p style={muted}>Request ID: {variant.generator.requestId}</p>}
       {variant.framing && <div style={muted}>Only this differs from the other ratios: “{variant.framing}”</div>}
       {variant.reference && <div style={muted}>Sent with the {variant.reference.aspectRatio} image attached, and this sentence added: “{variant.reference.instruction}”</div>}</details>
     {canGenerate && <button className="ws-btn" disabled={!!busy} onClick={() => onGenerate()}>
@@ -307,11 +310,13 @@ function VariantCard({ profile, template, group, variant, busy, runActive, fitCh
         <input type="checkbox" checked={chosen[option.key] ?? option.default} disabled={!ready} onChange={event => onChoose(option.key, event.target.checked)} /> {option.label}</label>)}
       {controls.kind === 'unavailable' && <span style={muted}>{profile.name}'s decomposition options are not loaded, so this image cannot be decomposed from here yet.</span>}
       <button className="ws-btn ws-btn-primary" disabled={!ready || !!busy || runActive || controls.kind === 'unavailable'} onClick={onDecompose}>
-        {busy === `decompose-${variant.id}` ? 'Starting…' : `Decompose ${variant.aspectRatio} image (${profile.name}: ${fitCheck ? 'fit check + ' : ''}OpenAI planner + 1 paid Seedream call)`}</button>
+        {busy === `decompose-${variant.id}` ? 'Starting…' : `Decompose ${variant.aspectRatio} image`}</button>
+      <small style={muted}>{fitCheck ? 'Fit check + ' : ''}OpenAI planner + 1 paid Seedream call.</small>
       {!ready && <span style={muted}>This ratio has no image to decompose.</span>}
       {ready && runActive && <span style={muted}>A run is active; wait for it to finish.</span>}
       {variant.decompositions.length > 0 && <div>Decompositions of this image: {variant.decompositions.map(item =>
         <button key={item.runId} className="ws-btn" style={{ margin: '0 6px 6px 0' }} onClick={() => onOpenRun(item.runId)}>{item.runId} ({decompositionLabel(item, template)})</button>)}</div>}
+    </div>
     </div>
   </article>;
 }

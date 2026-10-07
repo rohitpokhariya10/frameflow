@@ -154,8 +154,12 @@ export type ContaminationOptions = {
    */
   minContrast?: number;
 };
-/** A foreground-like region: normalized box [x0, y0, x1, y1] (0–1), area, solidity (area / box), contrast (deviation / threshold). */
-export type ContaminationRegion = { box: [number, number, number, number]; areaPercent: number; fill: number; contrast: number; confidence: number; position: string };
+/**
+ * A foreground-like region: normalized box [x0, y0, x1, y1] (0–1), area, solidity (area / box), contrast (deviation /
+ * threshold). shadowLike: most of it is the background dimmed by one factor (same hue, darker): a shadow or its residue,
+ * which the clean background removes locally, never an element a residual pass could extract.
+ */
+export type ContaminationRegion = { box: [number, number, number, number]; areaPercent: number; fill: number; contrast: number; confidence: number; position: string; shadowLike: boolean };
 export type ContaminationVerdict = 'contaminated' | 'clean' | 'below-threshold' | 'low-confidence' | 'not-assessable';
 export type ContaminationAssessment = {
   contaminated: boolean; verdict: ContaminationVerdict;
@@ -191,11 +195,12 @@ export function assessBackgroundContamination(input: { rgb: Uint8Array; width: n
   const opened = grow(erode(flagged, w, h, 1), w, h, 1);
   for (let i = 0; i < n; i++) if (!flagged[i]) opened[i] = 0;
   const { labels, count } = label(grow(opened, w, h, Math.max(1, Math.round(side * 0.015))), w, h);
-  const stats = Array.from({ length: count + 1 }, () => ({ pixels: 0, dev: 0, x0: w, y0: h, x1: -1, y1: -1 }));
+  const stats = Array.from({ length: count + 1 }, () => ({ pixels: 0, dev: 0, dim: 0, x0: w, y0: h, x1: -1, y1: -1 }));
   for (let i = 0; i < n; i++) {
     if (!opened[i]) continue;
     const s = stats[labels[i]], x = i % w, y = (i - x) / w;
     s.pixels++; s.dev += dev[i];
+    if (dimmed(rgb, model, i)) s.dim++;
     if (x < s.x0) s.x0 = x; if (x > s.x1) s.x1 = x; if (y < s.y0) s.y0 = y; if (y > s.y1) s.y1 = y;
   }
   const regions: ContaminationRegion[] = [];
@@ -205,7 +210,7 @@ export function assessBackgroundContamination(input: { rgb: Uint8Array; width: n
     const fill = s.pixels / ((s.x1 - s.x0 + 1) * (s.y1 - s.y0 + 1)), contrast = s.dev / s.pixels / threshold;
     const confidence = 0.3 * Math.min(1, areaPercent / (3 * options.minRegionPercent)) + 0.45 * Math.min(1, fill / 0.4) + 0.25 * Math.min(1, Math.max(0, contrast - 1));
     regions.push({ box: [round(s.x0 / w, 3), round(s.y0 / h, 3), round((s.x1 + 1) / w, 3), round((s.y1 + 1) / h, 3)], areaPercent: round(areaPercent), fill: round(fill), contrast: round(contrast),
-      confidence: round(confidence), position: positionWords((s.x0 + s.x1 + 1) / 2 / w, (s.y0 + s.y1 + 1) / 2 / h) });
+      confidence: round(confidence), position: positionWords((s.x0 + s.x1 + 1) / 2 / w, (s.y0 + s.y1 + 1) / 2 / h), shadowLike: s.dim >= 0.7 * s.pixels });
   }
   regions.sort((a, b) => b.areaPercent - a.areaPercent);
   const counted = regions.filter(r => r.confidence >= options.minConfidence && r.contrast >= (options.minContrast ?? 0)), contaminatedPercent = round(counted.reduce((sum, r) => sum + r.areaPercent, 0));
@@ -221,6 +226,30 @@ export function assessBackgroundContamination(input: { rgb: Uint8Array; width: n
   if (contaminatedPercent < options.contaminatedPercent) return { ...base, contaminated: false, verdict: 'below-threshold', reasons: [`${counted.length} object-like region(s) cover ${contaminatedPercent}% of the image, below the ${options.contaminatedPercent}% threshold.`] };
   return { ...base, contaminated: true, verdict: 'contaminated',
     reasons: [`${counted.length} object-like region(s) outside the extracted layers cover ${contaminatedPercent}% of the image (${counted.slice(0, 6).map(r => `${r.position} ${r.areaPercent}%`).join(', ')}).`] };
+}
+
+/** Pixel i is the model's color dimmed by one factor (a shadow keeps the hue of what it falls on). */
+function dimmed(rgb: Float32Array, model: Float32Array, i: number): boolean {
+  const lm = 0.299 * model[i * 3] + 0.587 * model[i * 3 + 1] + 0.114 * model[i * 3 + 2], lo = 0.299 * rgb[i * 3] + 0.587 * rgb[i * 3 + 1] + 0.114 * rgb[i * 3 + 2];
+  if (lm < 24 || lo >= lm) return false;
+  const k = lo / lm;
+  for (let c = 0; c < 3; c++) if (Math.abs(rgb[i * 3 + c] - k * model[i * 3 + c]) > 8 + 0.04 * model[i * 3 + c]) return false;
+  // Only a modest, same-hue dimming is evidence of soft residue. A solid gray/black product (or dark text) on white
+  // also preserves hue, so hue alone must never veto its residual extraction.
+  return k >= 0.68;
+}
+/**
+ * The regions of a contaminated assessment that could hold an element a residual pass would extract: counted (confident
+ * and, with a complete plan, contrasted), not shadow-like, and at least `minAreaPercent` of the image. When none is left,
+ * a residual call would only find residue the clean background already removes.
+ */
+export function meaningfulRegions(assessment: Pick<ContaminationAssessment, 'regions'>, options: ContaminationOptions, minAreaPercent = 0.4) {
+  const eligible = assessment.regions.filter(r => r.confidence >= options.minConfidence && r.contrast >= (options.minContrast ?? 0) && !r.shadowLike);
+  // A partially extracted object can leave several substantial pieces: worn bangles on either side of an extracted
+  // wrist each occupy <0.4%, but together cover >2% at high contrast. That is missed content, not tiny alpha residue.
+  const pieces = eligible.filter(r => r.areaPercent >= Math.max(0.25, options.minRegionPercent) && r.contrast >= 3 && r.fill >= 0.3);
+  const significantPieces = pieces.length >= 2 && pieces.reduce((sum, r) => sum + r.areaPercent, 0) >= 1;
+  return eligible.filter(r => r.areaPercent >= minAreaPercent || (significantPieces && pieces.includes(r)));
 }
 
 export type Retention = { file: string; name?: string; distinctPixels: number; retainedPercent: number };

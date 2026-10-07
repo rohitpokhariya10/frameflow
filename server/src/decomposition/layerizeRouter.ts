@@ -27,6 +27,12 @@ import { templateBHandoff } from './templateBGeneration.js';
 import { templateCHandoff } from './templateCGeneration.js';
 import { DEFAULT_IMAGE_TEMPLATES_DIR, liveImagePromptWriter, registerImageTemplateRoutes, type ImagePromptWriter } from './imageTemplates.js';
 
+import { matchThresholds } from '@frameflow/shared';
+import { fileFamilyStore } from './templateFamilies/store.js';
+import { liveStructurePlanners } from './templateFamilies/structurePlanner.js';
+import type { FamilyServices } from './templateFamilies/familyMatcher.js';
+import { readRunDiagnostics } from './runDiagnostics.js';
+
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
 
@@ -97,8 +103,9 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
  * its templates, and what writes a prompt from a reference image (default: its own folder, and OpenAI).
  */
 export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generationsDir?: string; generationDirs?: Partial<Record<GenerationTemplateKey, string>>; generation?: () => GenerationConfig; access?: ExperimentAccess;
-  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter } = {}): Router {
+  families?: FamilyServices; imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
+  const families = options.families ?? { store: fileFamilyStore(options.runsDir ? join(runsDir, '../template-families') : undefined), planners: () => liveStructurePlanners(), thresholds: matchThresholds() };
   const deps = options.deps ?? (() => liveDeps());
   let active: string | undefined;
   const router = express.Router();
@@ -241,7 +248,7 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   let line: Promise<unknown> = Promise.resolve();
   const idle = async () => { while (active) await new Promise(done => setTimeout(done, 200)); };
   registerImageTemplateRoutes(router, {
-    dir: options.imageTemplatesDir ?? DEFAULT_IMAGE_TEMPLATES_DIR, runsDir, deps, generation, promptWriter: options.imagePrompt ?? (() => liveImagePromptWriter()),
+    dir: options.imageTemplatesDir ?? DEFAULT_IMAGE_TEMPLATES_DIR, runsDir, deps, generation, families, promptWriter: options.imagePrompt ?? (() => liveImagePromptWriter()),
     enqueueImage: (label, work, settled) => { queue = queue.then(work).catch(error => console.error('image template generation', label, error)).finally(settled); },
     runInTurn: (id, work) => {
       waiting.add(id);
@@ -252,6 +259,16 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   router.post('/templates/:key', express.json({ limit: '8kb' }), (req, res, next) => {
     try { res.json(saveTemplatePrompt(runsDir, req.params.key, String(req.body?.runId ?? ''), typeof req.body?.notes === 'string' ? req.body.notes : undefined)); }
     catch (error) { next(error); }
+  });
+  router.get('/runs/:id/diagnostics', async (req, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await readRunDiagnostics(dirOf(req.params.id), {
+        families: families.store, fx: process.env.AI_BUDGET_USD_INR, imageTemplatesDir: options.imageTemplatesDir ?? DEFAULT_IMAGE_TEMPLATES_DIR,
+        generationDirs: Object.fromEntries(['template-a', 'template-b', 'template-c'].map(key => [key,
+          options.generationDirs?.[key as GenerationTemplateKey] ?? (key === 'template-a' ? options.generationsDir : undefined) ?? generationsDirFor(key as GenerationTemplateKey)])),
+      }));
+    } catch (error) { next(error); }
   });
   router.get('/runs/:id', (req, res, next) => { try { res.json({ ...readRun(dirOf(req.params.id)), active: active === req.params.id }); } catch (error) { next(error); } });
   // Explicit user action only: one NEW paid Seedream call for a run Seedream rejected. Never called automatically.

@@ -52,7 +52,7 @@ function matches(value: unknown, schema: Record<string, unknown>): boolean {
   return typeof value === schema.type && (!schema.enum || (schema.enum as unknown[]).includes(value));
 }
 /** Why an element the model planned as its own layer stays with its parent (protected people and interactions). */
-export type ProtectedMerge = { id: string; parent: string; reason: 'worn_ornament' | 'held_object' | 'finger_fragment' | 'attached_part' | 'keep_with_parent' | 'text_effect' };
+export type ProtectedMerge = { id: string; parent: string; reason: 'worn_ornament' | 'held_object' | 'finger_fragment' | 'attached_part' | 'keep_with_parent' | 'text_effect' | 'cast_shadow' };
 /** What code enforced on the model's plan: merged elements, and whether the prompt was rebuilt or given the protection clause. */
 export type SemanticProtection = { merged: ProtectedMerge[]; promptRebuilt: boolean; clauseAppended: boolean };
 /** Appended (when it fits) to every prompt of an image with people: code-owned, whatever the model wrote. */
@@ -65,6 +65,13 @@ const TEXT_EFFECT = /\b(?:effects?|extrusions?|extruded|offset|shadows?|backing|
 const isText = (e: SemanticElement) => TEXT_WORD.test(idWords(`${e.id} ${e.type}`)) && !TEXT_EFFECT.test(idWords(e.type));
 /** Its type names the effect ("typographic shadow/backing", "text effect"): a glowing headline typed as text stays text. */
 const isTextEffect = (e: SemanticElement) => TEXT_WORD.test(idWords(`${e.id} ${e.type}`)) && TEXT_EFFECT.test(idWords(e.type));
+/** A shadow or reflection of something (not of text): planned as its own layer, it is only the grounding of its subject. */
+const SHADOWISH = /\b(?:shadows?|reflections?)\b/i;
+const isShadowElement = (e: SemanticElement) => SHADOWISH.test(idWords(e.type)) && !TEXT_WORD.test(idWords(`${e.id} ${e.type}`));
+/** The scene itself (its type says so): never the subject a shadow belongs to. */
+const SCENE_TYPE = /\b(?:background|backdrop|environment|scene|wall|floor|sky|canvas|plate|gradient|vignette|texture)\b/i;
+/** Words of an id that name a thing (not the shadow or how it looks): "oversized_phone_shadow" → oversized, phone. */
+const thingWords = (id: string) => new Set(idWords(id).toLowerCase().split(/\s+/).filter(w => w.length > 2 && !/^(?:shadows?|reflections?|cast|soft|translucent|drop|contact|floor|ground|dark|light|subtle|large|small)$/.test(w)));
 /** A mark and nothing else (™, ®, ©): its id or type says so; a text line that ends in one ("text_now_tm") is text. */
 const isMark = (e: SemanticElement) => /^(?:small_|tiny_)?(?:tm|trademark|registered|copyright)(?:_(?:mark|symbol|sign|text))?$/i.test(e.id.trim()) || /\b(?:trademark|registered mark|copyright symbol)\b/i.test(e.type);
 
@@ -121,6 +128,21 @@ function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; mer
     if (!parent || parent === e) continue;
     e.editable_independently = false;
     merged.push({ id: e.id, parent: parent.id, reason });
+  }
+  // A shadow planned as its own layer ("oversized phone shadow", "model cast shadow") only grounds its subject; a designer
+  // never edits it alone. It stays with that subject: the planner's own attachment, else the subject its id names, else
+  // the nearest person or product in front of it. Without one it is left as planned.
+  const subjects = () => elements.filter(e => e.editable_independently && !isShadowElement(e) && !isText(e) && !SCENE_TYPE.test(idWords(e.type)));
+  for (const e of elements) {
+    if (!e.editable_independently || !isShadowElement(e)) continue;
+    const own = thingWords(e.id), candidates = subjects();
+    const attached = candidates.find(s => s.id === e.attachment.parent_id);
+    const named = candidates.map(s => ({ s, shared: [...thingWords(`${s.id} ${s.type}`)].filter(w => own.has(w)).length })).filter(x => x.shared > 0).sort((a, b) => b.shared - a.shared)[0]?.s;
+    const nearest = candidates.filter(s => s.z_order > e.z_order && (isPerson(s) || /product/i.test(s.type))).sort((a, b) => a.z_order - b.z_order)[0];
+    const parent = attached ?? named ?? nearest;
+    if (!parent) continue;
+    e.editable_independently = false;
+    merged.push({ id: e.id, parent: parent.id, reason: 'cast_shadow' });
   }
   // What sits on a merged element follows it (a badge on a held phone's screen).
   for (let changed = true; changed;) {

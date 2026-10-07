@@ -1,10 +1,13 @@
+import { matchThresholds } from '@frameflow/shared';
+import { CREATIVES, analysisOf, renderCreative } from '../../server/src/decomposition/templateFamilies/creatives.fixture.js';
+import { fileFamilyStore } from '../../server/src/decomposition/templateFamilies/store.js';
 /** Local-only reviewer fixture: real routes/storage/planner adaptation/import, deterministic providers, no credentials. */
 import express from 'express';
 import { createHash } from 'node:crypto';
 import { referenceCreativeFixture } from '../../server/src/decomposition/referenceCreative.fixture.js';
 import { verboseImageAnalysis } from '../../server/src/decomposition/imageTemplateAnalysis.fixture.js';
 import { createOpenAIImagePromptWriter, referenceForPrompt } from '../../server/src/decomposition/imageTemplates.js';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, cpSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
@@ -17,6 +20,7 @@ import { ALL_PARTS, offerComposite, offerPart, partName, rowFillEdit, type Offer
 import { RESIDUAL_PROMPT } from '../../server/src/decomposition/recursiveDecomposition.js';
 import { SEMANTIC_SCHEMA, type SemanticAnalysis } from '../../server/src/decomposition/semanticPlanner.js';
 import { BANGLE_PARTS, blackSilhouetteEdit, creative, HOLDING_PARTS, partPng } from '../../server/src/decomposition/protectedInteraction.fixture.js';
+import { curationFixture } from '../../server/src/decomposition/curation.fixture.js';
 
 if (process.env.FRAMEFLOW_OFFLINE_E2E !== '1') throw new Error('This fixture requires FRAMEFLOW_OFFLINE_E2E=1.');
 // No SDK transport is used. An accidental fetch fails before it can leave this process.
@@ -25,6 +29,8 @@ const port = Number(process.env.FRAMEFLOW_OFFLINE_PORT ?? 3317), origin = `http:
 const root = mkdtempSync(join(tmpdir(), 'frameflow-image-template-e2e-'));
 
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+const curation = curationFixture(), curationImages = new Set<string>();
+const pixelsDigest = async (bytes: Buffer) => digest(await sharp(bytes).resize(32, 32).removeAlpha().raw().toBuffer());
 const sources = new Map<string, string>(), analysisBehaviors = new Map<string, string>();
 const events: { kind: string; source: string; prompt?: string; size?: string; inputs?: string[] }[] = [];
 const failedPortrait = new Set<string>();
@@ -35,6 +41,10 @@ async function artwork(width: number, height: number, part: 'all' | 'background'
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 1000 1000" preserveAspectRatio="none">${part !== 'phone' ? backdrop : ''}${part !== 'background' ? phone : ''}</svg>`)).png().toBuffer();
 }
 /** Every fake provider request, by provider (fal includes Seedream's uploads, polls and downloads): an action that must spend nothing is checked against it. */
+// Synthetic recorded billing facts, never live provider responses.
+const imageUsage = { input_tokens: 1867, input_tokens_details: { image_tokens: 1178, text_tokens: 689 }, output_tokens: 1755 };
+const plannerUsage = { input_tokens: 3376, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 3373 }, output_tokens: 4835, output_tokens_details: { reasoning_tokens: 1552 } };
+const referenceUsage = { input_tokens: 2616, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1937 };
 const callCounts = { openai: 0, fal: 0, seedream: 0 };
 const generate = async (request: { size: string; prompt: string; image?: File | File[] }) => {
   callCounts.openai++;
@@ -46,7 +56,17 @@ const generate = async (request: { size: string; prompt: string; image?: File | 
   await pause();
   if (request.prompt.includes('Portrait retry test') && request.size === '1216x1520' && !failedPortrait.has(source)) { failedPortrait.add(source); throw new Error('Fixture portrait failure. Retry this size.'); }
   const [width, height] = request.size.split('x').map(Number);
-  return { created: 1, data: [{ b64_json: (await artwork(width, height)).toString('base64') }] };
+  if (request.prompt.includes('Mint phone curation fixture')) {
+    const bytes = await sharp((await curation).source).resize(width, height).png().toBuffer();
+    curationImages.add(await pixelsDigest(bytes));
+    return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
+  }
+  // A layout-family creative headlined "Mega Sale" keeps its family's layout when square; other sizes drift (the default artwork).
+  if (request.prompt.includes('Mega Sale') && width === height) {
+    const bytes = await renderCreative({ ...CREATIVES.iphoneRed, size: width });
+    return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
+  }
+  return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: (await artwork(width, height)).toString('base64') }] };
 };
 const files = new Map<string, Buffer>(), inputs = new Map<string, Buffer>(), results = new Map<string, unknown>();
 // The complex offer creative (recursive decomposition): its first decomposition misses the speaker and power bank and
@@ -70,6 +90,15 @@ const transport: FalTransport = {
     const bytes = inputs.get(String(input.image_url))!, residual = String(input.prompt ?? '').startsWith(RESIDUAL_PROMPT.slice(0, 60));
     const { width = 1024, height = 1024 } = await sharp(bytes).metadata();
     const requestId = `offline-${results.size}`;
+    if (!residual && curationImages.has(await pixelsDigest(bytes))) {
+      providerCalls.push({ kind: 'seedream-initial' });
+      const layers = await Promise.all((await curation).layers.map(async (layer, z_index) => {
+        const url = `https://v3b.fal.media/files/offline/${requestId}-curation-${z_index}.png`;
+        files.set(url, await sharp(layer.png).resize(width, height).png().toBuffer());
+        return { image: { url }, z_index, name: layer.name };
+      }));
+      results.set(requestId, { layers }); return { requestId };
+    }
     if (!residual && digest(bytes) === await complexDigest) {
       providerCalls.push({ kind: 'seedream-initial', complex: true }); complexResidualNext = true;
       results.set(requestId, { layers: await complexLayers(requestId, ALL_PARTS, ALL_PARTS.filter(part => part !== 'speaker' && part !== 'powerBank')) });
@@ -112,15 +141,29 @@ const semanticAnalysis: SemanticAnalysis = { image_type: 'product photograph', s
   ],
   relationships: [{ source: 'lavender_phone', relationship: 'in_front_of', target: 'studio_background' }], ambiguities: [], recommended_layer_count: 2,
   decomposition_strategy: 'Separate the phone from the studio.', downstream_decomposition_prompt: 'Extract the lavender phone as a whole object. Separate the studio background.' };
-const planner = createOpenAIPlanner({ client: { responses: { create: async (request: { text: { format: { schema: unknown } } }) => (callCounts.openai++, { status: 'completed', output: [], output_text: JSON.stringify(request.text.format.schema === SEMANTIC_SCHEMA ? semanticAnalysis : {
-  prompt: 'Extract the lavender phone as a whole object. Separate the studio background.', planned_layers: [{ name: 'Lavender phone', description: 'The main product, in one layer.' }], warnings: [],
-}) }) } } as never });
+const planner = createOpenAIPlanner({ model: 'gpt-5.6-sol', client: { responses: { create: async (request: { text: { format: { schema: unknown } }; input: { content: { image_url?: string }[] }[] }) => {
+  callCounts.openai++;
+  const image = request.input[0].content.find(c => c.image_url)?.image_url;
+  const curated = image && curationImages.has(await pixelsDigest(Buffer.from(image.split(',')[1], 'base64')));
+  return { id: 'offline-planner-request', usage: plannerUsage, status: 'completed', output: [], output_text: JSON.stringify(request.text.format.schema === SEMANTIC_SCHEMA ? curated ? (await curation).semantic : semanticAnalysis : {
+    prompt: 'Extract the lavender phone as a whole object. Separate the studio background.', planned_layers: [{ name: 'Lavender phone', description: 'The main product, in one layer.' }], warnings: [],
+  }) };
+} } } as never });
+const familyStore = fileFamilyStore(join(root, 'families'));
+const familyAnswers = new Map<string, ReturnType<typeof analysisOf>>();
+const structureCalls: string[] = [];
 const router = createLayerizeRouter({
+  families: { store: familyStore, thresholds: matchThresholds(), planners: () => ({ cheap: { model: 'gpt-5.6-luna', tier: 'cheap', analyze: async (image) => {
+    structureCalls.push('cheap');
+    const analysis = familyAnswers.get(digest(image));
+    if (!analysis) throw new Error('Unknown family fixture');
+    return { analysis, tier: 'cheap', model: 'gpt-5.6-luna', durationMs: 1, request: { model: 'gpt-5.6-luna' }, raw: { model: 'gpt-5.6-luna', usage: referenceUsage }, usage: referenceUsage };
+  } }, strong: { model: 'gpt-5.6-sol', tier: 'strong', analyze: async () => { structureCalls.push('strong'); throw new Error('Unexpected fixture escalation'); } } }) },
   runsDir: join(root, 'runs'), imageTemplatesDir: join(root, 'templates'),
   generationDirs: { 'template-a': join(root, 'a'), 'template-b': join(root, 'b'), 'template-c': join(root, 'c') },
   access: { production: true, clientOrigin: origin },
   generation: (): GenerationConfig => ({ model: 'gpt-image-2', client: () => ({ images: { generate: async () => { throw new Error('Image templates must use images.edit.'); }, edit: generate } }) as unknown as ReturnType<GenerationConfig['client']> }),
-  imagePrompt: () => createOpenAIImagePromptWriter({ model: 'offline-prompt-fixture', client: { responses: { create: async (request: { input: { content: { image_url?: string }[] }[] }) => {
+  imagePrompt: () => createOpenAIImagePromptWriter({ model: 'gpt-5-mini', client: { responses: { create: async (request: { input: { content: { image_url?: string }[] }[] }) => {
     callCounts.openai++; await pause();
     const image = request.input[0].content.find(item => item.image_url)!.image_url!;
     const input = Buffer.from(image.split(',')[1], 'base64');
@@ -128,9 +171,9 @@ const router = createLayerizeRouter({
     events.push({ kind: 'analysis', source });
     if (analysisBehaviors.get(source) === 'fail' && events.filter(e => e.source === source && e.kind === 'analysis').length === 1) throw new Error('Fixture analysis failure');
     const { width } = await sharp(input).metadata();
-    if (width === 600) return { id: 'offline-reference-analysis', status: 'completed', output: [], output_text: JSON.stringify(referenceCreativeFixture) };
+    if (width === 600) return { id: 'offline-reference-analysis', usage: referenceUsage, status: 'completed', output: [], output_text: JSON.stringify(referenceCreativeFixture) };
     const characters = width === 900 ? 3344 : 4002;
-    return { id: `offline-analysis-${characters}`, status: 'completed', output: [], output_text: JSON.stringify(verboseImageAnalysis(characters)) };
+    return { id: `offline-analysis-${characters}`, usage: referenceUsage, status: 'completed', output: [], output_text: JSON.stringify(verboseImageAnalysis(characters)) };
   } } } as never }),
   // The clean-background edit: a local row fill (exact for the complex offer's vertical gradient); never a network call.
   deps: () => ({ planner, transport: () => transport, backgroundReconstructor: { model: 'offline-image-edit', reconstruct: async ({ image, mask }) => {
@@ -141,6 +184,19 @@ const router = createLayerizeRouter({
 });
 // Explicit empty configuration: no environment credentials or .env files are read.
 const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router);
+// Clone a persisted fake run into a billing-unknown failure; this route exists ONLY in the offline fixture.
+app.post('/__test__/dashboard-failure/:id', (req, res) => {
+  if (!/^[0-9TZa-f-]+$/.test(req.params.id)) return void res.status(400).end();
+  const original = join(root, 'runs', req.params.id), id = '2026-10-08T00-00-00-000Z-abcdef', dir = join(root, 'runs', id);
+  cpSync(original, dir, { recursive: true });
+  const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+  Object.assign(run, { id, stage: 'failed', createdAt: '2026-10-08T00:00:00Z', updatedAt: '2026-10-08T00:01:00Z',
+    error: { code: 'PROVIDER_DECOMPOSITION_REJECTED', stage: 'queued', message: 'Offline technical failure details' }, layers: [], outputLayers: [], editorLayerFiles: [] });
+  delete run.refinement; delete run.layerCount;
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  for (const file of ['seedream-response.json', 'raw-layers.json']) rmSync(join(dir, file), { force: true });
+  res.json({ id });
+});
 app.get('/__test__/complex-offer.png', async (_req, res) => res.type('png').send(await offerComposite()));
 app.get('/__test__/holding-phone.png', async (_req, res) => res.type('png').send(await creative(HOLDING_PARTS)));
 app.get('/__test__/bangles.png', async (_req, res) => res.type('png').send(await creative(BANGLE_PARTS)));
@@ -164,6 +220,15 @@ app.get('/__test__/background-check', async (req, res) => {
   }
   res.json({ file: run.outputLayers[0].file, area, matchShare: Math.round(1000 * match / Math.max(1, area)) / 1000, black });
 });
+app.get('/__test__/family/:creative', async (req, res) => {
+  const spec = CREATIVES[req.params.creative as keyof typeof CREATIVES];
+  if (!spec) return void res.status(404).end();
+  const bytes = await renderCreative(spec); familyAnswers.set(digest(bytes), analysisOf(spec));
+  res.type('png').send(bytes);
+});
+app.get('/__test__/family-calls', (_req, res) => res.json({ structure: structureCalls, liveProviders: 0 }));
+// Test-only activation simulates a previously validated family; the core suite tests the real activation gate.
+app.post('/__test__/family-active/:id', (req, res) => { familyStore.update(req.params.id, f => { f.status = 'active'; }); res.json({ ok: true }); });
 app.get('/__test__/provider-calls', (_req, res) => res.json(providerCalls));
 app.get('/__test__/call-counts', (_req, res) => res.json(callCounts));
 app.get('/__test__/reference-events', (req, res) => res.json(events.filter(event => event.source === String(req.query.source))));

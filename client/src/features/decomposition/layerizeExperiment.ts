@@ -1,4 +1,5 @@
-import { CANVAS_LIMITS, validateCanvasSize, type DesignLayer, type DesignVariant } from '@frameflow/shared';
+import type { TemplateReuseRecord } from '@frameflow/shared';
+import { CANVAS_LIMITS, validateCanvasSize, type RunDiagnostics, type DesignLayer, type DesignVariant } from '@frameflow/shared';
 
 /** Mirrors the server's run.json for the OpenAI → Seedream layerize experiment (server/src/decomposition/layerizeExperiment.ts). */
 export type Placement = { kind: 'base' | 'full-canvas' | 'bbox-crop' | 'bbox-scaled' | 'unresolved'; x: number; y: number; width: number; height: number; reason?: string };
@@ -27,6 +28,11 @@ export type CleanBackgroundMethod = 'provider-base' | 'scene-composite' | 'plain
 /** Server LayerPlan (layerUsefulness.ts): the editor's meaningful layers by category, and every layer left out and why. */
 export type LayerPlan = { screenedLayers: number; editableLayers: number; byCategory: Record<string, number>; backgroundKind?: 'plain' | 'graphic' | 'scene';
   dropped: { file: string; name?: string; category: string; reason?: string; detail: string; action?: 'fold' | 'remove' }[] };
+/** Server curation decision record, also retained in layers.json and decomposition-debug.json. */
+export type CurationRecord = { complexity: string; budget: { min: number; max: number }; overBudget: boolean; editorLayerFiles: string[];
+  counts: { providerLayers: number; rawLayers: number; editorLayers: number; merged: number; background: number; internal: number; dropped: number };
+  entries: { file: string; name?: string; source: string; category?: string; disposition: 'editor' | 'merge' | 'background' | 'internal' | 'drop'; editorVisible: boolean;
+    usefulnessScore: number; qualityScore: number; reasons: string[]; mergedInto?: string; areaPercent?: number; meanAlpha?: number }[] };
 /** Server BackgroundQuality (backgroundRecovery.ts): whether the area behind the removed foreground is a usable continuation. */
 export type BackgroundQualityInfo = { quality: 'usable' | 'degraded' | 'failed'; reasons: string[]; metrics: Record<string, number | undefined> };
 /** Server CallCounts (recursiveDecomposition.ts): every provider request a refined run sent, counted when sent. */
@@ -43,6 +49,7 @@ export type Refinement = {
     candidates?: { method: CleanBackgroundMethod; quality: BackgroundQualityInfo['quality']; reasons: string[]; chosen: boolean }[]; fallbackUsed?: boolean; aiTried?: boolean; outsideMaskChangedPercent?: number;
     shadow?: { percent: number; note: string } };
   layerPlan?: LayerPlan;
+  curation?: CurationRecord;
   fidelity?: { before: { meanAbsDiff: number }; after: { meanAbsDiff: number } };
   warnings: string[]; error?: string };
 /** Server LayerCount (layerCount.ts): the exact output layer count applied locally after Seedream. */
@@ -125,13 +132,15 @@ export type PromptMode = 'generated' | 'template';
  */
 export type ProviderFailure = { code: string; status: number; messages: { msg: string; type?: string; loc?: string; reason?: string }[]; billableUnits?: string; requestId?: string; bodyFile?: string };
 export type ExperimentRun = {
-  id: string; stage: string; active?: boolean; createdAt: string;
+  id: string; stage: string; active?: boolean; createdAt: string; updatedAt?: string;
   /** Which template the run belongs to; absent on older runs (Template A). */
+  templateReuse?: TemplateReuseRecord;
   templateKey?: string;
   /** Absent on runs created before template prompts existed; those generated their prompt. */
   promptSource?: { mode: 'generated' } | ({ mode: 'template' } & SavedTemplatePrompt)
     | { mode: 'retry'; fromRunId: string; providerPrompt?: 'current' | 'auto'; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
-    | { mode: 'automatic'; retryOf?: string };
+    | { mode: 'automatic'; retryOf?: string }
+    | { mode: 'blueprint'; familyId: string; familyName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] };
   /** "Separate held object from subject" (Template A); absent on older runs, which all separated it, and on Template B runs. */
   separateHeldObject?: boolean;
   /** The template's own options (Template B: separateTouchingIndependentObjects); absent for Template A. */
@@ -141,7 +150,7 @@ export type ExperimentRun = {
   /** The user ran it anyway, without the fit check. */
   skipFitCheck?: boolean;
   /** Where the image came from when not an upload: a template's test generation (the creative's group) and, since creatives have aspect-ratio variants, which variant. */
-  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation'; generationId: string; variantId?: string; aspectRatio?: string };
+  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation' | 'image-template'; generationId: string; variantId?: string; aspectRatio?: string };
   /** The exact prompt sent to Seedream after held-object grouping; absent on older runs. */
   finalPrompt?: string;
   /** Suggested and target output layer count; absent on older runs. */
@@ -156,6 +165,7 @@ export type ExperimentRun = {
   canvas?: { width: number; height: number }; layers?: ExperimentLayer[]; outputLayers?: ExperimentLayer[]; layerCount?: LayerCount; warnings: string[];
   /** The recursive refinement (residual passes and a clean background); absent on runs made without it. */
   refinement?: Refinement;
+  editorLayerFiles?: string[];
   /** Refined runs: every provider request sent, by kind. */
   calls?: CallCounts;
   /** Image-aware and refined runs: people and interactions kept intact (worn ornaments, finger fragments, held objects). */
@@ -185,7 +195,7 @@ export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls
 const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'scene-clean': 'Clean background', 'continued-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
 
 /** The prompt this run sent (or will send) to Seedream, with its planned layers and warnings. */
-export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' ? run.promptSource : run.planner;
+export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' || run.promptSource?.mode === 'blueprint' ? run.promptSource : run.planner;
 
 const BASE = '/api/layerize-experiment';
 export const experimentFileUrl = (runId: string, file: string) => `${BASE}/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(file)}`;
@@ -198,6 +208,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 export const experimentApi = {
+  diagnostics: (id: string) => call<RunDiagnostics>(`/runs/${encodeURIComponent(id)}/diagnostics`),
   list: () => call<{ active: string | null; runs: ExperimentRun[] }>('/runs'),
   get: (id: string) => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}`),
   /** templateOptions: the selected template's own options (Template B); omitted for templates without them. */
@@ -234,8 +245,17 @@ type Assets = { putAsset(id: string, blob: Blob): Promise<unknown>; deleteAsset(
  * never stretched. Coordinates are scaled uniformly only if the base exceeds the editor canvas limit. Assets are stored
  * first; on failure they are removed and nothing is added.
  */
-export async function experimentToVariant(run: Pick<ExperimentRun, 'id' | 'canvas' | 'layers' | 'outputLayers'>, fetchFile: (file: string) => Promise<Blob>, assets: Assets, newId: () => string = () => crypto.randomUUID()): Promise<DesignVariant> {
+export function editorLayersOf(run: Pick<ExperimentRun, 'layers' | 'outputLayers' | 'editorLayerFiles'>): ExperimentLayer[] | undefined {
   const source = run.outputLayers ?? run.layers;
+  if (run.editorLayerFiles === undefined) return source; // Legacy stored runs predate server curation.
+  const byFile = new Map(source?.map(layer => [layer.file, layer]));
+  if (!run.editorLayerFiles.length || new Set(run.editorLayerFiles).size !== run.editorLayerFiles.length || run.editorLayerFiles.some(file => !byFile.has(file) || byFile.get(file)!.placement.kind === 'unresolved'))
+    throw new Error('This run has no complete curated editor selection. Resume it from its saved assets.');
+  return run.editorLayerFiles.map(file => byFile.get(file)!);
+}
+
+export async function experimentToVariant(run: Pick<ExperimentRun, 'id' | 'canvas' | 'layers' | 'outputLayers' | 'editorLayerFiles'>, fetchFile: (file: string) => Promise<Blob>, assets: Assets, newId: () => string = () => crypto.randomUUID()): Promise<DesignVariant> {
+  const source = editorLayersOf(run);
   if (!run.canvas || !source?.length) throw new Error('This run has no layers yet.');
   const scale = Math.min(1, CANVAS_LIMITS.maxSide / run.canvas.width, CANVAS_LIMITS.maxSide / run.canvas.height, Math.sqrt(CANVAS_LIMITS.maxArea / (run.canvas.width * run.canvas.height)));
   const width = Math.floor(run.canvas.width * scale), height = Math.floor(run.canvas.height * scale);

@@ -19,9 +19,11 @@ test('reviewer journey through real routes: reference → editable prompt → se
   await expect(page.getByRole('button', { name: 'Image to layers', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await panel.getByRole('button', { name: 'Create Template from Image' }).click();
   const dialog = page.getByRole('dialog', { name: 'Create Template from Image' });
   await dialog.getByRole('button', { name: 'New template' }).click();
+  await dialog.getByLabel('Legacy prompt workflow').check();
   const name = `Lavender launch ${testInfo.project.name}`;
   await dialog.getByLabel('Template name').fill(name);
   const reference = await request.get('/__test__/reference.png');
@@ -80,11 +82,13 @@ test('verbose structured analysis succeeds for independent named groups and expl
   page.on('dialog', dialog => void dialog.accept());
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await page.getByRole('button', { name: 'Create Template from Image', exact: true }).click();
   const d = page.getByRole('dialog', { name: 'Create Template from Image' });
   const names: string[] = [];
   for (const length of [3344, 4002]) {
     await d.getByRole('button', { name: 'New template' }).click();
+    await d.getByLabel('Legacy prompt workflow').check();
     const name = `Structured ${length} ${testInfo.project.name}`; names.push(name);
     await d.getByLabel('Template name').fill(name);
     const image = await request.get(`/__test__/reference.png?analysis=${length}`);
@@ -116,9 +120,11 @@ test('corrupt upload fails before analysis and creates no template group', async
   await page.route(url => /^https?:$/.test(url.protocol) && url.hostname !== '127.0.0.1', route => route.abort());
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await page.getByRole('button', { name: 'Create Template from Image', exact: true }).click();
   const d = page.getByRole('dialog', { name: 'Create Template from Image' });
   await d.getByRole('button', { name: 'New template' }).click();
+    await d.getByLabel('Legacy prompt workflow').check();
   const name = `Invalid upload ${testInfo.project.name}`;
   await d.getByLabel('Template name').fill(name);
   await d.getByLabel('Reference image', { exact: true }).setInputFiles({ name: 'corrupt.png', mimeType: 'image/png', buffer: Buffer.from('not a PNG') });

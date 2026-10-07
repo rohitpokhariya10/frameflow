@@ -56,9 +56,13 @@ export function interactionKind(layer: LayerInfo, shape: LayerShape, grid: Grid,
   const boxShare = box ? boxArea(box) / n : 0;
   const fullSolid = !!box && box.x1 - box.x0 >= 0.9 * grid.width && box.y1 - box.y0 >= 0.9 * grid.height && shape.count / n >= 0.6;
   const name = idWords(layer.name ?? (element ? `${element.id} ${element.type}` : layer.description ?? '')), role = posterRole(layer);
+  const semanticType = idWords(layer.semantic?.type ?? element?.type ?? '');
+  if (isSemanticText(layer) || /\b(?:cta|badge)\b/i.test(semanticType)) return 'text';
+  if (PERSON.test(semanticType)) return 'person';
+  if (/\bproduct\b/i.test(semanticType)) return 'object';
   const sceneNamed = !!backgroundRole(layer.name) || role === 'background' || role === 'backdrop' || role === 'border';
   const largeScene = SCENE.test(name) && (shape.count / n >= 0.15 || boxShare >= 0.5) && !PERSON.test(name) && !TEXTISH.test(name) && role !== 'product' && role !== 'text';
-  if (fullSolid || (sceneNamed && boxShare >= 0.5) || largeScene) return 'scene';
+  if ((fullSolid && !PERSON.test(name) && !TEXTISH.test(name) && role !== 'product') || (sceneNamed && boxShare >= 0.5) || largeScene) return 'scene';
   if (TEXTISH.test(name) || role === 'text') return 'text';
   if (EFFECT.test(name)) return 'decor';
   if (FRAGMENT.test(name)) return 'fragment';
@@ -71,8 +75,8 @@ export function interactionKind(layer: LayerInfo, shape: LayerShape, grid: Grid,
  * A shadow or stain layer, not a subject: the head of its name ("Soft cast shadow of the man", not "Woman with shadow")
  * names one, and its pixels are translucent or dark (a person or product is neither). `rgba` on a grid of `n` pixels.
  */
-export function isShadowLayer(layer: Pick<LayerInfo, 'name'>, rgba: Buffer, n: number): boolean {
-  if (!SHADOW.test(idWords(head(layer.name ?? '')))) return false;
+export function isShadowLayer(layer: Pick<LayerInfo, 'name' | 'semantic'>, rgba: Buffer, n: number): boolean {
+  if (!shadowNamed(layer)) return false;
   let count = 0, alpha = 0, lum = 0;
   for (let i = 0; i < n; i++) {
     const a = rgba[i * 4 + 3];
@@ -81,6 +85,21 @@ export function isShadowLayer(layer: Pick<LayerInfo, 'name'>, rgba: Buffer, n: n
   }
   return count > 0 && (alpha / count <= 0.9 * 255 || lum / alpha <= 80);
 }
+
+/** A layer whose name says it is a shadow or stain (the head of the name: "Soft cast shadow of the man", not "Woman with shadow"). */
+export const shadowNamed = (layer: Pick<LayerInfo, 'name' | 'semantic'>) => {
+  const type = idWords(layer.semantic?.type ?? '');
+  if (!SHADOW.test(type) && (PERSON.test(type) || TEXTISH.test(type) || /\b(?:product|badge|cta)\b/i.test(type))) return false;
+  return SHADOW.test(idWords(head(layer.name ?? '')));
+};
+/** A text effect returned as a layer: its name says text, and its head an effect ("Headline glow", "Glow behind the title"; not "Headline text with drop shadow"). */
+const TEXT_EFFECT_WORDS = /\b(?:effects?|glows?|outlines?|strokes?|shadows?|extrusions?|extruded|bevel\w*|emboss\w*|backing|offset|3d)\b/i;
+export const isSemanticText = (layer: Pick<LayerInfo, 'semantic'>) => !!layer.semantic && TEXTISH.test(idWords(layer.semantic.type)) && !TEXT_EFFECT_WORDS.test(idWords(layer.semantic.type));
+export const isTextEffectLayer = (layer: Pick<LayerInfo, 'name' | 'semantic'>) => !isSemanticText(layer) && (
+  layer.semantic ? TEXT_EFFECT_WORDS.test(idWords(layer.semantic.type)) && TEXTISH.test(idWords(`${layer.semantic.id} ${layer.semantic.type}`))
+    : TEXTISH.test(idWords(layer.name ?? '')) && TEXT_EFFECT_WORDS.test(idWords(head(layer.name ?? ''))));
+/** The words of a name that name a thing (not a shadow or how it looks): "Translucent oversized-phone shadow" → oversized, phone. */
+export const thingWords = (name: string) => new Set(idWords(name).toLowerCase().match(/\p{L}{3,}/gu)?.filter(w => !/^(?:shadows?|stains?|smudges?|cast|soft|translucent|drop|contact|floor|ground|dark|light|subtle|large|small|glows?|outlines?|strokes?|effect|text|layer|the|and|with)$/.test(w)) ?? []);
 
 /** Planned elements matched to provider layers by the words they share (each element at most once). */
 function matchElements(entries: InteractionEntry[], semantic?: SemanticAnalysis): Map<InteractionEntry, SemanticElement> {
@@ -91,6 +110,15 @@ function matchElements(entries: InteractionEntry[], semantic?: SemanticAnalysis)
   const used = new Set<SemanticElement>();
   for (const pair of pairs.sort((a, b) => b.score - a.score)) {
     if (pair.score < 0.15 || out.has(pair.entry) || used.has(pair.element)) continue;
+    // "Shadow of the woman" can share more words with the planned woman than her actual layer does. Give that
+    // identity to a plausible subject layer first. A real "Shadow" product remains eligible when no such alternative
+    // exists, or when the planned identity itself names Shadow.
+    if (SHADOW.test(idWords(head(pair.entry.layer.name ?? ''))) && !SHADOW.test(idWords(`${pair.element.id} ${pair.element.type}`))
+      && pairs.some(other => other.element === pair.element && other.entry !== pair.entry && other.score >= 0.15
+        && !out.has(other.entry) && !SHADOW.test(idWords(head(other.entry.layer.name ?? ''))))) continue;
+    // A headline naming a product is still text (e.g. "BANGLES OF INDIA"); do not let one shared product word give it
+    // a product's semantic identity. Generic provider names can still be reconciled through their descriptions.
+    if (TEXTISH.test(idWords(pair.entry.layer.name ?? '')) && !TEXTISH.test(idWords(`${pair.element.type} ${pair.element.id}`)) && !/\b(?:badge|cta)\b/i.test(pair.element.type)) continue;
     out.set(pair.entry, pair.element); used.add(pair.element);
   }
   return out;
@@ -104,6 +132,7 @@ function matchElements(entries: InteractionEntry[], semantic?: SemanticAnalysis)
 export async function groupInteractions(input: { dir: string; canvas: Canvas; grid: Grid; entries: InteractionEntry[]; original?: Buffer; semantic?: SemanticAnalysis; options: InteractionOptions }): Promise<{ entries: InteractionEntry[]; groups: { entry: InteractionEntry; members: InteractionEntry[] }[]; record: InteractionRecord }> {
   const { grid, entries } = input, n = grid.width * grid.height, reach = Math.max(2, Math.round(0.01 * Math.max(grid.width, grid.height)));
   const elements = matchElements(entries, input.semantic);
+  for (const [entry, element] of elements) entry.layer.semantic = { id: element.id, type: element.type, editableIndependently: element.editable_independently };
   const kinds = new Map(entries.map(e => [e, interactionKind(e.layer, e.shape, grid, elements.get(e))]));
   const grownCache = new Map<InteractionEntry, Uint8Array>();
   const grown = (e: InteractionEntry) => { let g = grownCache.get(e); if (!g) { g = grow(e.shape.alpha, grid.width, grid.height, reach); grownCache.set(e, g); } return g; };
@@ -178,17 +207,33 @@ export async function groupInteractions(input: { dir: string; canvas: Canvas; gr
     if (person) attach(w, person, 'worn_ornament', 'worn on the person (touches them and sits within or across them); kept with the wearer');
     else decisions.push({ decision: 'kept-separate', role: 'standalone_ornament', file: w.layer.file, ...(w.layer.name ? { name: w.layer.name } : {}), reason: 'no person wears it: a standalone item' });
   }
-  // 4b. A cast shadow goes with the subject it touches (a person before an object), so it moves and hides with it and
-  // the clean background is rebuilt where it was. Shadows are soft: their contact is measured on every visible pixel.
-  const shadows = new Set(entries.filter(e => !['scene', 'text'].includes(kinds.get(e)!) && isShadowLayer(e.layer, e.shape.rgba, n)));
-  for (const s of shadows) {
+  // 4b. A cast shadow goes with the subject it touches, so it moves and hides with it and the clean background is rebuilt
+  // where it was. A layer named as a shadow is one when it looks like one (translucent or dark) or when it is small next
+  // to the subject it touches (providers render "translucent" shadows as opaque mid-tones). It joins the subject its name
+  // refers to ("oversized phone shadow" → the phone), else a person, else the one it touches most. Shadows are soft:
+  // their contact is measured on every visible pixel.
+  const shadows = new Set<InteractionEntry>();
+  for (const s of entries.filter(e => !['scene', 'text'].includes(kinds.get(e)!) && shadowNamed(e.layer))) {
     if (!free(s)) continue;
     const soft = new Uint8Array(n);
     for (let i = 0; i < n; i++) if (s.shape.rgba[i * 4 + 3] > 16) soft[i] = 1;
-    const owner = entries.filter(o => o !== s && !shadows.has(o) && ['person', 'object', 'ornament'].includes(kinds.get(o)!) && o.shape.count > 0)
-      .map(o => ({ o, c: intersectCount(soft, grown(o)), person: kinds.get(o) === 'person' ? 1 : 0 })).filter(x => x.c >= Math.max(4, 0.02 * countOf(soft)))
-      .sort((a, b) => b.person - a.person || b.c - a.c)[0]?.o;
+    const area = countOf(soft), looksLike = isShadowLayer(s.layer, s.shape.rgba, n), own = thingWords(s.layer.name ?? '');
+    const owner = entries.filter(o => o !== s && !shadowNamed(o.layer) && ['person', 'object', 'ornament'].includes(kinds.get(o)!) && o.shape.count > 0 && (looksLike || o.shape.count >= 2.5 * area))
+      .map(o => ({ o, c: intersectCount(soft, grown(o)), named: [...thingWords(o.layer.name ?? '')].filter(w => own.has(w)).length, person: kinds.get(o) === 'person' ? 1 : 0 }))
+      .filter(x => x.c >= Math.max(4, 0.02 * area)).sort((a, b) => b.named - a.named || b.person - a.person || b.c - a.c)[0]?.o;
+    if (looksLike || owner) shadows.add(s);
     if (owner) attach(s, owner, 'cast_shadow', `its cast shadow; kept with ${owner.layer.name ?? owner.layer.file} so it moves and hides with it and leaves no ghost`);
+  }
+  // 4c. A text effect returned as its own layer (a headline's glow, outline, shadow or extrusion) joins the text it
+  // belongs to: the text it overlaps or touches most, the one its name shares words with first.
+  const texts = entries.filter(e => kinds.get(e) === 'text' && !isTextEffectLayer(e.layer) && e.shape.count > 0);
+  for (const fx of entries.filter(e => free(e) && isTextEffectLayer(e.layer))) {
+    const soft = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (fx.shape.rgba[i * 4 + 3] > 16) soft[i] = 1;
+    const own = thingWords(fx.layer.name ?? '');
+    const text = texts.filter(t => t !== fx).map(t => ({ t, c: intersectCount(soft, grown(t)), named: [...thingWords(t.layer.name ?? '')].filter(w => own.has(w)).length }))
+      .filter(x => x.c >= Math.max(4, 0.05 * countOf(soft))).sort((a, b) => b.named - a.named || b.c - a.c)[0]?.t;
+    if (text) attach(fx, text, 'text_effect', `the ${fx.layer.name ?? 'effect'} of ${text.layer.name ?? text.layer.file}; one text layer with its effect`);
   }
   // 5. Tiny attached pieces go into the layer they sit in.
   for (const e of entries.filter(e => ['object', 'decor', 'fragment', 'ornament'].includes(kinds.get(e)!) && free(e) && e.shape.count > 0 && e.shape.count / n < 0.0015)) {
@@ -196,8 +241,8 @@ export async function groupInteractions(input: { dir: string; canvas: Canvas; gr
       .sort((a, b) => a.shape.count - b.shape.count)[0];
     if (container) attach(e, container, 'attached_fragment', `tiny piece (${round(100 * e.shape.count / n)}% of the canvas) inside ${container.layer.name ?? container.layer.file}`);
   }
-  // 6. Three or more tiny scattered decorations become one decoration group.
-  const tinyDecor = entries.filter(e => kinds.get(e) === 'decor' && free(e) && !shadows.has(e) && e.shape.count > 0 && e.shape.count / n < 0.003 && !entries.some(x => parentOf.get(x) === e));
+  // 6. Three or more small scattered decorations (sparkles, confetti, stars) become one decoration group.
+  const tinyDecor = entries.filter(e => kinds.get(e) === 'decor' && free(e) && !shadows.has(e) && !isTextEffectLayer(e.layer) && e.shape.count > 0 && e.shape.count / n < 0.006 && !entries.some(x => parentOf.get(x) === e));
   if (tinyDecor.length >= 3) {
     const lead = [...tinyDecor].sort((a, b) => b.shape.count - a.shape.count)[0];
     for (const e of tinyDecor) if (e !== lead) attach(e, lead, 'decoration', 'small scattered decoration, grouped with the others');
@@ -239,7 +284,7 @@ export async function groupInteractions(input: { dir: string; canvas: Canvas; gr
     const layer: LayerInfo = { index: root.layer.index, file, zIndex, name: name.length > 100 ? `${name.slice(0, 99)}…` : name,
       description: protectedInteraction ? 'Kept together so the hand and what it holds stay intact.' : `Kept together: ${grouping.attachmentReason}.`,
       pixelWidth: full.width, pixelHeight: full.height, opaquePercent: round(100 * opaque / (full.width * full.height), 1),
-      placement: { kind: 'full-canvas', x: 0, y: 0, width: full.width, height: full.height }, grouping };
+      placement: { kind: 'full-canvas', x: 0, y: 0, width: full.width, height: full.height }, grouping, ...(root.layer.semantic ? { semantic: root.layer.semantic } : {}) };
     groups.push({ entry: { layer, png, shape: await layerShape(png, layer, grid) }, members: all });
   }
   const grouped = new Set(groups.flatMap(g => g.members));

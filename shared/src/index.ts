@@ -197,3 +197,5 @@ export * from './designTemplates/premiumAssets.js';
 export * from './designTemplates/premiumLayouts.js';
 
 export * from './referenceCreative.js';
+export * from './aiPricing.js';
+export * from './templateFamilies/index.js';

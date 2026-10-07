@@ -26,6 +26,7 @@ const dialogOf = (page: Page) => page.getByRole('dialog', { name: 'Create Templa
 /** The dialog again, on this template (other specs add templates to the shared server, so never just the newest). */
 async function openDialog(page: Page, name: string) {
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await page.getByRole('dialog', { name: 'OpenAI + Seedream test' }).getByRole('button', { name: 'Create Template from Image' }).click();
   await dialogOf(page).getByRole('complementary', { name: 'Your templates' }).getByRole('button').filter({ hasText: name }).click();
   await expect(dialogOf(page).getByRole('heading', { name, exact: true })).toBeVisible();
@@ -33,9 +34,11 @@ async function openDialog(page: Page, name: string) {
 /** A template in 1:1, 4:5 and 16:9, generated and decomposed through the real routes (fake providers). */
 async function decomposedTemplate(page: Page, request: APIRequestContext, name: string) {
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await page.getByRole('dialog', { name: 'OpenAI + Seedream test' }).getByRole('button', { name: 'Create Template from Image' }).click();
   const dialog = dialogOf(page);
   await dialog.getByRole('button', { name: 'New template' }).click();
+  await dialog.getByLabel('Legacy prompt workflow').check();
   await dialog.getByLabel('Template name').fill(name);
   await dialog.getByLabel('Reference image', { exact: true }).setInputFiles({ name: 'mom-and-child.png', mimeType: 'image/png', buffer: await (await request.get('/__test__/reference.png')).body() });
   await dialog.getByRole('button', { name: 'Generate prompt from image' }).click();

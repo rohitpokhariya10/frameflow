@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { createApp, readConfig } from '../app.js';
 import { readDecompositionConfig } from './config.js';
 import type { GenerationConfig, GenerationGroup } from './generationGroups.js';
-import type { RunnerDeps } from './layerizeExperiment.js';
+import { createRun, type RunnerDeps } from './layerizeExperiment.js';
 import { createLayerizeRouter, layerizeExperimentEnabled, type ExperimentAccess } from './layerizeRouter.js';
 import { createDecompositionRouter } from './router.js';
 
@@ -42,8 +42,8 @@ const providers = () => {
  * The app as server/src/index.ts builds it: the experiment is mounted only when its flag says so. `access` is who the
  * experiment answers (default: production, behind a proxy, for the deployed app's origin).
  */
-async function app(env: Record<string, string | undefined>, access: ExperimentAccess = PRODUCTION) {
-  const fakes = providers(), root = mkdtempSync(join(tmpdir(), 'layerize-access-'));
+async function app(env: Record<string, string | undefined>, access: ExperimentAccess = PRODUCTION, existingRoot?: string) {
+  const fakes = providers(), root = existingRoot ?? mkdtempSync(join(tmpdir(), 'layerize-access-'));
   const dirs = { 'template-a': join(root, 'a'), 'template-b': join(root, 'b'), 'template-c': join(root, 'c') };
   const experiment = layerizeExperimentEnabled(env) ? createLayerizeRouter({ runsDir: join(root, 'runs'), deps: fakes.deps, generation: fakes.generation, generationsDir: dirs['template-a'], generationDirs: dirs, access,
     imageTemplatesDir: join(root, 'image-templates'), imagePrompt: () => ({ model: 'fake', describe: async () => { throw new Error('No prompt calls in access tests.'); } }) }) : undefined;
@@ -205,4 +205,29 @@ describe('local development is as it was', () => {
       expect((await s.call('POST', '/api/layerize-experiment/template-b/groups', { ...PROXIED, Origin: 'http://localhost:5173' }, { fields: {} })).status).toBe(400);
     } finally { s.server.close(); }
   });
+});
+
+
+it('saved diagnostics inherit origin checks and survive a fresh server without provider activity', async () => {
+  const env = { NODE_ENV: 'production', LAYERIZE_EXPERIMENT: '1' };
+  const first = await app(env);
+  const bytes = await sharp({ create: { width: 512, height: 512, channels: 3, background: '#ffffff' } }).png().toBuffer();
+  const { dir, run } = await createRun(join(first.root, 'runs'), bytes);
+  writeFileSync(join(dir, 'run.json'), JSON.stringify({ ...run, stage: 'failed', error: { code: 'PLANNER_INVALID_JSON', stage: 'planning', message: 'Offline fixture' },
+    calls: { planner: 1, fitCheck: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 } }));
+  writeFileSync(join(dir, 'openai-response.json'), JSON.stringify({ model: 'gpt-5-mini', usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 100 } }));
+  const path = `/api/layerize-experiment/runs/${run.id}/diagnostics`;
+  let saved: unknown;
+  try {
+    expect(await first.call('GET', path, PROXIED)).toMatchObject({ status: 403, body: { error: { code: 'ORIGIN_DENIED' } } });
+    const response = await first.call('GET', path, READ);
+    expect(response).toMatchObject({ status: 200, body: { calls: 1, total: { confidence: 'Calculated', inr: 0.0405 } } });
+    saved = response.body;
+    expect(first.fakes.planner).not.toHaveBeenCalled(); expect(first.fakes.image).not.toHaveBeenCalled();
+  } finally { await new Promise<void>(done => first.server.close(() => done())); }
+  const second = await app(env, PRODUCTION, first.root);
+  try {
+    expect((await second.call('GET', path, READ)).body).toEqual(saved);
+    expect(second.fakes.planner).not.toHaveBeenCalled(); expect(second.fakes.image).not.toHaveBeenCalled();
+  } finally { await new Promise<void>(done => second.server.close(() => done())); }
 });

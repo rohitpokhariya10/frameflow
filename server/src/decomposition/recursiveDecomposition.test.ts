@@ -115,6 +115,10 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     for (const file of ['layers.json', 'contact-sheet.png', 'reconstructed.png', 'clean-background.png', 'foreground-mask.png', 'residual-pass-1.png', 'residual-pass-2.png', 'decomposition-debug.json']) expect(existsSync(join(s.dir, file)), file).toBe(true);
     expect(run.outputLayers!.map(({ sources, ...layer }) => { expect(sources).toEqual([layer.file]); return layer; })).toEqual(run.layers);
     const debug = JSON.parse(readFileSync(join(s.dir, 'decomposition-debug.json'), 'utf8'));
+    expect(debug.rawLayers).toHaveLength(13); // Includes BOTH provider bases and both rejected residual duplicates.
+    expect(debug.curation.entries.find((e: { file: string }) => e.file === 'pass-1-layer-00.png')).toMatchObject({ disposition: 'internal', editorVisible: false });
+    expect(debug.curation.entries.find((e: { file: string }) => e.file === 'pass-1-layer-04.png')).toMatchObject({ disposition: 'drop', editorVisible: false });
+    expect(debug.editorLayerFiles).toEqual(run.outputLayers!.map(l => l.file));
     expect(debug.callSummary).toEqual(['Template fit check (OpenAI): 0', 'Planner (OpenAI): 1', 'Initial layerize (Seedream): 1', 'Residual layerize (Seedream): 1', 'Background reconstruction (OpenAI image edit): 0']);
     // Every layer is a real element of the creative: nothing is left out.
     expect(run.refinement!.layerPlan).toMatchObject({ editableLayers: 10, dropped: [] });

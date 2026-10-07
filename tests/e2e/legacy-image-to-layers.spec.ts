@@ -74,6 +74,7 @@ test('flag off: the template review flow and Create Own Template open as before'
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
+  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
   for (const name of ['Create Template A', 'Create Template B', 'Create Template C']) await expect(panel.getByRole('button', { name })).toBeVisible();
   await panel.getByRole('button', { name: 'Close' }).click();
   await page.getByRole('button', { name: 'Create Own Template' }).click();

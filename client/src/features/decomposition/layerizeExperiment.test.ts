@@ -4,6 +4,17 @@ import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTarge
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
+it('imports only the server-curated selection even when raw technical layers accompany the run', async () => {
+  const layer = (file: string): ExperimentLayer => ({ file, index: 0, zIndex: 0, pixelWidth: 300, pixelHeight: 300, opaquePercent: 100, placement: { kind: 'full-canvas', x: 0, y: 0, width: 300, height: 300 } });
+  const run = { id: 'curated', canvas: { width: 300, height: 300 }, layers: ['base', 'helper', 'background', 'person'].map(layer), editorLayerFiles: ['background', 'person'] };
+  const fetchFile = vi.fn<(file: string) => Promise<Blob>>(async () => new Blob(['png'])), assets = { putAsset: vi.fn(async () => undefined), deleteAsset: vi.fn(async () => undefined) };
+  const variant = await experimentToVariant(run, fetchFile, assets);
+  expect(fetchFile.mock.calls.map(args => args[0])).toEqual(['background', 'person']);
+  expect(variant.layers).toHaveLength(2);
+  await expect(experimentToVariant({ ...run, editorLayerFiles: ['missing'] }, fetchFile, assets)).rejects.toThrow(/curated/i);
+  await expect(experimentToVariant({ ...run, editorLayerFiles: [] }, fetchFile, assets)).rejects.toThrow(/curated/i);
+});
+
 it('opens a run as a valid transparent version: base at the bottom, placed layers, unresolved layers hidden and unstretched', async () => {
   const layer = (zIndex: number, placement: ExperimentLayer['placement'], name?: string): ExperimentLayer => ({ index: zIndex, file: `layer-0${zIndex}.png`, zIndex, name, pixelWidth: placement.width, pixelHeight: placement.height, opaquePercent: 50, placement });
   const stored: string[] = [];

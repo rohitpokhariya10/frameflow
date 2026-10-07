@@ -53,11 +53,13 @@ describe('fewer, meaningful layers: text effects and marks stay with their text'
     expect(plan.prompt.endsWith(PROTECTION_CLAUSE)).toBe(true);
   });
 
-  it('leaves alone what is not a lone effect or mark: a line ending in ™, a glowing headline typed as text, a legal disclaimer, a product shadow', () => {
+  it('preserves text including a glowing headline and legal copy; a product grounding shadow stays with its product', () => {
     const accepted = analysisOf([['poster_background', 'background'], ['studio_photo_background', 'photographic_environment'], ['adult_and_baby', 'combined_human_subjects'], ['text_this_is', 'display_text'], ['text_now_tm', 'display_text']]);
     expect(semanticPlan(accepted).semantic_protection).toMatchObject({ merged: [], promptRebuilt: false });
     const others = analysisOf([['background', 'background'], ['product_drop_shadow', 'shadow'], ['phone', 'product'], ['neon_glow_headline', 'headline text'], ['price_text', 'text'], ['legal_disclaimer', 'legal text']]);
-    expect(semanticPlan(others).semantic_protection.merged).toEqual([]);
+    expect(semanticPlan(others).semantic_protection.merged).toEqual([{ id: 'product_drop_shadow', parent: 'phone', reason: 'cast_shadow' }]);
+    expect(semanticPlan(others).planned_layers.map(l => l.name)).toEqual(expect.arrayContaining(['neon_glow_headline', 'price_text', 'legal_disclaimer']));
+    expect(semanticPlan(analysisOf([['background', 'background'], ['shadow_edition_phone', 'product'], ['person', 'person']])).semantic_protection.merged).toEqual([]);
     // With no text left to join, an effect stays as planned.
     expect(semanticPlan(analysisOf([['background', 'background'], ['title_outline', 'text outline effect']])).semantic_protection.merged).toEqual([]);
   });
