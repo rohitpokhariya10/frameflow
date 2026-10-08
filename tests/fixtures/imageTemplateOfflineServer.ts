@@ -1,6 +1,6 @@
 /** Local-only reviewer fixture: real routes/storage/planner adaptation/import, deterministic providers, no credentials. */
 import express from 'express';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { referenceCreativeFixture } from '../../server/src/decomposition/referenceCreative.fixture.js';
 import { verboseImageAnalysis } from '../../server/src/decomposition/imageTemplateAnalysis.fixture.js';
 import { createOpenAIImagePromptWriter, referenceForPrompt } from '../../server/src/decomposition/imageTemplates.js';
@@ -320,10 +320,12 @@ const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => un
 // Clone a persisted fake run into a billing-unknown failure; this route exists ONLY in the offline fixture.
 app.post('/__test__/dashboard-failure/:id', (req, res) => {
   if (!/^[0-9TZa-f-]+$/.test(req.params.id)) return void res.status(400).end();
-  const original = join(root, 'runs', req.params.id), id = '2026-10-08T00-00-00-000Z-abcdef', dir = join(root, 'runs', id);
+  // Saved Runs lists the newest 20 IDs: a fixed old timestamp disappears during the full suite.
+  const now = new Date().toISOString(), id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`;
+  const original = join(root, 'runs', req.params.id), dir = join(root, 'runs', id);
   cpSync(original, dir, { recursive: true });
   const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
-  Object.assign(run, { id, stage: 'failed', createdAt: '2026-10-08T00:00:00Z', updatedAt: '2026-10-08T00:01:00Z',
+  Object.assign(run, { id, stage: 'failed', createdAt: now, updatedAt: now,
     error: { code: 'PROVIDER_DECOMPOSITION_REJECTED', stage: 'queued', message: 'Offline technical failure details' }, layers: [], outputLayers: [], editorLayerFiles: [] });
   delete run.refinement; delete run.layerCount;
   writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
