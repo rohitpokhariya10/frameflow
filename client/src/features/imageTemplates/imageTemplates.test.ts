@@ -89,7 +89,7 @@ describe('Create Template from Image: requests', () => {
     const calls = capture();
     const file = new File([new Uint8Array([1, 2, 3])], 'lavender.png', { type: 'image/png' });
     await imageTemplateApi.create(file, 'Lavender launch');
-    await imageTemplateApi.change('t1', { prompt: PROMPT });
+    await imageTemplateApi.change('t1', { name: 'Lavender launch' });
     await imageTemplateApi.regeneratePrompt('t1');
     await imageTemplateApi.generate('t1', { name: 'Lavender launch', prompt: PROMPT, aspectRatios: ['1:1', '16:9'] });
     await imageTemplateApi.generateRatio('t1', '4x5');
@@ -97,13 +97,13 @@ describe('Create Template from Image: requests', () => {
     await imageTemplateApi.resume('t1', '1x1');
     await imageTemplateApi.opened('t1', '1x1', 'run-1');
     expect(calls.map(call => [call.init?.method ?? 'GET', call.url])).toEqual([
-      ['POST', '/api/layerize-experiment/image-templates'], ['PATCH', '/api/layerize-experiment/image-templates/t1'], ['POST', '/api/layerize-experiment/image-templates/t1/prompt'],
+      ['POST', '/api/layerize-experiment/image-templates/draft'], ['PATCH', '/api/layerize-experiment/image-templates/t1'], ['POST', '/api/layerize-experiment/image-templates/t1/prompt'],
       ['POST', '/api/layerize-experiment/image-templates/t1/generate'], ['POST', '/api/layerize-experiment/image-templates/t1/variants/4x5/generate'],
       ['POST', '/api/layerize-experiment/image-templates/t1/variants/1x1/decompose'], ['POST', '/api/layerize-experiment/image-templates/t1/variants/1x1/resume'], ['POST', '/api/layerize-experiment/image-templates/t1/variants/1x1/opened'],
     ]);
     const form = calls[0].init!.body as FormData;
     expect([form.get('name'), (form.get('image') as File).name]).toEqual(['Lavender launch', 'lavender.png']);
-    expect(calls.slice(1).map(call => call.init?.body ?? null)).toEqual([JSON.stringify({ prompt: PROMPT }), null, JSON.stringify({ name: 'Lavender launch', prompt: PROMPT, aspectRatios: ['1:1', '16:9'] }), null,
+    expect(calls.slice(1).map(call => call.init?.body ?? null)).toEqual([JSON.stringify({ name: 'Lavender launch' }), null, JSON.stringify({ name: 'Lavender launch', prompt: PROMPT, aspectRatios: ['1:1', '16:9'] }), null,
       null, null, JSON.stringify({ runId: 'run-1' })]);
     // An unnamed draft sends no name.
     await imageTemplateApi.create(file, '  ');

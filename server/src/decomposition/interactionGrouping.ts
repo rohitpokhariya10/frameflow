@@ -58,8 +58,11 @@ export function interactionKind(layer: LayerInfo, shape: LayerShape, grid: Grid,
   const name = idWords(layer.name ?? (element ? `${element.id} ${element.type}` : layer.description ?? '')), role = posterRole(layer);
   const semanticType = idWords(layer.semantic?.type ?? element?.type ?? '');
   if (isSemanticText(layer) || /\b(?:cta|badge)\b/i.test(semanticType)) return 'text';
+  // A planner's piece of a person ("person occlusion fragment") goes back to that person; it is not a person of its own.
+  if (FRAGMENT.test(semanticType)) return 'fragment';
   if (PERSON.test(semanticType)) return 'person';
-  if (/\bproduct\b/i.test(semanticType)) return 'object';
+  // A product the planner says is worn (bangles on a wrist) stays with its wearer, like any worn ornament.
+  if (/\bproduct\b/i.test(semanticType)) return element?.attachment?.relation === 'worn_by_human' ? 'ornament' : 'object';
   const sceneNamed = !!backgroundRole(layer.name) || role === 'background' || role === 'backdrop' || role === 'border';
   const largeScene = SCENE.test(name) && (shape.count / n >= 0.15 || boxShare >= 0.5) && !PERSON.test(name) && !TEXTISH.test(name) && role !== 'product' && role !== 'text';
   if ((fullSolid && !PERSON.test(name) && !TEXTISH.test(name) && role !== 'product') || (sceneNamed && boxShare >= 0.5) || largeScene) return 'scene';

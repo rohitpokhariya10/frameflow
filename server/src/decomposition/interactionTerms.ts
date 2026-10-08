@@ -6,10 +6,10 @@
 const words = (list: string) => new RegExp(`\\b(?:${list})\\b`, 'i');
 
 /** A person or a part of one: the parent that hands, fingers, held objects and worn items stay with. */
-export const PERSON = words('woman|women|man|men|girl|girls|boy|boys|person|persons|people|model|models|lady|ladies|child|children|kid|kids|baby|bride|groom|dancers?|couple|family|human|humans|subject|hands?|arms?|forearms?|wrists?|palms?|portrait|figure|customer|athlete|player|student|mother|father|person_anatomy');
+export const PERSON = words('woman|women|man|men|girl|girls|boy|boys|person|persons|people|model|models|lady|ladies|child|children|kid|kids|baby|babies|toddlers?|infants?|newborns?|teens?|teenagers?|grandfathers?|grandmothers?|grandpas?|grandmas?|elders?|bride|groom|dancers?|couple|family|human|humans|subject|hands?|arms?|forearms?|wrists?|palms?|portrait|figure|customer|athlete|player|student|mother|father|person_anatomy');
 /** A body part on its own (not a whole person): it goes back to the person it was cut from when it touches one. */
 export const BODY_PART = words('hands?|arms?|forearms?|wrists?|palms?|elbows?|shoulders?|legs?|feet|foot');
-export const WHOLE_PERSON = words('woman|women|man|men|girl|girls|boy|boys|person|persons|people|model|models|lady|ladies|child|children|kid|kids|baby|bride|groom|dancers?|couple|family|human|humans|subject|portrait|figure|customer|athlete|player|student|mother|father');
+export const WHOLE_PERSON = words('woman|women|man|men|girl|girls|boy|boys|person|persons|people|model|models|lady|ladies|child|children|kid|kids|baby|babies|toddlers?|infants?|newborns?|teens?|teenagers?|grandfathers?|grandmothers?|grandpas?|grandmas?|elders?|bride|groom|dancers?|couple|family|human|humans|subject|portrait|figure|customer|athlete|player|student|mother|father');
 /** A piece of a hand that only exists because a grip interleaves with what it holds. */
 export const FRAGMENT = words('fingers?|fingertips?|thumbs?|knuckles?|fragments?|grip|gripping|occlusion|occluding');
 /** Worn or attached jewelry and accessories. */

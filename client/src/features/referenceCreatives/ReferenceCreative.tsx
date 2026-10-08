@@ -9,7 +9,7 @@ import { useAppDispatch, type RootState } from '../../store';
 import { variantSelected } from '../../store/uiSlice';
 import { useDesigns } from '../editor/designs';
 import { experimentApi, experimentFileUrl } from '../decomposition/layerizeExperiment';
-import { TemplateResults } from '../imageTemplates/CreateTemplateFromImage';
+import { CreativeResults } from '../imageTemplates/CreativeResults';
 import { imageTemplateApi, openResultInEditor, productReferenceUrl, referenceUrl, resultStatus, templateInProgress, withTemplate,
   type ImageTemplate, type ImageTemplateInfo, type ImageTemplateVariant } from '../imageTemplates/imageTemplates';
 import { readReferenceEdits, REFERENCE_LAST_KEY, referenceRequestGuard, writeReferenceEdits } from './referenceDraft';
@@ -120,7 +120,7 @@ export function ReferenceCreative({ templateId, templateName, linkedSetId, onAss
     if (current && (current.analysis || current.generatedAt || draft) && !window.confirm('Replace the current reference? Its analysis and edits will not apply to the new image. The previous draft/results remain in Saved reference sets.')) return;
     select('');
     void act('upload', async valid => {
-      const value = await imageTemplateApi.create(file, '', [...IMAGE_TEMPLATE_RATIOS], true);
+      const value = await imageTemplateApi.create(file, '', [...IMAGE_TEMPLATE_RATIOS]);
       if (!valid()) return;
       const associated = await imageTemplateApi.change(value.id, { originTemplate: { id: templateId, name: templateName } });
       if (valid()) restore(associated);
@@ -235,8 +235,7 @@ export function ReferenceCreative({ templateId, templateName, linkedSetId, onAss
       {frozen && current && <section className="reference-output" aria-label="Campaign results">
         <div className="reference-use"><div><h3>Campaign results</h3><p>{linkedSetId === current.id ? 'This generated set is linked to your template.' : 'Keep this ratio set with your template, then decompose any result when ready.'}</p></div>
           <button type="button" className="ws-btn ws-btn-primary" disabled={!finished || !!busy || linkedSetId === current.id} onClick={() => { onAssociate(current.id); setNotice('Generated set linked. Return to the canvas and Save Template to keep the association. Undo can restore the previous link.'); }}>Use Generated Set</button></div>
-        <TemplateResults template={current} info={info} busy={busy} onRename={next => void act('save', async valid => { const value = await imageTemplateApi.change(current.id, { name: next }); if (valid()) { keep(value); setName(value.name); } })}
-          onLayerStyle={decomposeWith => void act('save', async valid => { const value = await imageTemplateApi.change(current.id, { decomposeWith }); if (valid()) keep(value); })}
+        <CreativeResults template={current} busy={busy} onRename={next => void act('save', async valid => { const value = await imageTemplateApi.change(current.id, { name: next }); if (valid()) { keep(value); setName(value.name); } })}
           onGenerateRatio={variant => { if (!window.confirm(`Retry ${variant.aspectRatio}? This makes 1 paid image request using the saved settings and original reference.`)) return; void act(`generate-${variant.id}`, async valid => { const value = await imageTemplateApi.generateRatio(current.id, variant.id); if (valid()) keep(value); }); }}
           onDecompose={decompose} onResume={variant => void act('resume', async valid => { const value = await imageTemplateApi.resume(current.id, variant.id); if (valid()) keep(value); })} onOpen={variant => void open(variant)} />
         {current.variants.some(v => resultStatus(v).failure === 'generation') && <p className="reference-notice">Successful images are kept. Retry only the failed size; it uses this set’s saved prompt and original reference.</p>}

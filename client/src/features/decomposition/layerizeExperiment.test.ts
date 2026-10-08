@@ -1,8 +1,19 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { isDesignVariant } from '../../lib/persistence/schema';
-import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
+import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, runRecovery, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
 
 afterEach(() => { vi.unstubAllGlobals(); });
+
+it('offers resume only for recoverable failures and paid retry only for decomposition rejection', () => {
+  const failed = { stage: 'failed', seedream: { endpoint: 'seedream', requestId: 'saved-request' } };
+  const error = (code: string, status?: number) => ({ code, message: 'Failed', stage: 'queued', ...(status ? { provider: { code: 'PROVIDER_REJECTED', status, messages: [] } } : {}) });
+  expect(runRecovery({ ...failed, error: error('PROVIDER_DECOMPOSITION_REJECTED', 422) })).toEqual({ resume: false, retry: true });
+  expect(runRecovery({ ...failed, error: error('PROVIDER_SAFETY_REJECTED', 422) })).toEqual({ resume: false, retry: false });
+  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 400) })).toEqual({ resume: false, retry: false });
+  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 503) })).toEqual({ resume: true, retry: false });
+  expect(runRecovery({ ...failed, error: error('RENDER_FAILED') })).toEqual({ resume: true, retry: false });
+  expect(runRecovery({ ...failed, stage: 'done' })).toEqual({ resume: false, retry: false });
+});
 
 it('imports only the server-curated selection even when raw technical layers accompany the run', async () => {
   const layer = (file: string): ExperimentLayer => ({ file, index: 0, zIndex: 0, pixelWidth: 300, pixelHeight: 300, opaquePercent: 100, placement: { kind: 'full-canvas', x: 0, y: 0, width: 300, height: 300 } });
@@ -100,21 +111,15 @@ it('Template B owns its option: defaults, no held-object separate mode, and its 
   expect(targetLayerRange(templateA, true)).toEqual({ min: 3, max: 6 });
 });
 
-it('sends Template B\'s option as templateOptions, and Template A\'s request without it', async () => {
+it('sends only generic decomposition settings and preserves the recursive choice', async () => {
   const bodies: FormData[] = [];
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => { bodies.push(init.body as FormData); return new Response(JSON.stringify({ id: 'r' }), { status: 202 }); }));
   const file = new File(['x'], 'x.png', { type: 'image/png' });
-  await experimentApi.start(file, 'generated', 'template-b', true, undefined, { separateTouchingIndependentObjects: true });
-  await experimentApi.start(file, 'generated', 'template-a', false, 5);
-  expect(JSON.parse(bodies[0].get('templateOptions') as string)).toEqual({ separateTouchingIndependentObjects: true });
-  expect(bodies[0].get('templateKey')).toBe('template-b');
-  // Template A: exactly the fields it sent before.
-  expect([...bodies[1].keys()]).toEqual(['promptMode', 'separateHeldObject', 'targetLayers', 'templateKey', 'image']);
-  expect(bodies[1].get('separateHeldObject')).toBe('false');
-  // "Run anyway" past the template fit check adds only skipFitCheck.
-  await experimentApi.start(file, 'generated', 'template-a', false, undefined, undefined, true);
-  expect([...bodies[2].keys()]).toEqual(['promptMode', 'separateHeldObject', 'templateKey', 'skipFitCheck', 'image']);
-  expect(bodies[2].get('skipFitCheck')).toBe('true');
+  await experimentApi.start(file);
+  await experimentApi.start(file, 'generated', undefined, true, undefined, undefined, false, true);
+  expect([...bodies[0].keys()]).toEqual(['image']);
+  expect([...bodies[1].keys()]).toEqual(['recursive', 'image']);
+  expect(bodies[1].get('recursive')).toBe('true');
 });
 
 it('imports a refined run: the clean background at the bottom, residual-pass layers marked, each layer once', async () => {

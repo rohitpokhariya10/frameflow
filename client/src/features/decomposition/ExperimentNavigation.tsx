@@ -29,7 +29,7 @@ export function savedRunStatus(run: ExperimentRun) {
 }
 export function filterSavedRuns(runs: ExperimentRun[], query: string, status: string) {
   const text = query.trim().toLowerCase();
-  return runs.filter(run => (!text || `${run.id} ${run.templateKey ?? 'template-a'} ${run.createdAt} ${savedRunStatus(run)}`.toLowerCase().includes(text))
+  return runs.filter(run => (!text || `${run.id} ${run.templateExecution?.template?.name ?? run.templateKey ?? ''} ${run.createdAt} ${savedRunStatus(run)}`.toLowerCase().includes(text))
     && (status === 'all' || savedRunStatus(run) === status));
 }
 const LABELS: Record<string, string> = { 'READY FOR EDITOR': 'Ready for editor', PARTIAL: 'Needs review', FAILED: 'Failed', RUNNING: 'Running' };
@@ -47,7 +47,7 @@ export function SavedRunBrowser({ runs, loading, selected, busy, onSelect }: { r
         const status = savedRunStatus(run), layers = runLayerCount(run), counts = run.refinement?.curation?.counts;
         return <article key={run.id} className={`ff-lab-run-card${selected === run.id ? ' is-selected' : ''}`} aria-label={`Saved run ${run.id}`}>
           <div className="ff-lab-run-thumb"><img loading="lazy" src={experimentFileUrl(run.id, run.original.file)} alt="" /><span className={`lx-badge lx-${status === 'FAILED' ? 'failed' : status === 'PARTIAL' ? 'warning' : status === 'RUNNING' ? 'running' : 'complete'}`}>{LABELS[status]}</span></div>
-          <div className="ff-lab-run-info"><h3>{(run.templateKey ?? 'template-a').replace('template-', 'Template ').toUpperCase().replace('TEMPLATE', 'Template')}</h3><p>{new Date(run.createdAt).toLocaleString()}</p>
+          <div className="ff-lab-run-info"><h3>{run.templateExecution?.template?.name ?? 'Creative decomposition'}</h3><p>{new Date(run.createdAt).toLocaleString()}</p>
             <p>{counts ? `${counts.rawLayers} raw → ${counts.editorLayers} editor layers` : run.stage === 'done' ? `${layers} editor layers` : LABELS[status]}{run.origin?.aspectRatio ? ` · ${run.origin.aspectRatio}` : ''}</p>
             <small className="ff-lab-run-id">{run.id}</small><button className="ws-btn" disabled={busy} onClick={() => onSelect(run.id)}>View run <ArrowUpRight size={15} aria-hidden="true" /></button>
           </div>

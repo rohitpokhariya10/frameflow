@@ -1,4 +1,4 @@
-import type { TemplateReuseRecord } from '@frameflow/shared';
+import type { RunTemplateExecution } from '@frameflow/shared';
 import { CANVAS_LIMITS, validateCanvasSize, type RunDiagnostics, type DesignLayer, type DesignVariant } from '@frameflow/shared';
 
 /** Mirrors the server's run.json for the OpenAI → Seedream layerize experiment (server/src/decomposition/layerizeExperiment.ts). */
@@ -37,6 +37,8 @@ export type CurationRecord = { complexity: string; budget: { min: number; max: n
 export type BackgroundQualityInfo = { quality: 'usable' | 'degraded' | 'failed'; reasons: string[]; metrics: Record<string, number | undefined> };
 /** Server CallCounts (recursiveDecomposition.ts): every provider request a refined run sent, counted when sent. */
 export type CallCounts = { fitCheck: number; planner: number; seedreamInitial: number; seedreamResidual: number; backgroundReconstruction: number };
+/** Server BackgroundStep (recursiveDecomposition.ts): one recovery step of the clean background. */
+export type BackgroundStep = { step: 'provider-base' | 'scene-composite' | 'local-continuation' | 'ai-reconstruction' | 'fallback'; outcome: 'chosen' | 'rejected' | 'skipped'; reason: string; call?: boolean };
 /** Server RefinementRecord (recursiveDecomposition.ts), the fields the panel shows. */
 export type Refinement = {
   state: 'pending' | 'running' | 'done' | 'failed'; options: { maxDepth: number; maxTotalLayers: number; reconstructBackground: boolean };
@@ -47,7 +49,9 @@ export type Refinement = {
   background?: { status: CleanBackgroundStatus; method: string; file: string; contaminated: boolean; reasons: string[];
     quality?: BackgroundQualityInfo['quality']; validation?: BackgroundQualityInfo; difficulty?: { level: string; coveragePercent: number; largestComponentPercent: number; simpleGraphic: boolean };
     candidates?: { method: CleanBackgroundMethod; quality: BackgroundQualityInfo['quality']; reasons: string[]; chosen: boolean }[]; fallbackUsed?: boolean; aiTried?: boolean; outsideMaskChangedPercent?: number;
-    shadow?: { percent: number; note: string } };
+    shadow?: { percent: number; note: string };
+    /** Whether a local continuation can be trusted behind the foreground, and every recovery step: ran or skipped, and why. */
+    trust?: { trusted: boolean; reason: string }; steps?: BackgroundStep[] };
   layerPlan?: LayerPlan;
   curation?: CurationRecord;
   fidelity?: { before: { meanAbsDiff: number }; after: { meanAbsDiff: number } };
@@ -134,12 +138,13 @@ export type ProviderFailure = { code: string; status: number; messages: { msg: s
 export type ExperimentRun = {
   id: string; stage: string; active?: boolean; createdAt: string; updatedAt?: string;
   /** Which template the run belongs to; absent on older runs (Template A). */
-  templateReuse?: TemplateReuseRecord;
+  templateExecution?: RunTemplateExecution;
   templateKey?: string;
   /** Absent on runs created before template prompts existed; those generated their prompt. */
   promptSource?: { mode: 'generated' } | ({ mode: 'template' } & SavedTemplatePrompt)
     | { mode: 'retry'; fromRunId: string; providerPrompt?: 'current' | 'auto'; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
     | { mode: 'automatic'; retryOf?: string }
+    | { mode: 'template-plan'; templateId: string; templateName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
     | { mode: 'blueprint'; familyId: string; familyName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] };
   /** "Separate held object from subject" (Template A); absent on older runs, which all separated it, and on Template B runs. */
   separateHeldObject?: boolean;
@@ -172,6 +177,14 @@ export type ExperimentRun = {
   interactions?: InteractionRecord;
 };
 
+/** A final provider rejection has no result to resume. A paid retry is only supported for decomposition rejections. */
+export function runRecovery(run: Pick<ExperimentRun, 'stage' | 'active' | 'error' | 'seedream'>) {
+  const failed = run.stage === 'failed' && !run.active;
+  const final = ['PROVIDER_DECOMPOSITION_REJECTED', 'PROVIDER_SAFETY_REJECTED'].includes(run.error?.code ?? '')
+    || [400, 422].includes(run.error?.provider?.status ?? 0);
+  return { resume: failed && !!run.seedream.requestId && !final, retry: failed && run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' };
+}
+
 export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'scene-clean': 'Clean (Seedream scene layers, no reconstruction needed)',
   'continued-clean': 'Clean (simple background continued locally, no reconstruction needed)', 'ai-reconstructed': 'AI reconstructed',
   contaminated: 'Contaminated (foreground left in the background)', fallback: 'Fallback: continued from the surrounding background (not AI reconstructed)' };
@@ -195,7 +208,7 @@ export function refinementSummary(run: Pick<ExperimentRun, 'refinement' | 'calls
 const BASE_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean background', 'scene-clean': 'Clean background', 'continued-clean': 'Clean background', 'ai-reconstructed': 'Clean background', contaminated: 'Background (contaminated)', fallback: 'Background (fallback fill)' };
 
 /** The prompt this run sent (or will send) to Seedream, with its planned layers and warnings. */
-export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' || run.promptSource?.mode === 'blueprint' ? run.promptSource : run.planner;
+export const runPrompt = (run: ExperimentRun) => run.promptSource?.mode === 'template' || run.promptSource?.mode === 'retry' || run.promptSource?.mode === 'blueprint' || run.promptSource?.mode === 'template-plan' ? run.promptSource : run.planner;
 
 const BASE = '/api/layerize-experiment';
 export const experimentFileUrl = (runId: string, file: string) => `${BASE}/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(file)}`;
@@ -216,12 +229,7 @@ export const experimentApi = {
   /** recursive: the recursive refinement (up to 2 residual Seedream calls and 1 OpenAI image edit, only as needed); only sent when true. */
   start: (file: File, mode: PromptMode = 'generated', templateKey?: string, separateHeldObject = true, targetLayers?: number, templateOptions?: Record<string, boolean>, skipFitCheck = false, recursive = false) => {
     const form = new FormData();
-    form.append('promptMode', mode);
-    form.append('separateHeldObject', String(separateHeldObject));
-    if (targetLayers !== undefined) form.append('targetLayers', String(targetLayers));
-    if (templateKey) form.append('templateKey', templateKey);
-    if (templateOptions) form.append('templateOptions', JSON.stringify(templateOptions));
-    if (skipFitCheck) form.append('skipFitCheck', 'true');
+    void mode; void templateKey; void separateHeldObject; void targetLayers; void templateOptions; void skipFitCheck;
     if (recursive) form.append('recursive', 'true');
     form.append('image', file);
     return call<ExperimentRun>('/runs', { method: 'POST', body: form });

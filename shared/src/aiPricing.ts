@@ -1,4 +1,4 @@
-import type { TemplateReuseRecord } from './templateFamilies/types.js';
+import type { ExecutionTelemetry } from './creativeTemplates/execution.js';
 /** Diagnostic budgeting only. Standard, synchronous API rates; never provider invoice totals.
  * Sources checked 2026-10-07. See docs/AI_COST_TELEMETRY.md for attribution and missing-data rules.
  */
@@ -40,7 +40,10 @@ export interface DiagnosticStage { id: StageId; label: string; status: StageStat
 export interface DiagnosticPrompt { label: string; text: string; model?: string; inputTokens?: number }
 export interface RawLayerDiagnostic { file: string; name: string; disposition: string; reasons: string[]; pass: number }
 export interface RunDiagnostics {
-  reuse?: TemplateReuseRecord; reuseSaving?: CostAmount;
+  /** A template execution's run: its mode, the template version, and which calls it made or skipped. */
+  execution?: ExecutionTelemetry;
+  /** Estimated cost of the planner calls the execution avoided (typical usage; never subtracted from the run's cost). */
+  reuseSaving?: CostAmount;
   runId: string; updatedAt: string; fx: number; pricingVersion: string; sources: readonly string[]; stages: DiagnosticStage[];
   total: CostAmount; calls: number; callsMeasured: boolean; rawLayers: number | null; editorLayers: number;
   elapsedMs: number | null; prompts: DiagnosticPrompt[]; raw: RawLayerDiagnostic[]; notes: string[];

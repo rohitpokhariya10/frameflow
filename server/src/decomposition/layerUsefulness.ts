@@ -70,6 +70,8 @@ export function layerCategory(item: ScreenItem, n: number): LayerCategory {
   if (/\bproduct\b/i.test(semanticType)) return 'product';
   if (TEXTISH.test(words) || item.role === 'text') return 'text';
   if (item.kind === 'background') return 'scene';
+  // A backdrop component (backdropComponents.ts): a panel or shape of the scene's design, kept as its own layer.
+  if (item.role === 'backdrop') return 'scene';
   if (item.layer.grouping) return PERSON.test(words) || item.layer.grouping.members.some(m => ['held_object', 'finger_fragment', 'body_part', 'worn_ornament'].includes(m.role)) ? 'person' : item.role === 'decor' ? 'decoration' : 'object';
   if (isShadowLayer(item.layer, item.shape.rgba, n)) return 'effect';
   if (PERSON.test(words)) return 'person';
@@ -210,9 +212,9 @@ export function isPlate(item: ScreenItem, grid: Grid): boolean {
  * After the background is chosen: full background plates are the background, never a second one on top of it. Merged
  * when the clean background is their own composite; dropped when it already holds them (90% of their opaque pixels
  * within 24); dropped too when the clean background was rebuilt from the original instead (the plate's copy of what was
- * behind the subject was not clean). Kept only over a provider base they differ from.
+ * behind the subject was not clean). Kept only over a provider base they differ from that was not validated.
  */
-export function screenPlates(items: ScreenItem[], background: ArrayLike<number>, method: string, grid: Grid): UsefulnessDecision[] {
+export function screenPlates(items: ScreenItem[], background: ArrayLike<number>, method: string, grid: Grid, validated = false): UsefulnessDecision[] {
   const n = grid.width * grid.height;
   return items.filter(item => isPlate(item, grid)).map((item): UsefulnessDecision => {
     const base = { file: item.layer.file, ...(item.layer.name ? { name: item.layer.name } : {}), category: 'scene' as const };
@@ -221,7 +223,9 @@ export function screenPlates(items: ScreenItem[], background: ArrayLike<number>,
     const backgroundMatchPercent = round(100 * same / Math.max(1, opaque));
     if (method === 'scene-composite') return { ...base, kept: false, reason: 'merged-into-background', action: 'fold', detail: 'a full background plate: the clean background is built from it, so it is not repeated as a layer', backgroundMatchPercent };
     if (same >= 0.9 * opaque) return { ...base, kept: false, reason: 'duplicates-background', action: 'fold', detail: `a full background plate the clean background already shows (${backgroundMatchPercent}% the same)`, backgroundMatchPercent };
-    if (method !== 'provider-base') return { ...base, kept: false, reason: 'replaced-by-clean-background', action: 'fold', detail: `a full background plate whose copy of what lies behind the subject is not clean (${backgroundMatchPercent}% matches the validated clean background); the clean background replaces it`, backgroundMatchPercent };
+    // A provider base validated against the creative (usable, uncontaminated) is the background; a plate that differs
+    // from it is Seedream's second copy, not a scene the base got wrong.
+    if (method !== 'provider-base' || validated) return { ...base, kept: false, reason: 'replaced-by-clean-background', action: 'fold', detail: `a full background plate whose copy of what lies behind the subject is not clean (${backgroundMatchPercent}% matches the validated clean background); the clean background replaces it`, backgroundMatchPercent };
     return { ...base, kept: true, detail: `a full background plate that differs from the provider base (${backgroundMatchPercent}% the same)`, backgroundMatchPercent };
   });
 }

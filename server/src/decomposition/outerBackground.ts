@@ -1,22 +1,8 @@
 /**
- * Local, deterministic rebuild of a clean full-canvas outer background for framed layouts (Template A).
- *
- * In every Template A run so far Seedream's own "outer background" layer came back as a grey or ring-shaped
- * placeholder, whatever the prompt said, while its base image held the real outer background with the inner backdrop
- * and border - and sometimes the subject too - still in it. This replaces the backdrop, border, foreground and any
- * leftover contamination by continuing the surrounding (clean) background. The real outer-background pixels come from
- * the uploaded image when it matches the canvas (the base was seen re-rendered, e.g. white instead of green), else the base:
- * a smooth color and lighting field interpolated inward from the region's edge (push-pull), plus fine texture borrowed
- * from an untouched full-width (or full-height) band of the same background. No model call; raw layers are untouched.
+ * Local, deterministic background-filling primitives shared by the clean-background steps (backgroundRecovery.ts,
+ * cleanBackground.ts, recursiveDecomposition.ts and others): blurs, a push-pull interpolation of a smooth color and
+ * lighting field into masked holes, noise estimates, and a texture-aware fill. No model call.
  */
-import sharp, { type OverlayOptions } from 'sharp';
-
-type Size = { width: number; height: number };
-/** contaminationPercent: base pixels outside every layer that were still foreground/halo and got replaced; residualPercent: backgroundResidualPercent of the result. */
-export type RebuildResult = { png: Buffer; holePercent: number; texture: string; contaminationPercent: number; residualPercent: number;
-  /** Where the real outer-background pixels came from; enclosedPercent: area filled because the backdrop/border enclosed it. */
-  source: 'original' | 'base'; enclosedPercent: number };
-
 /** Separable box blur with clamped edges on interleaved float channels. */
 export function boxBlur(src: Float32Array, w: number, h: number, ch: number, r: number): Float32Array {
   if (r < 1) return src.slice();
@@ -129,88 +115,8 @@ export function backgroundResidualPercent(rgbBytes: Uint8Array, w: number, h: nu
   return Math.round(10000 * count / (w * h)) / 100;
 }
 
-/** Marks every pixel not reachable from the canvas edge without crossing the mask (the inside of a ring, gaps in an oval). */
-function fillEnclosed(mask: Uint8Array, w: number, h: number): number {
-  const reached = new Uint8Array(mask.length), queue = new Int32Array(mask.length);
-  let head = 0, tail = 0;
-  const visit = (i: number) => { if (!mask[i] && !reached[i]) { reached[i] = 1; queue[tail++] = i; } };
-  for (let x = 0; x < w; x++) { visit(x); visit((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { visit(y * w); visit(y * w + w - 1); }
-  while (head < tail) {
-    const i = queue[head++], x = i % w;
-    if (x > 0) visit(i - 1);
-    if (x < w - 1) visit(i + 1);
-    if (i >= w) visit(i - w);
-    if (i < mask.length - w) visit(i + w);
-  }
-  let filled = 0;
-  for (let i = 0; i < mask.length; i++) if (!mask[i] && !reached[i]) { mask[i] = 1; filled++; }
-  return filled;
-}
 
-/**
- * The real outer-background pixels: the uploaded image itself when it has the canvas aspect (Seedream's base can be
- * re-rendered - observed with a white instead of green background, or a redrawn subject), else the provider's base.
- */
-async function pixelSource(base: Buffer, source: Buffer | undefined, w: number, h: number): Promise<{ rgb: Buffer; name: 'original' | 'base' }> {
-  if (source) {
-    const meta = await sharp(source).metadata().catch(() => undefined);
-    if (meta?.width && meta.height && Math.abs((meta.width / meta.height) / (w / h) - 1) <= 0.01) {
-      return { rgb: await sharp(source).resize(w, h, { fit: 'fill' }).removeAlpha().raw().toBuffer(), name: 'original' };
-    }
-  }
-  return { rgb: await sharp(base).resize(w, h, { fit: 'fill' }).removeAlpha().raw().toBuffer(), name: 'base' };
-}
 
-/**
- * Rebuilds the outer background as one opaque full-canvas PNG from the real outer-background pixels (the uploaded image
- * when it matches the canvas aspect, else the provider base). Replaced: the inner backdrop and border (`holes`) and
- * everything they enclose, every foreground layer (`foreground`: subject, held objects), a 6 px margin, and any
- * remaining pixels that still stand out from the background (leftover foreground no layer covers, halos, shadows).
- * Returns undefined when less than 1% of the canvas is visible outer background: then nothing reliable can be rebuilt.
- */
-export async function rebuildOuterBackground(base: Buffer, canvas: Size, holes: OverlayOptions[], foreground: OverlayOptions[] = [], options: { source?: Buffer } = {}): Promise<RebuildResult | undefined> {
-  const { width: w, height: h } = canvas, n = w * h;
-  const { rgb: baseRgb, name: source } = await pixelSource(base, options.source, w, h);
-  const alphaOf = async (overlay: OverlayOptions) =>
-    sharp({ create: { width: w, height: h, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite([overlay]).extractChannel(3).raw().toBuffer();
-  // Backdrop + border, with everything they enclose: gaps in a partial backdrop alpha or inside a hairline border ring.
-  const hole = new Uint8Array(n);
-  for (const overlay of holes) { const alpha = await alphaOf(overlay); for (let i = 0; i < n; i++) if (alpha[i] > 16) hole[i] = 1; }
-  const enclosed = fillEnclosed(hole, w, h);
-  for (const overlay of foreground) { const alpha = await alphaOf(overlay); for (let i = 0; i < n; i++) if (alpha[i] > 16) hole[i] = 1; }
-  // Grow the hole 6 px so anti-aliased edges are replaced too.
-  const mask = grow(hole, w, h, 6);
-  if (!mask.some(Boolean)) return { png: await sharp(baseRgb, { raw: { width: w, height: h, channels: 3 } }).ensureAlpha().png().toBuffer(), holePercent: 0, texture: 'none', contaminationPercent: 0, residualPercent: backgroundResidualPercent(baseRgb, w, h), source, enclosedPercent: 0 };
-
-  const rgb = Float32Array.from(baseRgb);
-  // Leftover contamination: compare each remaining base pixel with a background model built only from pixels at least
-  // 48 px from the hole and carried inward, so a large leftover (a sleeve crossing the frame) cannot hide itself by
-  // pulling the local average toward its own color. Stricter within that 48 px zone, where halos and shadows sit.
-  // Repeated so contamination reaching further out is caught ring by ring.
-  let contamination = 0;
-  for (let pass = 0; pass < 3; pass++) {
-    const near = grow(mask, w, h, 48), far = new Float32Array(n);
-    for (let i = 0; i < n; i++) far[i] = near[i] ? 0 : 1;
-    if (!far.some(Boolean)) break;
-    const model = pushPull(maskedBlur(rgb, far, w, h, 24), far, w, h);
-    const sigma = noiseSigma(rgb, model, far), tNear = Math.max(16, 6 * sigma), tFar = Math.max(36, 10 * sigma);
-    const flagged = new Uint8Array(n);
-    let found = 0;
-    for (let i = 0; i < n; i++) if (!mask[i] && deviation(rgb, model, i) > (near[i] ? tNear : tFar)) { flagged[i] = 1; found++; }
-    if (!found) break;
-    const spread = grow(flagged, w, h, 4);
-    for (let i = 0; i < n; i++) if (spread[i] && !mask[i]) { mask[i] = 1; contamination++; }
-  }
-  let holeCount = 0;
-  for (let i = 0; i < n; i++) holeCount += mask[i];
-  // Nothing trustworthy to continue from: keep the provider layer rather than invent a background.
-  if (n - holeCount < n * 0.01) return undefined;
-
-  const { out, texture } = fillMasked(rgb, mask, w, h);
-  return { png: await sharp(out, { raw: { width: w, height: h, channels: 3 } }).ensureAlpha().png().toBuffer(), holePercent: Math.round(1000 * holeCount / n) / 10, texture,
-    contaminationPercent: Math.round(10000 * contamination / n) / 100, residualPercent: backgroundResidualPercent(out, w, h), source, enclosedPercent: Math.round(10000 * enclosed / n) / 100 };
-}
 
 /**
  * Fills the masked pixels (mask = 1) by continuing the unmasked surroundings: a smooth color and lighting field

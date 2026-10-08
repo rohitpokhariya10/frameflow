@@ -16,7 +16,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'frameflow-diagnostics-')); dir = join(root, 'run'); mkdirSync(dir);
   write('run.json', { id: 'run-fixture', createdAt: '2026-10-07T00:00:00Z', updatedAt: '2026-10-07T00:02:00Z', stage: 'done',
     original: { file: 'original.png', width: 1000, height: 1000 }, input: { file: 'input.png', width: 1000, height: 1000 },
-    seedream: { endpoint, requestId: 'saved-seedream-id' }, calls: { fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 0 },
+    seedream: { endpoint, requestId: 'saved-seedream-id' }, calls: { planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 0 },
     planner: { model: 'gpt-5.6-sol', responseId: 'saved-planner-id', prompt: 'Plan', planned_layers: [], warnings: [] },
     finalPrompt: 'Extract phone', timings: { totalMs: 120000 }, outputLayers: [layer(0), layer(1)], editorLayerFiles: [layer(0).file, layer(1).file], warnings: [] });
   write('openai-response.json', { model: 'gpt-5.6-sol', usage: { input_tokens: 3376, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 3373 }, output_tokens: 4835, output_tokens_details: { reasoning_tokens: 1552 } } });
@@ -63,9 +63,9 @@ describe('persisted run diagnostics', () => {
     const d = await readRunDiagnostics(dir, { imageTemplatesDir: root }); expect(d.total.inr).toBeCloseTo(56.01366); expect(d.calls).toBe(4); expect(d.elapsedMs).toBe(123000); expect(d.prompts.some(p => p.text === 'Actual generation prompt')).toBe(true); expect(d.notes.join(' ')).toContain('shared across variants');
   });
   it('does not treat overwritten generation attempts as free', async () => {
-    const id = '2026-10-07T00-00-00-000Z-abcdef'; mkdirSync(join(root, id)); const r = read('run.json'); r.origin = { kind: 'template-a-generation', generationId: id, variantId: 'single' }; write('run.json', r);
-    write('group.json', { variants: [{ id: 'single', status: 'done', attempts: 2, generator: { model: 'gpt-image-2' } }] }, join(root, id));
-    const d = await readRunDiagnostics(dir, { generationDirs: { 'template-a': root } }); expect(d.stages.find(s => s.id === 'generation')?.calls).toHaveLength(2); expect(d.total.inr).toBeNull();
+    const id = '2026-10-07T00-00-00-000Z-abcdef'; mkdirSync(join(root, id)); const r = read('run.json'); r.origin = { kind: 'image-template', generationId: id, variantId: '1x1' }; write('run.json', r);
+    write('group.json', { variants: [{ id: '1x1', status: 'done', attempts: 2, generator: { model: 'gpt-image-2' } }] }, join(root, id));
+    const d = await readRunDiagnostics(dir, { imageTemplatesDir: root }); expect(d.stages.find(s => s.id === 'generation')?.calls).toHaveLength(2); expect(d.total.inr).toBeNull();
   });
   it('handles missing source directories and corrupt optional artifacts', async () => {
     const r = read('run.json'); r.origin = { kind: 'image-template', generationId: '../escape', variantId: '4x5' }; write('run.json', r); writeFileSync(join(dir, 'openai-response.json'), '{');
@@ -95,7 +95,7 @@ it('shows an active Seedream call as running with pending downstream stages', as
   const r = read('run.json'); r.stage = 'in_progress'; write('run.json', r); rmSync(join(dir, 'seedream-response.json')); rmSync(join(dir, 'raw-layers.json'));
   expect(await stage('seedream')).toMatchObject({ status: 'Running', cost: { confidence: 'Unknown' } }); expect((await stage('curation')).status).toBe('Pending');
 });
-it('reads optional fit-check usage and preserves its model', async () => {
+it('a run saved before the fit check was removed still shows its recorded charge and model', async () => {
   const r = read('run.json'); r.calls.fitCheck = 1; r.templateFit = { fits: true, reason: 'Fits', model: 'gpt-5-mini' }; write('run.json', r);
   write('template-fit.json', { request: { model: 'gpt-5-mini' }, response: { usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0 }, output_tokens: 50 } } });
   expect((await stage('fit')).cost.inr).toBeCloseTo(.01125);

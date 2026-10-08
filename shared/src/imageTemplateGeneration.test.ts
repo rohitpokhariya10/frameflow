@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS } from './templateGeneration.js';
-import { GENERATION_PROFILES } from './templateGenerationProfiles.js';
+import { buildGenerationVariantPrompt, closestGenerationRatio, GENERATION_ASPECT_RATIOS, GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS, generationVariantId } from './imageGeneration.js';
 import { IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_FRAMING, IMAGE_TEMPLATE_LIMITS, IMAGE_TEMPLATE_RATIO_NAMES, IMAGE_TEMPLATE_RATIOS, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, IMAGE_TEMPLATE_SIZES,
   imageTemplateVariantPrompt, isImageTemplateRatio, resolveImageTemplateName, resolveImageTemplatePrompt, resolveImageTemplateRatios } from './imageTemplateGeneration.js';
 
@@ -72,9 +71,30 @@ describe('Create Template from Image: shared rules', () => {
     expect(Object.values(IMAGE_TEMPLATE_FRAMING).join(' ')).not.toMatch(/large and centred|fill most of the width/);
   });
 
-  it('has its own wording: nothing of Template A, B or C, and nothing about any one kind of image', () => {
-    const own = [IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, ...Object.values(IMAGE_TEMPLATE_FRAMING)];
-    for (const profile of Object.values(GENERATION_PROFILES)) for (const theirs of [profile.consistency, profile.referenceInstruction, ...Object.values(profile.framing)]) expect(own).not.toContain(theirs);
-    for (const text of own) expect(text).not.toMatch(/\b(product creative|hero|portrait|campaign|person|people|phone)\b/i);
+  it('says nothing about any one kind of image', () => {
+    for (const text of [IMAGE_TEMPLATE_CONSISTENCY, IMAGE_TEMPLATE_REFERENCE_INSTRUCTION, ...Object.values(IMAGE_TEMPLATE_FRAMING)]) expect(text).not.toMatch(/\b(product creative|hero|portrait|campaign|person|people|phone)\b/i);
+  });
+});
+
+describe('image generation: shared sizes and prompt mechanics', () => {
+  it('asks for 1:1, 16:9 and 4:5 at exact sizes of those ratios, both sides divisible by 16', () => {
+    expect(GENERATION_ASPECT_RATIOS).toEqual(['1:1', '16:9', '4:5']);
+    for (const ratio of GENERATION_ASPECT_RATIOS) {
+      const [w, h] = ratio.split(':').map(Number), { width, height } = GENERATION_IMAGE_SIZES[ratio];
+      expect(width * h! - height * w!).toBe(0);
+      expect([width % 16, height % 16]).toEqual([0, 0]);
+    }
+    expect(GENERATION_ASPECT_RATIOS.map(generationVariantId)).toEqual(['1x1', '16x9', '4x5']);
+  });
+
+  it('an edit keeps the image\'s proportions: the supported size closest to its own aspect', () => {
+    expect([closestGenerationRatio(1000, 1000), closestGenerationRatio(1080, 1350), closestGenerationRatio(1920, 1080), closestGenerationRatio(1080, 1920), closestGenerationRatio(1200, 1000)]).toEqual(['1:1', '4:5', '16:9', '4:5', '1:1']);
+  });
+
+  it('a variant is the base + the consistency sentence + that ratio\'s framing; an unknown ratio or an oversized prompt is refused', () => {
+    const parts = { consistency: 'Keep everything.', framing: { '1:1': 'Square framing.', '16:9': 'Wide framing.' } };
+    expect(buildGenerationVariantPrompt(parts, '  A creative.  ', '16:9')).toBe('A creative. Keep everything. Wide framing.');
+    expect(() => buildGenerationVariantPrompt(parts, 'A creative.', '4:5')).toThrow('Aspect ratio must be one of 1:1, 16:9, 4:5.');
+    expect(() => buildGenerationVariantPrompt(parts, 'x'.repeat(GENERATION_PROMPT_LIMITS.final), '1:1')).toThrow(/at most 3000/);
   });
 });

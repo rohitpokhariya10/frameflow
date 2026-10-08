@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { AI_PRICING, type CostAmount, type DiagnosticPrompt, type DiagnosticStage, type RunDiagnostics } from '@frameflow/shared';
-import { editorLayersOf, experimentFileUrl, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
+import { editorLayersOf, experimentFileUrl, type BackgroundStep, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
 import './runDashboard.css';
 
 export const rupees = (value: number) => `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -26,6 +26,9 @@ function Prompt({ prompt }: { prompt: DiagnosticPrompt }) {
     <pre>{prompt.text}</pre>
   </DiagnosticDisclosure>;
 }
+const STEP_LABELS: Record<BackgroundStep['step'], string> = {
+  'provider-base': 'Seedream base', 'scene-composite': 'Seedream scene layers', 'local-continuation': 'Local continuation', 'ai-reconstruction': 'AI reconstruction', fallback: 'Fallback',
+};
 export function displayLayer(layer: ExperimentLayer, run: ExperimentRun): { name: string; role: string } {
   const category = run.refinement?.curation?.entries.find(e => e.file === layer.file)?.category ?? layer.provenance?.role ?? '';
   const words = `${category} ${layer.name ?? ''}`;
@@ -49,15 +52,12 @@ export function dashboardStatus(run: ExperimentRun, editorCount: number) {
   if (run.stage === 'failed') return 'FAILED';
   if (run.stage !== 'done' || run.active) return 'RUNNING';
   const bg = run.refinement?.background;
-  return run.templateReuse?.validation?.passed === false || !editorCount || run.refinement?.state === 'failed' || bg?.contaminated || bg?.status === 'fallback' || (bg?.quality && bg.quality !== 'usable') ? 'PARTIAL' : 'READY FOR EDITOR';
+  return run.warnings.some(w => w.startsWith('TEMPLATE_')) || !editorCount || run.refinement?.state === 'failed' || bg?.contaminated || bg?.status === 'fallback' || (bg?.quality && bg.quality !== 'usable') ? 'PARTIAL' : 'READY FOR EDITOR';
 }
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const duration = (ms: number | null | undefined) => ms === null || ms === undefined ? 'Not recorded' : `${Math.floor(ms / 60000)}m ${Math.floor(ms / 1000) % 60}s`;
 const marks = { Complete: '✓', Running: '◉', Skipped: '—', Failed: '×', Warning: '!', Pending: '○' };
 const methods: Record<string, string> = { 'provider-base': 'Provider base', 'scene-composite': 'Scene composite', 'plain-field': 'Local continuation', 'ai-reconstruction': 'AI reconstruction', 'graphic-fill': 'Local graphic fill', 'local-fill': 'Local fallback' };
-/** Why a family run used the full planner instead of its family's saved plan (familyRuns.familyDecomposition). */
-const PLAN_NOT_REUSED: Record<string, string> = { 'plan-fresh': 'Fresh plan requested', 'provisional-family': 'New layout: validated with a full plan first', 'incompatible-evidence': 'Layout match not confirmed',
-  'generated-image-drift': 'Generated image drifted from the layout', 'generated-image-unchecked': 'Generated image not checked against the layout' };
 export function RunDashboard({ run, diagnostics: d, loadingError, actions, developer }: {
   run: ExperimentRun; diagnostics?: RunDiagnostics; loadingError?: string; actions?: ReactNode; developer?: ReactNode;
 }) {
@@ -84,23 +84,25 @@ export function RunDashboard({ run, diagnostics: d, loadingError, actions, devel
         <div><span>Background AI edit</span><strong>{background ? background.calls.length ? `Yes · ${background.calls.length}` : 'No' : '—'}</strong></div>
         <div><span>Total recorded runtime</span><strong>{duration(d?.elapsedMs)}</strong></div>
       </div>
-      {run.stage === 'failed' && <p className="lx-message lx-failure" role="alert">{`${failedStage?.label ?? failurePoint[run.error?.stage ?? ''] ?? 'Processing'} failed. `}{run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' ? 'The provider could not produce a valid decomposition.' : run.error?.code === 'PROVIDER_SAFETY_REJECTED' ? 'The provider withheld the result.' : 'The run stopped before editor layers were ready.'} Technical details are available below.</p>}
+      {run.stage === 'failed' && <div className="lx-message lx-failure" role="alert"><p>{`${failedStage?.label ?? failurePoint[run.error?.stage ?? ''] ?? 'Processing'} failed. `}{run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED'
+        ? 'Seedream could not produce a valid decomposition. No raw layers were returned.' : run.error?.code === 'PROVIDER_SAFETY_REJECTED' ? 'The provider withheld the result after its safety check. Choose a different image.' : 'The run stopped before editor layers were ready.'}</p>
+        {run.error?.provider && <p>Provider response (HTTP {run.error.provider.status}): {run.error.provider.messages.map(m => m.msg).join(' ')}</p>}
+        {run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' && <p>This request is final; Resume cannot recover it. Retry extraction reuses the saved plan without another planner call, but makes a new paid Seedream request and may fail again. You can also choose a different image or template.</p>}
+        <p>Technical details are available below.</p></div>}
       {status === 'PARTIAL' && <p className="lx-message">The result needs manual review. Check background quality and the final layers before using it.</p>}
       {loadingError && <p className="lx-message" role="alert">Recorded usage could not be loaded. Reopen this run to retry. Costs are unavailable.</p>}
       <div className="lx-actions">{actions}</div>
     </section>
-    {d?.reuse && <section className="lx-card" aria-label="Reusable template"><h3>Reusable template</h3>
-      <p><strong>{d.reuse.familyName} v{d.reuse.version}</strong> · {Math.round(d.reuse.matchConfidence * 100)}% match</p>
+    {d?.execution && <section className="lx-card" aria-label="Reusable template"><h3>Reusable template</h3>
+      <p><strong>{d.execution.template?.name ?? 'New template'} {d.execution.template && `v${d.execution.template.version}`}</strong></p>
       <div className="lx-stats">
-        <div><span>Structure analysis</span><strong>{d.reuse.analysisReused ? 'Reused · ₹0' : `${d.reuse.cheapPlannerCalls} cheap / ${d.reuse.strongPlannerCalls} strong call(s)`}</strong></div>
-        <div><span>Generation prompt</span><strong>{d.reuse.generationPromptTemplateReused ? 'Saved template · locally compiled · ₹0' : 'Original used unchanged'}</strong></div>
-        {d.reuse.imageValidation && <div><span>Generated image layout</span><strong>{d.reuse.imageValidation.passed ? 'Matches saved layout · local check · ₹0' : 'Differs from saved layout'}</strong></div>}
-        <div><span>Decomposition plan</span><strong>{d.reuse.decompositionPlanReused ? 'Reused · ₹0' : 'Fresh planner'}</strong>{!d.reuse.decompositionPlanReused && d.reuse.planNotReusedReason && <small>{PLAN_NOT_REUSED[d.reuse.planNotReusedReason] ?? d.reuse.planNotReusedReason}</small>}</div>
+        <div><span>Generation prompt</span><strong>{d.execution.generationPromptSource === 'saved-template' ? 'Reused locally · ₹0' : d.execution.generationPromptSource === 'planner' ? 'Captured with first plan' : 'No image edit requested'}</strong></div>
+        <div><span>Decomposition plan</span><strong>{d.execution.decompositionPlanSource === 'saved-template' ? 'Reused · ₹0' : d.execution.plannerReason === 'plan-fresh' ? 'Planner: user chose Plan fresh' : 'Planner: new structure'}</strong></div>
+        <div><span>GPT planner</span><strong>{d.execution.plannerCallsAvoided ? 'Skipped · 0 calls' : `${d.stages.find(s => s.id === 'planner')?.calls.length ?? 0} calls`}</strong></div>
       </div>
-      {d.reuse.imageValidation?.passed === false && <p>The generated image no longer matched the saved layout, so it was planned fresh: {d.reuse.imageValidation.problems.join(' ')}</p>}
-      <p>{plural(d.reuse.avoided.analysis + d.reuse.avoided.planner, 'planning call')} avoided. {d.reuseSaving ? `Estimated saving: ${rupees(d.reuseSaving.knownInr)} against recorded family averages.` : 'Saving unavailable until comparable usage is recorded.'}</p>
-      {d.reuse.validation?.passed === false && <p role="alert">Reused plan needs review: {d.reuse.validation.problems.join(' ')}</p>}
-      <DiagnosticDisclosure title="Reuse details"><p>{d.reuse.familyId} · {d.reuse.matchMethod} · {d.reuse.planNotReusedReason}</p><p>{d.reuseSaving?.notes.join(' ')}</p><p>Savings are a comparison estimate; they are never subtracted from actual run cost.</p></DiagnosticDisclosure>
+      {d.execution.inspection && <p>{d.execution.inspection.reason}</p>}
+      <p>{plural(d.execution.plannerCallsAvoided, 'planner call')} avoided. {d.reuseSaving ? `Estimated saving: ${rupees(d.reuseSaving.knownInr)} using typical planner usage.` : 'No verified monetary saving available.'}</p>
+      <DiagnosticDisclosure title="Reuse details"><p>{d.execution.mode} · {d.execution.executionId}</p><p>{d.reuseSaving?.notes.join(' ')}</p><p>Comparison estimates are never subtracted from actual run costs.</p></DiagnosticDisclosure>
     </section>}
     <section className="lx-card"><h3>Original / final comparison</h3><div className="lx-comparison">
       <figure><figcaption>Original <small>{run.original.width}×{run.original.height}</small></figcaption><img src={f(run.original.file)} alt="Original upload" /></figure>
@@ -136,10 +138,14 @@ export function RunDashboard({ run, diagnostics: d, loadingError, actions, devel
         <p>{bg ? methods[bg.method] ?? bg.method : 'See final reconstruction'}</p><p>AI calls: {background?.calls.length ?? '—'} · {background ? costText(background.cost) : 'Cost unavailable'}</p>
         {background?.calls.map((c, i) => <p className="lx-muted" key={i}>{c.model ?? 'Model not recorded'}</p>)}
         {bg?.quality && bg.quality !== 'usable' && <p className="lx-message">Background quality is {bg.quality}. Review the recovered area.</p>}
+        {bg?.steps && <DiagnosticDisclosure title="Why each recovery step ran or was skipped"><ol className="lx-steps" aria-label="Background recovery steps">{bg.steps.map(step => <li key={step.step} data-outcome={step.outcome}>
+          <strong>{STEP_LABELS[step.step]}: {step.outcome}{step.call ? ' · 1 paid call' : ''}</strong><span>{step.reason}</span></li>)}</ol>
+          {bg.trust && <p className="lx-muted">Local continuation {bg.trust.trusted ? 'trusted' : 'not trusted'}: {bg.trust.reason}</p>}</DiagnosticDisclosure>}
       </section>
       <section className="lx-card" aria-label="Recursive cleanup"><h3>Recursive cleanup</h3><strong>{residual?.calls.length ?? '—'} / {run.refinement?.options.maxDepth ?? 0} passes used</strong>
         <p>{residual?.result ?? 'Usage not loaded'}</p><p>Additional raw layers: {residual?.calls.length ? residual.calls.every(c => c.rawLayers !== undefined) ? residual.calls.reduce((n, c) => n + c.rawLayers!, 0) : 'Unknown' : 0}</p>
         <p>Extra Seedream cost: {residual ? costText(residual.cost) : 'Unavailable'}</p>
+        {run.refinement?.stopDetail && <p className="lx-muted" data-testid="recursion-decision">Why: {run.refinement.stopDetail}</p>}
       </section>
     </div>
     <section className="lx-card lx-debug" aria-label="Debug tools"><h3>Inspect details</h3>

@@ -28,8 +28,8 @@ describe('reference offer creative choices', () => {
     }
   });
   it('accepts the actual AirPods analysis hierarchy separators and keeps printed brand/website evidence', () => {
-    const { analysis: value, templateKey } = parseImageAnalysisResponse(airPodsAnalysisFixture);
-    expect(templateKey).toBe('template-b');
+    // Captured before the analysis stopped choosing an A/B/C layer style: that old field is ignored.
+    const { analysis: value } = parseImageAnalysisResponse(airPodsAnalysisFixture);
     const hierarchy = 'hero headphone (dominant) > headline text > lower product-name panel/CTA > brand mark';
     expect(value.composition.visualHierarchy).toBe(hierarchy);
     expect(value.visibleText.description).toBe(airPodsAnalysisFixture.analysis.visibleText.description);

@@ -1,5 +1,4 @@
 import { IMAGE_TEMPLATE_LIMITS } from './imageTemplateGeneration.js';
-import { GENERATION_TEMPLATE_KEYS, type GenerationTemplateKey } from './templateGeneration.js';
 
 /** Analysis is evidence, not a generation prompt. Limits also describe the strict provider schema. */
 const HERO_FIELDS = { identity: 120, appearance: 320, color: 60, orientation: 100, cameraAngle: 100, position: 100, relativeScale: 60 };
@@ -35,7 +34,7 @@ export const IMAGE_ANALYSIS_SCHEMA = object({
     preservationRules: list(IMAGE_ANALYSIS_LIMITS.preservationRules),
     design: object({ ...strings(DESIGN_FIELDS), subjectMode: { type: 'string', enum: ['single', 'collection', 'none', 'unclear'] }, zones: object(strings(ZONE_FIELDS)) }),
   }),
-  suggested_name: string(IMAGE_TEMPLATE_LIMITS.name), decomposition_template: { type: 'string', enum: [...GENERATION_TEMPLATE_KEYS] }, reason: string(IMAGE_ANALYSIS_LIMITS.fact),
+  suggested_name: string(IMAGE_TEMPLATE_LIMITS.name),
 });
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -96,10 +95,8 @@ export function normalizeImageAnalysis(value: unknown): ImageVisualAnalysis {
     visibleText: { present: typeof text.present === 'boolean' ? text.present : null, description: compactVisualFact(text.description, IMAGE_ANALYSIS_LIMITS.fact) },
     preservationRules: facts(input.preservationRules, IMAGE_ANALYSIS_LIMITS.preservationRules) };
 }
-export function parseImageAnalysisResponse(value: unknown): { analysis: ImageVisualAnalysis; templateKey: GenerationTemplateKey; reason: string } {
-  const input = record(value);
-  if (!(GENERATION_TEMPLATE_KEYS as readonly unknown[]).includes(input.decomposition_template)) throw new Error('The visual analysis did not choose a valid A/B/C layer style.');
-  return { analysis: normalizeImageAnalysis(input.analysis), templateKey: input.decomposition_template as GenerationTemplateKey, reason: compactVisualFact(input.reason, IMAGE_ANALYSIS_LIMITS.fact) };
+export function parseImageAnalysisResponse(value: unknown): { analysis: ImageVisualAnalysis } {
+  return { analysis: normalizeImageAnalysis(record(value).analysis) };
 }
 
 const INTRO = 'Faithfully preserve the uploaded reference.';

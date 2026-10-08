@@ -11,7 +11,7 @@
  * prompt must follow. The sizes, the limits and how a ratio's prompt is assembled are the shared ones; nothing here
  * belongs to Template A, B or C.
  */
-import { buildGenerationVariantPrompt, GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS, type GenerationAspectRatio } from './templateGeneration.js';
+import { buildGenerationVariantPrompt, GENERATION_IMAGE_SIZES, GENERATION_PROMPT_LIMITS, type GenerationAspectRatio } from './imageGeneration.js';
 
 export const IMAGE_TEMPLATE_VERSION = 'image-template-v1';
 /** The ratios offered, in the order they are shown and generated. */

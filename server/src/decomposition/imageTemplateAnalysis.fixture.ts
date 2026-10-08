@@ -10,7 +10,7 @@ export function verboseImageAnalysis(characters: number) {
       palette: ['lavender', 'white', 'neutral gray'], lighting: 'soft upper-left studio light', materials: ['matte metal', 'glass lenses'], backgroundTreatment: 'neutral gray studio background',
       visibleText: { present: false, description: '' }, preservationRules: ['Preserve the three-lens triangular camera module'],
     },
-    suggested_name: 'Lavender phone studio', decomposition_template: 'template-b', reason: 'One product is the hero.',
+    suggested_name: 'Lavender phone studio',
   };
   const extra = Math.max(0, characters - JSON.stringify(response).length);
   response.analysis.hero.appearance += ' polished'.repeat(Math.floor(extra / 9)) + ' '.repeat(extra % 9);

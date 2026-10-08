@@ -1,91 +1,88 @@
 import { expect, test } from '@playwright/test';
+import { API, createTemplate, fixture, openWizard, runOf, writesOf } from './wizard.helpers';
 
-test('Create Template from Image stores 13 raw candidates but previews, imports and reopens only 6 curated layers', async ({ page, request }, testInfo) => {
+// Offline fixture server, injected local providers. The curation creative's fake Seedream answer has 13 raw candidates
+// (an empty layer, a scene plate, a translucent shadow, a text outline, a helper, near-empty noise, a duplicate phone…),
+// of which 6 are worth editing. Template creation shows, imports and reopens only those 6; the run dashboard keeps the
+// rest for diagnosis, and reading it never calls a provider.
+test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+
+test('Create New Template stores 13 raw candidates but previews, imports and reopens only 6 curated layers; Saved Runs and the dashboard read them without provider calls', async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'One full route journey; viewport regressions are covered separately.');
-  test.setTimeout(120_000);
-  page.on('dialog', dialog => void dialog.accept());
-  await page.route(url => /^https?:$/.test(url.protocol) && url.hostname !== '127.0.0.1', route => route.abort());
-  await page.goto('/');
-  await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await page.getByRole('tab', { name: 'Create Template', exact: true }).click();
-  await page.getByRole('button', { name: 'Create Template from Image', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Create Template from Image' });
-  await dialog.getByRole('button', { name: 'New template' }).click();
-  await dialog.getByLabel('Legacy prompt workflow').check();
-  const name = `Curated mint phone ${Date.now()}`;
-  await dialog.getByLabel('Template name').fill(name);
-  await dialog.getByLabel('Reference image', { exact: true }).setInputFiles({ name: 'mint-phone.png', mimeType: 'image/png', buffer: await (await request.get('/__test__/reference.png')).body() });
-  await dialog.getByRole('checkbox', { name: '16:9 Landscape' }).uncheck();
-  await dialog.getByRole('checkbox', { name: '4:5 Portrait' }).uncheck();
-  await dialog.getByRole('button', { name: 'Generate prompt from image' }).click();
-  await expect(dialog.getByLabel('Generated prompt')).toHaveValue(/lavender/, { timeout: 10_000 });
-  await dialog.getByLabel('Generated prompt').fill('Mint phone curation fixture: seated person holding a phone, side product, headline, Pro badge and secondary text.');
-  await dialog.getByRole('button', { name: 'Generate selected templates (1)' }).click();
-  const card = dialog.getByRole('article', { name: '1:1 result' });
-  await expect(card.getByTestId('status-1x1')).toHaveText('Generated', { timeout: 15_000 });
-  await card.getByRole('button', { name: 'Decompose into layers' }).click();
-  await expect(card.getByTestId('status-1x1')).toHaveText('Decomposed', { timeout: 60_000 });
-  await card.getByText('Preview layers', { exact: true }).click();
-  await expect(card.locator('.cti-layer-previews img')).toHaveCount(6);
-  const headers = { Origin: new URL(page.url()).origin };
-  const templates = (await (await request.get('/api/layerize-experiment/image-templates', { headers })).json()).templates;
-  const template = templates.find((t: { name: string }) => t.name === name), runId = template.variants[0].decomposition.runId;
-  const run = await (await request.get(`/api/layerize-experiment/runs/${runId}`, { headers })).json();
+  test.setTimeout(180_000);
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const panel = await openWizard(page);
+  const created = await createTemplate(page, panel, request, { name: 'mint-phone.png', buffer: await fixture(request, '/__test__/curation.png') });
+  expect(created.usage).toMatchObject({ plannerCalls: 1, imageGenerationCalls: 0 });
+  const runId: string = created.runId;
+  await panel.getByText('Preview layers', { exact: true }).click();
+  await expect(panel.locator('.cti-layer-previews img')).toHaveCount(6);
+
+  const run = await runOf(request, runId);
   expect(run.refinement.curation.counts).toMatchObject({ rawLayers: 13, editorLayers: 6 });
-  expect(run.calls).toMatchObject({ seedreamResidual: 0, backgroundReconstruction: 0 });
+  expect(run.calls).toMatchObject({ planner: 1, seedreamResidual: 0, backgroundReconstruction: 0 });
   expect(run.editorLayerFiles).toEqual(run.outputLayers.map((l: { file: string }) => l.file));
   expect(run.outputLayers.filter((l: { placement: { kind: string } }) => l.placement.kind === 'base')).toHaveLength(1);
   for (const fragment of ['Seated model', 'Oversized phone product', 'Headline', 'Pro badge', 'Chinese secondary text'])
     expect(run.outputLayers.some((l: { name: string }) => l.name.includes(fragment)), fragment).toBe(true);
   for (const name of ['Layer 0', 'Scene plate', 'Translucent oversized-phone shadow', 'Headline outline', 'Fallback helper', 'Layer 12', 'Duplicate phone product'])
     expect(run.outputLayers.some((l: { name: string }) => l.name === name), name).toBe(false);
-  const debug = await (await request.get(`/api/layerize-experiment/runs/${runId}/files/decomposition-debug.json`, { headers })).json();
+  const debug = await (await request.get(`${API}/runs/${runId}/files/decomposition-debug.json`)).json();
   expect(debug.rawLayers).toHaveLength(13);
   const technical = debug.curation.entries.filter((e: { editorVisible: boolean }) => !e.editorVisible).map((e: { file: string }) => `/files/${e.file}`);
+  expect(technical.length).toBeGreaterThan(0);
+
+  // The editor imports only the 6 curated layers and never downloads a technical one.
   const fetched: string[] = [];
   page.on('request', r => fetched.push(new URL(r.url()).pathname));
-  await card.getByRole('button', { name: 'Open in editor', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Open in Editor', exact: true }).click();
+  await expect(panel).toHaveCount(0);
   const layers = page.getByRole('list', { name: 'Design layers' });
   await expect(layers.locator('li')).toHaveCount(6);
   await expect(layers).not.toContainText(/Layer 0|Fallback helper|Layer 12|Duplicate phone/);
   expect(fetched.filter(url => technical.some((path: string) => url.endsWith(path)))).toEqual([]);
-  await expect(page.getByLabel('Open design').locator('option:checked')).toHaveText(`${name} · 1:1 · 1 version`);
+  await expect(page.getByLabel('Open design').locator('option:checked')).toHaveText(`${created.template.name} · original · 1 version`);
   await page.screenshot({ path: testInfo.outputPath('curated-editor.png') });
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
   await page.reload();
   await expect(layers.locator('li')).toHaveCount(6);
   await expect(page.getByLabel('Active version')).toHaveCount(0);
-  // The diagnostic dashboard reads these persisted facts; opening/reopening never calls a provider.
-  const callsBefore = await (await request.get('/__test__/call-counts')).json();
+
+  // Saved Runs and the run dashboard only read persisted facts: the page sends no request that could spend anything.
+  const writes = writesOf(page), before = await runOf(request, runId);
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
   await panel.getByRole('tab', { name: 'Saved Runs' }).click();
   await panel.getByRole('textbox', { name: 'Search saved runs' }).fill(runId);
   await panel.getByLabel('Filter runs by status').selectOption('READY FOR EDITOR');
   await expect(panel.getByRole('article')).toHaveCount(1);
+  await expect(panel.getByRole('article', { name: `Saved run ${runId}`, exact: true })).toContainText(created.template.name);
   await panel.getByRole('textbox', { name: 'Search saved runs' }).fill('no-such-run');
   await expect(panel.getByRole('heading', { name: 'No matching runs' })).toBeVisible();
   await panel.getByRole('button', { name: 'Clear filters' }).click();
   await page.screenshot({ path: testInfo.outputPath('saved-runs-desktop.png') });
   await panel.getByRole('article', { name: `Saved run ${runId}`, exact: true }).getByRole('button', { name: 'View run' }).click();
   await expect(panel.getByRole('status')).toHaveText('READY FOR EDITOR');
-  await expect(panel.getByTestId('run-cost')).toHaveText('Calculated ₹56.01');
-  await expect(panel.getByTestId('cost-reference')).toContainText('₹0.41');
-  await expect(panel.getByTestId('cost-generation')).toContainText('₹5.90');
+  await expect(panel.getByTestId('run-cost')).toHaveText('Calculated ₹49.71');
   await expect(panel.getByTestId('cost-planner')).toContainText('₹10.22');
   await expect(panel.getByTestId('cost-seedream')).toContainText('₹39.49');
-  await expect(panel.getByTestId('cost-residual')).toContainText('₹0.00');
-  await expect(panel.getByTestId('cost-background')).toContainText('₹0.00');
+  for (const stage of ['reference', 'generation', 'residual', 'background']) await expect(panel.getByTestId(`cost-${stage}`)).toContainText('₹0.00');
   await expect(panel.getByTestId('layer-story')).toHaveText('13 → 6');
-  await expect(panel.getByTestId('cost-target')).toContainText('Above ₹33 target by ₹23.01');
-  await expect(panel.getByRole('region', { name: 'Pipeline', exact: true })).toContainText('Generate image');
+  await expect(panel.getByTestId('cost-target')).toContainText('Above ₹33 target by ₹16.71');
+  await expect(panel.getByRole('region', { name: 'Reusable template' })).toContainText('Planner: new structure');
   await expect(panel.getByTestId('editor-layer-grid').locator('img')).toHaveCount(6);
   await expect(panel.getByTestId('raw-layer-grid')).toHaveCount(0);
+  // Why each background step ran or was skipped, and why the recursion stopped: in words, with no paid call.
+  await panel.getByText('Why each recovery step ran or was skipped', { exact: true }).click();
+  const steps = panel.getByRole('list', { name: 'Background recovery steps' });
+  await expect(steps.getByRole('listitem')).toHaveCount(4);
+  await expect(steps).toContainText('Seedream scene layers: chosen');
+  await expect(steps).toContainText('AI reconstruction: skipped');
+  await expect(steps).not.toContainText('paid call');
+  await expect(panel.getByTestId('recursion-decision')).toContainText('Why:');
+  await panel.getByText('Why each recovery step ran or was skipped', { exact: true }).click();
   await expect(panel.getByText('offline-planner-request', { exact: false })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('dashboard-desktop.png') });
-  await panel.getByTestId('editor-layer-grid').scrollIntoViewIfNeeded();
-  await page.screenshot({ path: testInfo.outputPath('editor-layer-grid.png') });
   await panel.getByText('Raw / internal layers (13)', { exact: true }).click();
   await expect(panel.getByTestId('raw-layer-grid').locator('img')).toHaveCount(13);
   await expect(panel.getByTestId('raw-layer-grid')).toContainText('Translucent oversized-phone shadow');
@@ -98,24 +95,26 @@ test('Create Template from Image stores 13 raw candidates but previews, imports 
   await panel.getByText('Developer details', { exact: true }).click();
   await expect(panel.getByText('offline-planner-request', { exact: false })).toBeVisible();
   await panel.getByText('Developer details', { exact: true }).click();
+
+  // Narrow screens: the dashboard and Saved Runs fit without horizontal scrolling.
   await page.setViewportSize({ width: 390, height: 844 });
   await panel.locator('.ws-body').evaluate(el => { el.scrollTop = 0; });
   await expect(panel.getByTestId('run-cost')).toBeVisible();
   expect(await panel.locator('.ws-body').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('dashboard-narrow.png') });
-  await panel.getByTestId('cost-seedream').scrollIntoViewIfNeeded();
-  await page.screenshot({ path: testInfo.outputPath('dashboard-narrow-costs.png') });
   await panel.getByRole('tab', { name: 'Saved Runs' }).click();
   expect(await panel.locator('.ws-body').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await expect(panel.getByRole('article', { name: `Saved run ${runId}`, exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('saved-runs-narrow.png') });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.reload();
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   await panel.getByRole('tab', { name: 'Saved Runs' }).click();
   await panel.getByRole('article', { name: `Saved run ${runId}`, exact: true }).getByRole('button', { name: 'View run' }).click();
-  await expect(panel.getByTestId('run-cost')).toHaveText('Calculated ₹56.01');
   await expect(panel.getByTestId('layer-story')).toHaveText('13 → 6');
-  expect(await (await request.get('/__test__/call-counts')).json()).toEqual(callsBefore);
+  expect(writes).toEqual([]);
+  expect((await runOf(request, runId)).calls).toEqual(before.calls);
+
   // A persisted failure shows the known subtotal plus an unknown potential charge.
   const failure = await (await request.post(`/__test__/dashboard-failure/${runId}`)).json();
   await page.reload();
@@ -123,13 +122,11 @@ test('Create Template from Image stores 13 raw candidates but previews, imports 
   await panel.getByRole('tab', { name: 'Saved Runs' }).click();
   await panel.getByRole('article', { name: `Saved run ${failure.id}`, exact: true }).getByRole('button', { name: 'View run' }).click();
   await expect(panel.getByRole('status')).toHaveText('FAILED');
-  await expect(panel.getByTestId('run-cost')).toHaveText('₹16.53 known + unknown');
+  await expect(panel.getByTestId('run-cost')).toHaveText('₹10.22 known + unknown');
   await expect(panel.getByTestId('cost-seedream')).toContainText('Unknown');
   await expect(panel.getByRole('alert')).toContainText('could not produce a valid decomposition');
   await expect(panel.getByTestId('editor-layer-grid').locator('img')).toHaveCount(0);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await panel.locator('.ws-body').evaluate(el => { el.scrollTop = 0; });
   await page.screenshot({ path: testInfo.outputPath('dashboard-failure.png') });
-  expect(await (await request.get('/__test__/call-counts')).json()).toEqual(callsBefore);
-
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
 });

@@ -9,7 +9,7 @@ import { createRun, executeRun, readRun, type RunnerDeps } from './layerizeExper
 import { createOpenAIPlanner } from './layerizePlanner.js';
 import { compositeOnGrid, fidelity, flattenRgba, gridFor, layerShape, rgbOnGrid } from './backgroundContamination.js';
 import { groupInteractions, type InteractionEntry } from './interactionGrouping.js';
-import { PROTECTION_CLAUSE, semanticPlan } from './semanticPlanner.js';
+import { PROTECTION_CLAUSE, semanticPlan, type SemanticAnalysis } from './semanticPlanner.js';
 import { semanticFixture } from './semanticPlanner.fixture.js';
 import { rowFillEdit } from './complexOffer.fixture.js';
 import { BAG_PART, BANGLE_PARTS, bangleAnalysis, creative, HOLDING_PARTS, holdingAnalysis, part, partPng, WOMAN_ARM_PART, WOMAN_BODY_PART, WOMAN_WITH_FINGERS } from './protectedInteraction.fixture.js';
@@ -134,6 +134,21 @@ describe('grouping: what Seedream returned, made safe', () => {
     expect(hands.groups).toHaveLength(0);
   });
 
+  it('planner elements matched by name keep their protection: a "person occlusion fragment" is a fragment, a worn product is an ornament', async () => {
+    // A planner that describes its elements the way Seedream names the layers: every element is matched to its layer.
+    const describedAs = (analysis: SemanticAnalysis, names: Record<string, string>): SemanticAnalysis => ({ ...analysis, elements: analysis.elements.map(e => ({ ...e, description: names[e.id] ?? e.description })) });
+    const holding = describedAs(holdingAnalysis('high'), { woman_base: 'Woman base', phone_device: 'Smartphone with white screen', success_badge: 'Green success badge on the screen', phone_grip_foreground: 'Foreground gripping finger fragments' });
+    const held = await grouped(['field', 'woman', 'phone', 'badge', 'fingers', 'headline', 'pill', 'get', 'chevron'].map(H), HOLDING_PARTS, { heldObjects: true }, holding);
+    expect(held.entries.find(e => e.layer.name === 'Foreground gripping finger fragments')).toBeUndefined();
+    expect(groupOf(held.entries, 'Woman base')!.layer.grouping!.members.map(m => [m.name, m.role])).toEqual([['Woman base', 'parent'], ['Smartphone with white screen', 'held_object'],
+      ['Green success badge on the screen', 'object_content'], ['Foreground gripping finger fragments', 'finger_fragment']]);
+    const bangles = describedAs(bangleAnalysis(), { left_hands: 'Left paired hands', left_bangles: 'Left Coorgi gold bangle stack', center_hands: 'Center crossed hands', center_bangles: 'Center South-Indian gold bangle cluster',
+      right_hands: 'Right paired hands', right_bangles: 'Right Bengali gold bangle stack', standalone_bangle: 'Standalone gold bangle product' });
+    const worn = await grouped(['leftHands', 'leftBangles', 'centerHands', 'centerBangles', 'rightHands', 'rightBangles', 'standalone', 'headline'].map(B), BANGLE_PARTS, { heldObjects: true }, bangles);
+    for (const hands of ['Left paired hands', 'Center crossed hands', 'Right paired hands']) expect(groupOf(worn.entries, hands)!.layer.grouping!.members.map(m => m.role)).toEqual(['parent', 'worn_ornament']);
+    expect(names(worn.entries)).toEqual(expect.arrayContaining(['Standalone gold bangle product']));
+    expect(groupOf(worn.entries, 'Standalone gold bangle product')).toBeUndefined();
+  });
   it('a run that asked for a separate held object keeps the phone and its grip as they are', async () => {
     const result = await grouped(['woman', 'phone', 'fingers'].map(H), HOLDING_PARTS, { heldObjects: false });
     expect(result.groups).toHaveLength(0);
@@ -178,7 +193,7 @@ describe('runner with fake providers: planner, Seedream, recursion, background a
     const create = vi.fn(async () => ({ status: 'completed', output: [], output_text: JSON.stringify(analysis) }));
     const reconstruct = vi.fn(async (request: { image: Buffer; mask: Buffer }) => ({ image: await rowFillEdit(request.image, request.mask) }));
     const deps: RunnerDeps = { planner: createOpenAIPlanner({ client: { responses: { create } } as never }), transport: () => transport, sleep: async () => undefined, backgroundReconstructor: { model: 'test-edit', reconstruct } };
-    const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'protected-run-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement: true });
+    const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'protected-run-')), original, { mode: 'generated' }, { refinement: true });
     await executeRun(dir, deps);
     return { dir, run: readRun(dir), submitted, reconstruct };
   }

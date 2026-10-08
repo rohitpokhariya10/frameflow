@@ -98,3 +98,7 @@
   .ff-lab .lx-layer { padding: 7px; }
   .ff-lab .lx-layer img { height: 130px; }
 }
+.lx-steps { margin: 8px 0; padding-left: 18px; display: grid; gap: 8px; font-size: 12.5px; }
+.lx-steps li { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.lx-steps li[data-outcome='chosen'] strong { color: var(--color-primary); }
+.lx-steps li span { color: var(--color-muted); }

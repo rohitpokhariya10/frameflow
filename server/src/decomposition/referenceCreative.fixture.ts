@@ -1,6 +1,6 @@
 /** Deterministic product-ad evidence for local tests; never a live provider response. */
 export const referenceCreativeFixture = {
-  suggested_name: 'Premium headphones campaign', decomposition_template: 'template-b', reason: 'One product in a panelled advertisement',
+  suggested_name: 'Premium headphones campaign',
   analysis: {
     sceneType: 'Minimal blue premium electronics advertisement',
     hero: { identity: 'AirPods Max headphones', appearance: 'Silver over-ear headphones with a mesh headband', color: 'silver', orientation: 'upright three-quarter', cameraAngle: 'front three-quarter', position: 'right center', relativeScale: 'large dominant product' },

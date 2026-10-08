@@ -70,12 +70,21 @@ it('persists full-person candidate identity and both point labels through review
       const worker = new DecompositionWorker(repo, store, config);
       try { expect(await worker.tick()).toBe(true); expect(dispatch).toHaveBeenCalledTimes(1); }
       finally { dispatch.mockRestore(); }
-      const finished = repo.getJob(job.id)!;
+      let finished = repo.getJob(job.id)!;
       if (candidateId === 'candidate-5' && action === 'accept-masks') {
         expect(infer).not.toHaveBeenCalled();
         expect(finished.review?.code).toBe('GUIDANCE_MASK_CONFLICT');
         expect(finished.review?.message).toContain('POSITIVE_GUIDANCE_UNSATISFIED');
       } else {
+        // Source ownership changes now pause for explicit confirmation before alpha refinement.
+        expect(finished.phase).toBe(4);
+        expect(finished.review?.code).toBe('SEMANTIC_OWNERSHIP_REVIEW');
+        expect(infer).toHaveBeenCalledTimes(3);
+        repo.reviewJob(job.id, 'operator', { expectedRevision: finished.revision, action: 'accept-masks', objects: [{ id: candidateId, candidateId, selected: true, label: 'person_with_phone', points }] });
+        const confirm = vi.spyOn(pipeline, 'runPhase').mockImplementation(async context => { context.infer = infer; await execute(context); });
+        try { expect(await worker.tick()).toBe(true); }
+        finally { confirm.mockRestore(); }
+        finished = repo.getJob(job.id)!;
         const refined = finished.data.refined as { id: string; maskArtifactId: string; input: { candidateId: string; positivePointCount: number; negativePointCount: number }; warnings: string[] }[];
         expect(finished.phase).toBe(5);
         expect(finished.review?.code).toBe('REFINEMENT_VISUAL_REVIEW');

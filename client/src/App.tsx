@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { DecompositionPanel } from './features/decomposition/DecompositionPanel';
 import { LayerizeExperimentPanel } from './features/decomposition/LayerizeExperimentPanel';
 import { TemplateStudio } from './features/templates/TemplateStudio';
-import { CreateTemplateFromImage } from './features/imageTemplates/CreateTemplateFromImage';
+
 import { useAppSelector } from './store';
 import { NewDesignDialog } from './features/editor/NewDesignDialog';
 import { LEGACY_IMAGE_TO_LAYERS } from './lib/featureFlags';
@@ -20,13 +20,12 @@ export default function App({ session }: { session: ProjectSession }) {
   const [templating, setTemplating] = useState(false);
   // Create Template from Image: the creative team's image-first flow, a dialog of its own, opened from the OpenAI +
   // Seedream test panel (the bottom row has no room for another launcher beside the zoom control on laptop screens).
-  const [fromImage, setFromImage] = useState(false);
+
   // The earlier generic "Image to layers" flow is shown only behind its flag (lib/featureFlags.ts). Without it the two
   // other launchers move into the corner it would have taken; with it everything is where it always was.
   return <DesignsContext.Provider value={session}>{LEGACY_IMAGE_TO_LAYERS && <><button className="decomp-launch" onClick={() => setDecomposing(true)}>Image to layers</button>{decomposing && <DecompositionPanel onClose={() => setDecomposing(false)} />}</>}
-    <button className="decomp-launch" style={LEGACY_IMAGE_TO_LAYERS ? { right: 160 } : undefined} onClick={() => setExperimenting(true)}>OpenAI + Seedream test</button>{experimenting && <LayerizeExperimentPanel onClose={() => setExperimenting(false)} onCreateFromImage={() => { setExperimenting(false); setFromImage(true); }} />}
+    <button className="decomp-launch" style={LEGACY_IMAGE_TO_LAYERS ? { right: 160 } : undefined} onClick={() => setExperimenting(true)}>OpenAI + Seedream test</button>{experimenting && <LayerizeExperimentPanel onClose={() => setExperimenting(false)} />}
     <button className="decomp-launch" style={{ right: LEGACY_IMAGE_TO_LAYERS ? 388 : 250 }} onClick={() => setTemplating(true)}>Create Own Template</button>{templating && <TemplateStudio onClose={() => setTemplating(false)} />}
-    {fromImage && <CreateTemplateFromImage onClose={() => setFromImage(false)} />}
     <EditorShell key={projectId} onNewDesign={() => setConfirming(true)} />
     {confirming && <NewDesignDialog session={session} onClose={() => {
       setConfirming(false);

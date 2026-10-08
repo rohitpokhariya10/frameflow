@@ -252,17 +252,44 @@ export function meaningfulRegions(assessment: Pick<ContaminationAssessment, 'reg
   return eligible.filter(r => r.areaPercent >= minAreaPercent || (significantPieces && pieces.includes(r)));
 }
 
-export type Retention = { file: string; name?: string; distinctPixels: number; retainedPercent: number };
+export type Retention = { file: string; name?: string; distinctPixels: number; retainedPercent: number;
+  /** The layer's outline where it stood out in the original (strong edge pixels), and the share the candidate still shows. */
+  edgePixels?: number; edgeRetainedPercent?: number };
+/**
+ * Calibrated on saved live runs: real leftovers in Seedream's bases kept 55–100% of their outline, color coincidences
+ * (a white glow where a white product stood) 0–0.3%. Outlines are judged from MIN_OUTLINE_PIXELS on; softer shapes
+ * (plush decorations) are judged by color alone.
+ */
+export const RECREATED_EDGE_PERCENT = 20, MIN_OUTLINE_PIXELS = 100;
+/**
+ * Whether a candidate background still shows a layer: its distinctive colors where it was AND, when its outline is
+ * clear enough to judge, that outline. A smooth glow that happens to match a white product's color does not recreate it;
+ * a panel whose text was removed but whose edges remain does. (Its inner details may belong to other layers.)
+ */
+export const recreates = (r: Retention, retainedPercent: number) => r.retainedPercent >= retainedPercent
+  && (r.edgeRetainedPercent === undefined || (r.edgePixels ?? 0) < MIN_OUTLINE_PIXELS || r.edgeRetainedPercent >= RECREATED_EDGE_PERCENT);
+const edgesOf = (rgb: ArrayLike<number>, w: number) => {
+  const n = rgb.length / 3, h = n / w, L = (i: number) => 0.299 * rgb[i * 3] + 0.587 * rgb[i * 3 + 1] + 0.114 * rgb[i * 3 + 2], g = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const i = y * w + x; g[i] = Math.abs(L(i + 1) - L(i - 1)) + Math.abs(L(i + w) - L(i - w)); }
+  return g;
+};
 /**
  * How much of each layer `candidate` still shows where that layer is. Only the layer's distinctive pixels count (where
  * the original differs clearly from the estimated background `model`), so a product colored like its background is not
  * mistaken for a leftover. retainedPercent: the share of those pixels where candidate still matches the original.
  * Layers with fewer than 24 distinctive grid pixels are left out (nothing to judge).
  */
-export function objectRetention(candidate: Uint8Array, original: Uint8Array, model: Float32Array, layers: { file: string; name?: string; alpha: Uint8Array }[]): Retention[] {
+export function objectRetention(candidate: Uint8Array, original: Uint8Array, model: Float32Array, layers: { file: string; name?: string; alpha: Uint8Array }[], width?: number): Retention[] {
   const out: Retention[] = [];
+  // With the grid width: also the layer's outline (its pixels within 2 of its edge, where the original's gradient is 30+)
+  // that the candidate keeps (half the gradient or more).
+  const go = width ? edgesOf(original, width) : undefined, gc = width ? edgesOf(candidate, width) : undefined;
   for (const layer of layers) {
-    let distinct = 0, retained = 0;
+    let distinct = 0, retained = 0, edges = 0, keptEdges = 0;
+    if (go && gc && width) {
+      const a = layer.alpha, w = width, outline = (i: number) => !a[i - 1] || !a[i + 1] || !a[i - w] || !a[i + w] || !a[i - 2] || !a[i + 2] || !a[i - 2 * w] || !a[i + 2 * w];
+      for (let i = 2 * w; i < a.length - 2 * w; i++) if (a[i] && go[i] >= 30 && outline(i)) { edges++; if (gc[i] >= 0.5 * go[i]) keptEdges++; }
+    }
     for (let i = 0; i < layer.alpha.length; i++) {
       if (!layer.alpha[i]) continue;
       const o = i * 3;
@@ -270,7 +297,8 @@ export function objectRetention(candidate: Uint8Array, original: Uint8Array, mod
       distinct++;
       if (Math.max(Math.abs(candidate[o] - original[o]), Math.abs(candidate[o + 1] - original[o + 1]), Math.abs(candidate[o + 2] - original[o + 2])) <= 20) retained++;
     }
-    if (distinct >= 24) out.push({ file: layer.file, ...(layer.name ? { name: layer.name } : {}), distinctPixels: distinct, retainedPercent: round(100 * retained / distinct, 1) });
+    if (distinct >= 24) out.push({ file: layer.file, ...(layer.name ? { name: layer.name } : {}), distinctPixels: distinct, retainedPercent: round(100 * retained / distinct, 1),
+      ...(go ? { edgePixels: edges, edgeRetainedPercent: round(100 * keptEdges / Math.max(1, edges), 1) } : {}) });
   }
   return out;
 }

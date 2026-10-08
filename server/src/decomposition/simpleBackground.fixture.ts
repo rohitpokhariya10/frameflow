@@ -66,7 +66,11 @@ export const plannedAnalysis = (summary: string, list: [string, string][]): Sema
   elements: list.map(([id, type], z) => element(id, type, z)), recommended_layer_count: list.length, decomposition_strategy: 'Separate the editable elements from the background.',
   downstream_decomposition_prompt: `Create ${list.length} layers back-to-front: ${list.map(([id]) => id.replace(/_/g, ' ')).join('; ')}.` });
 
-export type Edit = 'ghost' | 'rowfill' | 'none';
+/** A mottled plaster wall: a texture no local fill continues (it would smear it), and not a plain field or flat colors. */
+export const PLASTER_WALL: Part = { key: 'plaster', name: 'Textured lavender plaster wall', svg: '<defs><filter id="plaster" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="3" seed="7"/><feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  1.6 0 0 0 -0.55"/></filter></defs><rect width="1000" height="1000" fill="#9f8cc9"/><rect width="1000" height="1000" filter="url(#plaster)"/>' };
+
+/** ghost: the edit leaves a dark silhouette; rowfill: a row-wise continuation; { truth }: it returns the true background; none: no edit. */
+export type Edit = 'ghost' | 'rowfill' | 'none' | { truth: Buffer };
 /**
  * One refined, image-aware run through the real runner with every provider faked: the planner answers `analysis`,
  * Seedream answers each scripted pass in turn (its base, then the layers), the image edit answers `edit`. A Seedream
@@ -89,10 +93,13 @@ export async function refinedRun(original: Buffer, analysis: SemanticAnalysis, p
     status: vi.fn(async () => 'COMPLETED' as const), result: vi.fn(async (_e: string, id: string) => answers.get(id)), cancel: vi.fn(async () => undefined), download: vi.fn(async (url: string) => files[url]),
   } satisfies FalTransport;
   const create = vi.fn(async () => ({ status: 'completed', output: [], output_text: JSON.stringify(analysis) }));
-  const reconstruct = vi.fn(async (request: { image: Buffer; mask: Buffer }) => ({ image: edit === 'ghost' ? await ghostEdit(request.image, request.mask) : await rowFillEdit(request.image, request.mask) }));
+  const reconstruct = vi.fn(async (request: { image: Buffer; mask: Buffer }) => {
+    if (typeof edit === 'object') { const { width, height } = await sharp(request.image).metadata(); return { image: await sharp(edit.truth).resize(width!, height!, { fit: 'fill' }).png().toBuffer() }; }
+    return { image: edit === 'ghost' ? await ghostEdit(request.image, request.mask) : await rowFillEdit(request.image, request.mask) };
+  });
   const deps: RunnerDeps = { planner: createOpenAIPlanner({ client: { responses: { create } } as never }), transport: () => transport, sleep: async () => undefined,
     ...(edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-edit', reconstruct } }) };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'simple-background-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'simple-background-')), original, { mode: 'generated' }, { refinement });
   await executeRun(dir, deps);
   return { dir, run: readRun(dir), submitted, reconstruct, plannerCalls: create };
 }

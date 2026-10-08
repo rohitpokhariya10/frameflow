@@ -34,8 +34,8 @@ it.each([
     status: vi.fn(async () => 'COMPLETED' as const), result: vi.fn(async (_endpoint, id) => ({ layers: [{ image: { url: `https://v3b.fal.media/files/test/${id}.png` }, z_index: 0, name: 'Layer 0' }] })),
     download: vi.fn(async url => url.endsWith('/1.png') ? source : empty), cancel: vi.fn(async () => undefined) };
   const reconstruct = vi.fn(async () => { throw new Error('No background edit expected'); });
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'residual-cost-')), source, { mode: 'automatic' }, { templateKey: 'template-b', semanticPlanning: true, refinement: options });
-  const planner = vi.fn(async () => { throw new Error('Automatic mode must not call the planner'); });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'residual-cost-')), source, { mode: 'retry', fromRunId: 'saved-plan', prompt: 'Extract the product as its own layer.', planned_layers: [{ name: 'product', description: 'the product' }], warnings: [] }, { refinement: options });
+  const planner = vi.fn(async () => { throw new Error('A saved plan must not call the planner'); });
   const run = await executeRun(dir, { planner, transport: () => transport, backgroundReconstructor: { model: 'fake', reconstruct }, sleep: async () => undefined });
   expect(run.stage).toBe('done');
   expect(run.calls).toMatchObject({ planner: 0, seedreamInitial: 1, seedreamResidual: residualCalls, backgroundReconstruction: 0 });

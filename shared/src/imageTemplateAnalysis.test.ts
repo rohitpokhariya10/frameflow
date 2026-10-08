@@ -59,9 +59,8 @@ describe('structured visual analysis → local bounded prompt', () => {
     expect(compile(analysis)).toContain('No visible text or branding.');
     expect(compile({ ...analysis, visibleText: { present: true, description: 'SALE at top left' } })).toContain('Visible text/marks: SALE at top left.');
   });
-  it('rejects unusable core evidence, invalid counts and invalid layer styles; never needs a provider', () => {
+  it('rejects unusable core evidence and invalid counts; never needs a provider', () => {
     for (const input of [null, [], {}, { hero: null, objects: [] }]) expect(() => normalizeImageAnalysis(input)).toThrow(/no usable/);
     for (const count of [-1, 0, 1.5, 'four', Infinity]) expect(() => normalizeImageAnalysis({ objects: [{ kind: 'sphere', count }] })).toThrow(/count/);
-    expect(() => parseImageAnalysisResponse({ ...verboseImageAnalysis(3344), decomposition_template: 'unknown' })).toThrow(/layer style/);
   });
 });

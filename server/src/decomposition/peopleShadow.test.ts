@@ -45,7 +45,7 @@ async function run(original: Buffer, analysis: unknown, passes: { base: Part[]; 
   const reconstruct = vi.fn(async (request: { image: Buffer; mask: Buffer }) => ({ image: edit === 'ghost' ? await ghostEdit(request.image, request.mask) : await rowFillEdit(request.image, request.mask) }));
   const deps: RunnerDeps = { planner: createOpenAIPlanner({ client: { responses: { create } } as never }), transport: () => transport, sleep: async () => undefined,
     ...(edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-edit', reconstruct } }) };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'people-shadow-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'people-shadow-')), original, { mode: 'generated' }, { refinement });
   await executeRun(dir, deps);
   return { dir, run: readRun(dir), submitted, reconstruct, deps };
 }

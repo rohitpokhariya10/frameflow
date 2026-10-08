@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { BLUE_GHOST, BLUE_PANEL, BLUE_PANEL_WITH_SLAB, BLUE_PARTS, creative, LAVENDER_PARTS, OFFER_PARTS, OFFER_PATCH, OFFER_SPECKLES, part, plannedAnalysis, refinedRun } from './simpleBackground.fixture.js';
+import { BLUE_GHOST, BLUE_PANEL, BLUE_PANEL_WITH_SLAB, BLUE_PARTS, creative, LAVENDER_PARTS, OFFER_PARTS, OFFER_PATCH, OFFER_SPECKLES, part, partPng, plannedAnalysis, PLASTER_WALL, refinedRun } from './simpleBackground.fixture.js';
 
 const B = (key: string) => part(BLUE_PARTS, key), L = (key: string) => part(LAVENDER_PARTS, key), O = (key: string) => part(OFFER_PARTS, key);
 const at = (x: number, y: number) => Math.round(y * 1.024) * 1024 + Math.round(x * 1.024);
@@ -88,6 +88,52 @@ describe('a gradient product shot (lavender): the background\'s own design is no
     expect(darker(clean, backdrop)).toBeLessThan(0.5);
     // No lighter ghost of the phone either: down its middle the gradient continues, not the platform's white.
     for (let y = 250; y <= 650; y += 50) expect(diff(clean, backdrop, at(500, y)), `column ${y}`).toBeLessThanOrEqual(6);
+  }, 60_000);
+});
+
+describe('a person on a textured wall: a local fill would smear it, so a dirty base gets the one reconstruction', () => {
+  const plan = () => plannedAnalysis('A woman in front of a textured plaster wall.', [['plaster_wall', 'background'], ['woman', 'person']]);
+  const scene = () => [PLASTER_WALL, B('woman')];
+  /** Mean difference from the true wall where she stood (her body, away from her edges). */
+  const behindHer = async (file: string) => {
+    const [clean, wall, alpha] = await Promise.all([raw(file), raw(await creative([PLASTER_WALL])), sharp(await partPng(B('woman'))).ensureAlpha().extractChannel(3).raw().toBuffer()]);
+    let sum = 0, n = 0; for (let i = 0; i < alpha.length; i++) if (alpha[i] === 255) { sum += diff(clean, wall, i); n++; }
+    return sum / n;
+  };
+
+  it('Seedream\'s base still shows her: the local continuation is not trusted, the one image edit runs and is used, and every step says why', async () => {
+    const s = await refinedRun(await creative(scene()), plan(), [{ base: scene(), layers: [B('woman')] }], { truth: await creative([PLASTER_WALL]) });
+    const b = s.run.refinement!.background!;
+    expect(s.reconstruct).toHaveBeenCalledTimes(1);
+    expect(s.run.calls).toMatchObject({ planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 1 });
+    expect(b).toMatchObject({ status: 'ai-reconstructed', method: 'ai-reconstruction', quality: 'usable', fallbackUsed: false, aiTried: true, trust: { trusted: false } });
+    expect(b.trust!.reason).toMatch(/cannot be continued reliably by a local fill/);
+    expect(b.steps!.map(step => [step.step, step.outcome])).toEqual([['provider-base', 'rejected'], ['scene-composite', 'skipped'], ['local-continuation', 'skipped'], ['ai-reconstruction', 'chosen']]);
+    expect(b.steps![0].reason).toMatch(/still shows Woman in yellow top/);
+    expect(b.steps![2].reason).toMatch(/The reconstruction pass runs instead\.$/);
+    expect(b.steps![3]).toMatchObject({ call: true, reason: 'The image edit is usable.' });
+    expect(await behindHer(join(s.dir, 'clean-background.png'))).toBeLessThan(4);
+  }, 60_000);
+
+  it('without a reconstruction the local fill is only a fallback: never reported clean, and the run asks for a review', async () => {
+    const s = await refinedRun(await creative(scene()), plan(), [{ base: scene(), layers: [B('woman')] }], 'none');
+    const b = s.run.refinement!.background!;
+    expect(s.run.calls!.backgroundReconstruction).toBe(0);
+    expect(b).toMatchObject({ status: 'fallback', quality: 'degraded', fallbackUsed: true, aiTried: false });
+    expect(b.candidates.find(c => c.chosen)!.reasons).toContain('untrusted-continuation');
+    expect(b.steps!.find(step => step.step === 'ai-reconstruction')).toMatchObject({ outcome: 'skipped', call: false, reason: 'No background reconstructor is configured.' });
+    expect(b.steps!.at(-1)).toMatchObject({ step: 'fallback', outcome: 'chosen' });
+    expect(b.reasons.join(' ')).toMatch(/Review it: it is not a verified clean background\./);
+  }, 60_000);
+
+  it('a clean base on the same wall costs nothing: no reconstruction, the provider base is kept', async () => {
+    const s = await refinedRun(await creative(scene()), plan(), [{ base: [PLASTER_WALL], layers: [B('woman')] }], { truth: await creative([PLASTER_WALL]) });
+    const b = s.run.refinement!.background!;
+    expect(s.reconstruct).not.toHaveBeenCalled();
+    expect(s.run.calls!.backgroundReconstruction).toBe(0);
+    expect(b).toMatchObject({ status: 'provider-clean', method: 'provider-base', quality: 'usable' });
+    expect(b.steps!.map(step => [step.step, step.outcome])).toEqual([['provider-base', 'chosen'], ['scene-composite', 'skipped'], ['local-continuation', 'skipped'], ['ai-reconstruction', 'skipped']]);
+    expect(b.steps!.slice(1).every(step => /^Not needed/.test(step.reason))).toBe(true);
   }, 60_000);
 });
 

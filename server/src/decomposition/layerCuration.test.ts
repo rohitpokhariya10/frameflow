@@ -98,7 +98,7 @@ it('13 raw phone-creative layers become 6 editor layers, with complete provenanc
   const reconstruct = vi.fn(async () => { throw new Error('Unexpected background edit'); });
   const deps = { transport: () => transport, planner: vi.fn(async () => ({ plan: { prompt: fixture.semantic.downstream_decomposition_prompt, planned_layers: [], warnings: [], semantic_analysis: fixture.semantic }, model: 'fake-only', request: {}, raw: {} })),
     backgroundReconstructor: { model: 'fake-only', reconstruct }, sleep: async () => undefined };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'curation-run-')), fixture.source, { mode: 'generated' }, { semanticPlanning: true, templateKey: 'template-b', refinement: true });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'curation-run-')), fixture.source, { mode: 'generated' }, { refinement: true });
   const run = await executeRun(dir, deps);
   expect(run.stage).toBe('done');
   expect(run.refinement?.curation?.counts).toMatchObject({ rawLayers: 13, editorLayers: 6 });

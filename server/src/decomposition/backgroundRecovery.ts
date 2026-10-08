@@ -95,7 +95,29 @@ export type BackgroundDifficulty = {
   zones: number;
   /** The background around the hole is a few flat colors or gradients (an offer-creative design, not a photo). */
   simpleGraphic: boolean; palette: number[][]; explainedPercent: number;
+  /**
+   * Share (%) of the colors around the hole within 8 of one of their 8 most common colors: about 100 for a design of flat
+   * colors (a white field and a yellow curve, lavender circles on a lavender backdrop, however close the colors), lower
+   * for shading, gradients, texture or a photo. flatGraphic: flat colors (at least FLAT_GRAPHIC_PERCENT).
+   */
+  flatColorPercent: number; flatGraphic: boolean;
 };
+/** Calibrated on saved live runs and fixtures: flat designs measured 99–100, every surround a local fill smeared 97 or less. */
+export const FLAT_GRAPHIC_PERCENT = 98;
+/** The share of `pixels` within 8 of one of their 8 most common colors (quantized by 8). */
+function flatColorShare(rgb: ArrayLike<number>, pixels: number[]): number {
+  if (!pixels.length) return 0;
+  const bins = new Map<number, { n: number; sum: number[] }>();
+  for (const i of pixels) {
+    const key = ((rgb[i * 3] >> 3) << 10) | ((rgb[i * 3 + 1] >> 3) << 5) | (rgb[i * 3 + 2] >> 3), bin = bins.get(key) ?? { n: 0, sum: [0, 0, 0] };
+    bin.n++; for (let c = 0; c < 3; c++) bin.sum[c] += rgb[i * 3 + c];
+    bins.set(key, bin);
+  }
+  const top = [...bins.values()].sort((a, b) => b.n - a.n).slice(0, 8).map(b => b.sum.map(v => v / b.n));
+  let near = 0;
+  for (const i of pixels) if (top.some(c => Math.max(Math.abs(c[0] - rgb[i * 3]), Math.abs(c[1] - rgb[i * 3 + 1]), Math.abs(c[2] - rgb[i * 3 + 2])) <= 8)) near++;
+  return round(100 * near / pixels.length, 1);
+}
 /**
  * How hard the hidden background is to rebuild: hard-large-occlusion when one region covers at least 10% of the canvas
  * or the mask 25%, medium from 3% (or 8%, or a 1.5% region across two background zones), else easy.
@@ -107,14 +129,29 @@ export function backgroundDifficulty(rgb: ArrayLike<number>, core: Uint8Array, w
   let largest = 0, largestLabel = 0;
   for (let l = 1; l <= count; l++) if (sizes[l] > largest) { largest = sizes[l]; largestLabel = l; }
   const radius = Math.max(4, Math.round(0.03 * Math.max(w, h)));
-  const around = palette(rgb, ringOf(core, w, h, radius));
+  const ring = ringOf(core, w, h, radius), around = palette(rgb, ring), flatColorPercent = flatColorShare(rgb, ring);
   const lone = new Uint8Array(n);
   if (largestLabel) for (let i = 0; i < n; i++) if (labels[i] === largestLabel) lone[i] = 1;
   const zones = largestLabel ? palette(rgb, ringOf(lone, w, h, radius)).centers.length : 0;
   const largestShare = largest / n;
   const level = largestShare >= 0.1 || coverage >= 0.25 ? 'hard-large-occlusion' : largestShare >= 0.03 || coverage >= 0.08 || (zones >= 2 && largestShare >= 0.015) ? 'medium' : 'easy';
   return { level, coveragePercent: round(100 * coverage, 1), largestComponentPercent: round(100 * largestShare, 1), components: count, zones,
-    simpleGraphic: around.simple, palette: around.centers, explainedPercent: around.explainedPercent };
+    simpleGraphic: around.simple, palette: around.centers, explainedPercent: around.explainedPercent, flatColorPercent, flatGraphic: around.simple && flatColorPercent >= FLAT_GRAPHIC_PERCENT };
+}
+
+/** Whether the background behind the removed foreground can be continued locally (no call), and why. */
+export type ContinuationTrust = { trusted: boolean; reason: string };
+/**
+ * A local continuation is a reliable clean background only where the surroundings say what lies behind: a plain field,
+ * a design of a few flat colors, or small removed areas. A large removed area on a shaded, gradient, textured or
+ * photographic background is a guess (a smear, a ghost, a shape cut off), so that background gets the reconstruction
+ * pass, and a continuation there is only its fallback.
+ */
+export function continuationTrust(d: BackgroundDifficulty, plain: boolean): ContinuationTrust {
+  if (plain) return { trusted: true, reason: 'The background around every removed area is a plain field (flat color or smooth gradient).' };
+  if (d.flatGraphic) return { trusted: true, reason: `The background around the removed areas is a design of flat colors (${d.flatColorPercent}% flat).` };
+  if (d.level !== 'hard-large-occlusion') return { trusted: true, reason: `The removed areas are small (${d.level}; the largest is ${d.largestComponentPercent}% of the image).` };
+  return { trusted: false, reason: `A ${d.largestComponentPercent}% removed area on a ${d.simpleGraphic ? 'shaded or gradient' : 'textured or photographic'} background (${d.flatColorPercent}% flat colors) cannot be continued reliably by a local fill.` };
 }
 
 /**
@@ -382,7 +419,9 @@ export function plainFieldFill(rgb: ArrayLike<number>, core: Uint8Array, w: numb
   return { out, plain, regions };
 }
 
-export type BackgroundQualityReason = 'black-region' | 'darkened-region' | 'novel-content' | 'boundary-discontinuity' | 'large-unexpected-change' | 'foreground-reappeared' | 'silhouette-residue' | 'background-mismatch';
+export type BackgroundQualityReason = 'black-region' | 'darkened-region' | 'novel-content' | 'boundary-discontinuity' | 'large-unexpected-change' | 'foreground-reappeared' | 'silhouette-residue' | 'background-mismatch'
+  /** A local continuation of surroundings it cannot reliably continue (continuationTrust): a fallback, never "usable". */
+  | 'untrusted-continuation';
 export type BackgroundQuality = {
   quality: 'usable' | 'degraded' | 'failed'; reasons: BackgroundQualityReason[];
   metrics: {
@@ -427,6 +466,11 @@ export function backgroundQuality(input: { rgb: ArrayLike<number>; core: Uint8Ar
   const empty = { blackPercent: 0, darkShift: 0, novelPercent: 0, boundaryDiscontinuityPercent: 0, residuePercent: 0, recreatedLayers: input.recreated ?? 0 };
   if (!inner) return { quality: 'usable', reasons: [], metrics: empty };
   const ring = ringOf(core, w, h, Math.max(3, Math.round(0.02 * Math.max(w, h)))), pal = palette(rgb, ring);
+  // How often the surroundings themselves jump between pixels 3 px apart (a textured room, a pattern): a seam is only
+  // what the hole's edge adds to that, so a busy photograph is not mistaken for a broken edge.
+  let pairs = 0, natural = 0;
+  for (const i of ring) { if (i % w + 3 >= w || core[i + 3]) continue; pairs++; if (maxDiff(rgb, i, rgb, i + 3) > 60) natural++; }
+  const naturalJumpPercent = 100 * natural / Math.max(1, pairs);
   const ringDark = ring.filter(i => Math.max(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]) < 45).length / Math.max(1, ring.length);
   // A blot darker than nearly everything around the hole: a silhouette even where no clean continuation is known.
   const ringLums = ring.map(i => luminance(rgb, i)).sort((a, b) => a - b), ringLow = ringLums.length ? ringLums[Math.floor(0.05 * (ringLums.length - 1))] : 0;
@@ -455,7 +499,7 @@ export function backgroundQuality(input: { rgb: ArrayLike<number>; core: Uint8Ar
   const judged = large.length ? large : [all], worst = (f: (s: typeof all) => number) => Math.max(...judged.map(f));
   const ringLum = ring.reduce((s, i) => s + luminance(rgb, i), 0) / Math.max(1, ring.length);
   const metrics = { blackPercent: ringDark < 0.05 ? round(worst(s => 100 * s.black / s.size), 1) : 0, darkShift: round(worst(s => ringLum - s.lum / s.size), 1), novelPercent: round(worst(s => 100 * s.novel / s.size), 1),
-    boundaryDiscontinuityPercent: round(worst(s => 100 * s.jumps / Math.max(1, s.band)), 1), residuePercent: round(worst(s => 100 * s.residue / s.size), 1), recreatedLayers: input.recreated ?? 0 } as BackgroundQuality['metrics'];
+    boundaryDiscontinuityPercent: round(Math.max(0, worst(s => 100 * s.jumps / Math.max(1, s.band)) - naturalJumpPercent), 1), residuePercent: round(worst(s => 100 * s.residue / s.size), 1), recreatedLayers: input.recreated ?? 0 } as BackgroundQuality['metrics'];
   if (input.outside || input.original) {
     const keep = grow(core, w, h, 2);
     let outside = 0, changed = 0, mismatched = 0;
@@ -475,7 +519,9 @@ export function backgroundQuality(input: { rgb: ArrayLike<number>; core: Uint8Ar
   check('novel-content', metrics.novelPercent, 35, 15);
   check('silhouette-residue', metrics.residuePercent, 12, 4);
   check('background-mismatch', metrics.backgroundMismatchPercent ?? 0, 20, 6);
-  check('darkened-region', metrics.darkShift, Infinity, 50);
+  // Darker than its surroundings means a shadow or ghost only where the surroundings say what belongs there (a known
+  // clean continuation); a shaded room or photograph is legitimately darker in places.
+  if (expected) check('darkened-region', metrics.darkShift, Infinity, 50);
   check('large-unexpected-change', metrics.outsideMaskChangedPercent ?? 0, Infinity, 40);
   if (metrics.recreatedLayers) failed.push('foreground-reappeared');
   return { quality: failed.length ? 'failed' : degraded.length ? 'degraded' : 'usable', reasons: [...failed, ...degraded], metrics };

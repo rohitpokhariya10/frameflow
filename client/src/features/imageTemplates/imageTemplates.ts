@@ -1,33 +1,43 @@
-import type { SlotField, BlueprintRef, MatchMethod } from '@frameflow/shared';
-import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ReferenceCreativeDraft, type ImageVisualAnalysis, type DesignVariant, type ProjectDocument, type GenerationTemplateKey, type ImageTemplateRatio } from '@frameflow/shared';
+import { IMAGE_TEMPLATE_RATIOS, resolveImageTemplateName, resolveImageTemplatePrompt, type ReferenceCreativeDraft, type ImageVisualAnalysis, type DesignVariant, type ProjectDocument, type ImageTemplateRatio } from '@frameflow/shared';
 import { isDesignVariant } from '../../lib/persistence/schema';
 import { experimentToVariant, type ExperimentRun } from '../decomposition/layerizeExperiment';
-import type { GenerationVariant } from '../decomposition/templateGeneration';
 
 /**
- * The client side of "Create Template from Image". Mirrors the server's records and routes
- * (server/src/decomposition/imageTemplates.ts), and decides what each result shows. Nothing here calls a provider: every
- * request goes to the app's own server, and only the ones the user starts there spend anything.
+ * The client side of reference creatives (a reference image → its analysis → one generated image per size → each
+ * decomposed into layers). Mirrors the server's records and routes (server/src/decomposition/imageTemplates.ts), and
+ * decides what each result shows. Nothing here calls a provider: every request goes to the app's own server, and only
+ * the ones the user starts there spend anything.
  */
 export type PromptGeneration = { status: 'generating' | 'done' | 'failed'; model: string; attempts: number; startedAt: string; durationMs?: number; error?: { code: string; message: string; status?: number } };
 /** A ratio's latest decomposition, as the server shows it. */
-export type DecompositionState = { runId: string; templateKey: string; createdAt: string; state: 'waiting' | 'running' | 'done' | 'failed'; stage: string; layers?: number; error?: { code: string; message: string }; resumable?: boolean; reuse?: { familyName: string; version: number; planReused: boolean; drift?: string[]; passed?: boolean; problems?: string[] } };
-export type ImageTemplateVariant = GenerationVariant & { source?: 'reference'; sourceReference?: { file: string; sha256: string; instruction: string }; decompositions: (GenerationVariant['decompositions'][number] & { templateKey?: string })[]; editor?: { runId: string; openedAt: string }; decomposition?: DecompositionState };
+export type DecompositionState = { runId: string; createdAt: string; state: 'waiting' | 'running' | 'done' | 'failed'; stage: string; layers?: number; error?: { code: string; message: string }; resumable?: boolean };
+export type VariantStatus = 'pending' | 'queued' | 'generating' | 'done' | 'failed';
+/** One size of a reference creative: its generation, and the decomposition runs made from its image. */
+export type ImageTemplateVariant = {
+  id: string; aspectRatio: string; size: { width: number; height: number }; status: VariantStatus;
+  /** The ratio's framing sentence, and the exact prompt sent. */
+  framing: string; prompt: string;
+  generator: { provider: string; model: string; requestId?: string }; attempts: number; durationMs?: number;
+  image?: { file: string; mimeType: string; width: number; height: number; bytes: number; sha256?: string };
+  sourceReference?: { file: string; sha256: string; instruction: string };
+  error?: { code: string; message: string; status?: number; messages?: { msg: string; type?: string }[]; bodyFile?: string };
+  decompositions: { runId: string; createdAt: string }[];
+  editor?: { runId: string; openedAt: string }; decomposition?: DecompositionState;
+};
 export type ImageTemplate = {
   id: string; kind: 'image-template'; version: string; createdAt: string; updatedAt: string; name: string;
-  workflow?: 'offer-reference' | 'template-family'; family?: { slotValues: Record<string, string>; ref?: BlueprintRef; detection?: { status: 'detecting' | 'done' | 'failed'; method?: MatchMethod; confidence?: number; outcome?: 'created' | 'reused'; error?: { message: string } }; view?: { familyId: string; name: string; version: number; status: string; layout: string; fields: SlotField[]; values: Record<string, string> } }; referenceCreative?: ReferenceCreativeDraft; originTemplate?: { id: string; name: string };
+  workflow?: 'offer-reference'; referenceCreative?: ReferenceCreativeDraft; originTemplate?: { id: string; name: string };
   productReference?: ImageTemplate['reference'];
   generationSnapshot?: { id: string; referenceSha256: string; blueprintVersion: 1; settings: ReferenceCreativeDraft; analysis: ImageVisualAnalysis; productSha256?: string; model: string; instruction: string; aspectRatios: ImageTemplateRatio[] };
   reference: { file: string; originalName?: string; mimeType: string; width: number; height: number; bytes: number; sha256?: string; hasAlpha?: boolean; warnings?: string[] };
   analysis?: ImageVisualAnalysis; promptGeneration?: PromptGeneration; generatedPrompt?: string; prompt: string; promptEdited: boolean;
-  detected?: { templateKey: GenerationTemplateKey; reason: string }; decomposeWith?: GenerationTemplateKey; decomposeWithChosen?: boolean;
   aspectRatios: ImageTemplateRatio[]; generatedAt?: string; ratioStrategy?: 'reference' | 'uploaded-reference'; variants: ImageTemplateVariant[];
 };
 export type ImageTemplateInfo = {
   ratios: { ratio: ImageTemplateRatio; name: string; width: number; height: number }[]; limits: { name: number; prompt: number };
-  productReferenceSupported?: boolean; imageModel: string; promptModel: string; ratioReference: boolean; layerStyles: { key: GenerationTemplateKey; name: string; summary: string }[];
+  productReferenceSupported?: boolean; imageModel: string; promptModel: string; ratioReference: boolean;
 };
-export type TemplateChange = Partial<{ familySlots: Record<string, string>; name: string; prompt: string; aspectRatios: ImageTemplateRatio[]; decomposeWith: GenerationTemplateKey; referenceCreative: ReferenceCreativeDraft; originTemplate: { id: string; name: string } }>;
+export type TemplateChange = Partial<{ name: string; aspectRatios: ImageTemplateRatio[]; referenceCreative: ReferenceCreativeDraft; originTemplate: { id: string; name: string } }>;
 
 const BASE = '/api/layerize-experiment/image-templates';
 const at = (id: string, path = '') => `${BASE}/${encodeURIComponent(id)}${path}`;
@@ -36,28 +46,20 @@ const json = (method: string, body: unknown): RequestInit => ({ method, headers:
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: 'same-origin', ...init });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(response.status === 404 && !body?.error ? 'Create Template from Image needs the server\'s layerize experiment. Start it with LAYERIZE_EXPERIMENT=1.' : body?.error?.message ?? `Request failed (${response.status}).`);
+  if (!response.ok) throw new Error(response.status === 404 && !body?.error ? 'Reference creatives need the server\'s layerize experiment. Start it with LAYERIZE_EXPERIMENT=1.' : body?.error?.message ?? `Request failed (${response.status}).`);
   return body as T;
 }
 export const imageTemplateApi = {
-  families: () => call<{ families: { id: string; name: string; currentVersion: number; status: string; exampleGroupId: string | null; layout: string }[] }>('/api/layerize-experiment/template-families'),
-  useFamily: (id: string) => call<ImageTemplate>(`/api/layerize-experiment/template-families/${encodeURIComponent(id)}/use`, { method: 'POST' }),
-  detect: (id: string) => call<ImageTemplate>(at(id, '/detect-layout'), { method: 'POST' }),
-  original: (id: string) => call<ImageTemplate>(at(id, '/original'), { method: 'POST' }),
-  createFamily: (image: File, name: string) => {
-    const body = new FormData(); body.append('image', image); body.append('name', name);
-    return call<ImageTemplate>(`${BASE}/family-draft`, { method: 'POST', body });
-  },
   info: () => call<ImageTemplateInfo>(`${BASE}/info`),
   list: () => call<{ templates: ImageTemplate[] }>(BASE),
   get: (id: string) => call<ImageTemplate>(at(id)),
-  /** A new reference draft. Standalone analyzes immediately; the integrated deferred path waits for Analyze. */
-  create: (image: File, name: string, aspectRatios?: ImageTemplateRatio[], deferred = false) => {
+  /** A new reference draft: the upload only, nothing is sent anywhere until Analyze. */
+  create: (image: File, name: string, aspectRatios?: ImageTemplateRatio[]) => {
     const form = new FormData();
     if (name.trim()) form.append('name', name);
     if (aspectRatios) form.append('aspectRatios', JSON.stringify(aspectRatios));
     form.append('image', image);
-    return call<ImageTemplate>(deferred ? `${BASE}/draft` : BASE, { method: 'POST', body: form });
+    return call<ImageTemplate>(`${BASE}/draft`, { method: 'POST', body: form });
   },
   product: (id: string, image: File) => {
     const form = new FormData(); form.append('image', image);
@@ -73,7 +75,7 @@ export const imageTemplateApi = {
   generateRatio: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'generate'), { method: 'POST' }),
   /** One OpenAI planner request and one paid Seedream call, plus the recursive cleanup only while the base is contaminated
    * (at most 2 Seedream calls and 1 OpenAI image edit); waits its turn behind any other decomposition. */
-  decompose: (id: string, variantId: string, planFresh = false) => call<ImageTemplate>(ratioAt(id, variantId, 'decompose'), planFresh ? json('POST', { planFresh }) : { method: 'POST' }),
+  decompose: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'decompose'), { method: 'POST' }),
   /** Reads fal's saved result of a stopped decomposition: no new paid call. */
   resume: (id: string, variantId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'resume'), { method: 'POST' }),
   opened: (id: string, variantId: string, runId: string) => call<ImageTemplate>(ratioAt(id, variantId, 'opened'), json('POST', { runId })),
@@ -117,7 +119,7 @@ export function resultStatus(variant: Pick<ImageTemplateVariant, 'status' | 'err
   return variant.editor?.runId === run.runId ? { status: 'in-editor', detail: `${layers}, opened in the editor ${new Date(variant.editor.openedAt).toLocaleString()}.` } : { status: 'decomposed', detail: `${layers} ready to open in the editor.` };
 }
 /** Whether anything of the template is still on its way, so it is read again. */
-export const templateInProgress = (template: ImageTemplate) => template.family?.detection?.status === 'detecting' || template.promptGeneration?.status === 'generating'
+export const templateInProgress = (template: ImageTemplate) => template.promptGeneration?.status === 'generating'
   || template.variants.some(variant => variant.status === 'queued' || variant.status === 'generating' || variant.decomposition?.state === 'waiting' || variant.decomposition?.state === 'running');
 /** A line about the template for the list. */
 export function templateSummary(template: ImageTemplate): string {

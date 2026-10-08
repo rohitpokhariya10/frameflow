@@ -14,7 +14,10 @@ import { ALL_PARTS, offerBackground, offerComposite, offerPart, partName, rowFil
 import { assessBackgroundContamination, coverageOnGrid, gridFor, layerShape, rgbOnGrid, unionOf } from './backgroundContamination.js';
 import { CLEAN_BACKGROUND_PROMPT, editInputs, featherMask, reconstructionSize, type BackgroundReconstructionRequest } from './cleanBackground.js';
 import { grow } from './outerBackground.js';
-import { classify, MAX_RESIDUAL_PASSES, RESIDUAL_PROMPT, refinementOptions, type RefinementOptions } from './recursiveDecomposition.js';
+import { classify, MAX_RESIDUAL_PASSES, planCoverage, RESIDUAL_PROMPT, refinementOptions, type RefinementOptions } from './recursiveDecomposition.js';
+import type { SemanticAnalysis } from './semanticPlanner.js';
+import type { TemplateStructure, TemplateVersion } from '@frameflow/shared';
+import { compileTemplatePlan, templateEditPrompt, templatePlanPrompt, templatePlanStrategy } from './creativeTemplates/compile.js';
 
 const planner: Planner = async () => ({ plan: { prompt: 'Separate every product, the pedestal, the confetti and the headline.', planned_layers: [], warnings: [] }, model: 'test-planner', raw: {}, request: {} });
 /** What one fake Seedream call returns: these parts as layers, and a base showing `base` (parts Seedream left baked in). */
@@ -26,7 +29,7 @@ const WITHOUT = (...missing: OfferPart[]) => ALL_PARTS.filter(part => !missing.i
  * One run through the real runner (createRun → executeRun) with every provider faked: the planner, Seedream (one scripted
  * answer per submission; an unexpected submission throws) and the background edit (rowFillEdit, or a failure).
  */
-async function scenario(script: { passes: Pass[]; edit?: 'ok' | 'fail' | 'none'; refinement?: boolean | Partial<RefinementOptions> }) {
+async function scenario(script: { reuse?: boolean; passes: Pass[]; edit?: 'ok' | 'fail' | 'none'; refinement?: boolean | Partial<RefinementOptions> }) {
   const original = await offerComposite(), files: Record<string, Buffer> = {}, answers = new Map<string, unknown>();
   const submitted: Record<string, unknown>[] = [], uploads: Buffer[] = [];
   const transport = {
@@ -56,8 +59,13 @@ async function scenario(script: { passes: Pass[]; edit?: 'ok' | 'fail' | 'none';
     if (script.edit === 'fail') throw new Error('OpenAI image edit returned 500');
     return { image: await rowFillEdit(request.image, request.mask), requestId: 'edit-req-1' };
   });
-  const deps: RunnerDeps = { planner, transport: () => transport, sleep: async () => undefined, ...(script.edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-image-edit', reconstruct } }) };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'recursive-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement: script.refinement ?? true });
+  const deps: RunnerDeps = { planner: script.reuse ? async () => { throw new Error('A reused blueprint must never call the planner.'); } : planner, transport: () => transport, sleep: async () => undefined, ...(script.edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-image-edit', reconstruct } }) };
+  const structure: TemplateStructure = { layers: [{ id: 'background', role: 'background', zone: 'full-canvas', order: 0, independent: true, required: false },
+    ...ALL_PARTS.map((part, i) => ({ id: `role_${i}`, role: part === 'text' ? 'headline' as const : part === 'confetti' ? 'decoration' as const : part === 'pedestal' ? 'prop' as const : 'main_product' as const, order: i + 1, independent: true, required: true }))], relationships: [] };
+  const version: TemplateVersion = { templateId: 'tpl-aaaaaaaaaaaa', version: 1, createdAt: new Date().toISOString(), name: 'Product offer', description: 'Products with a headline and support', structure,
+    plan: { prompt: templatePlanPrompt(structure), strategy: templatePlanStrategy(structure), recommendedLayers: 10 }, generationPrompt: { text: templateEditPrompt(structure) }, decomposition: { refinement: true, expectedEditorLayers: { min: 8, max: 12 } }, source: { runId: 'learned-run', executionId: 'learned-execution', plannerModel: 'offline' } };
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'recursive-')), original, script.reuse ? compileTemplatePlan(version) : { mode: 'generated' }, { refinement: script.refinement ?? true,
+    ...(script.reuse ? { templateExecution: { executionId: 'reuse-execution', mode: 'REUSE_TEMPLATE_ORIGINAL' as const, template: { id: version.templateId, version: 1, name: version.name } } } : {}) });
   const run = await executeRun(dir, deps);
   return { dir, run, submitted, uploads, edits, reconstruct, transport, deps, original };
 }
@@ -75,6 +83,19 @@ async function pixel(file: string, x: number, y: number) {
 }
 
 describe('recursive decomposition: complex offer creative with fake providers', () => {
+  it('a reused blueprint recovers missing products and a clean background with zero planner calls', async () => {
+    const s = await scenario({ reuse: true, refinement: { deterministicBackground: false }, passes: [{ parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS }, { parts: ['speaker', 'powerBank'] }] });
+    expect(s.run.stage).toBe('done');
+    expect(s.run.calls).toEqual({ planner: 0, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 1 });
+    expect(s.run.refinement?.planCoverage?.complete).toBe(true);
+    expect(String(s.submitted[1].prompt)).toContain('missing planned roles');
+    expect(names(s.run)).toEqual(expect.arrayContaining(['Bluetooth speaker', 'Power bank']));
+    expect(s.run.refinement?.background).toMatchObject({ quality: 'usable', contaminated: false, aiTried: true });
+    expect(s.reconstruct).toHaveBeenCalledTimes(1);
+    expect(await difference(readFileSync(join(s.dir, 'clean-background.png')), await offerBackground())).toBeLessThan(1.5);
+    await resumeRun(s.dir, s.deps);
+    expect(s.submitted).toHaveLength(2); expect(s.reconstruct).toHaveBeenCalledTimes(1);
+  }, 60_000);
   it('pass 1 misses the speaker and power bank; one residual pass finds them; one clean background; nothing duplicated', async () => {
     const s = await scenario({ passes: [
       { parts: WITHOUT('speaker', 'powerBank'), base: ALL_PARTS },
@@ -100,7 +121,7 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     expect(pass.rejected.map(r => [r.name, r.reason])).toEqual(expect.arrayContaining([['Wireless headphones', expect.stringMatching(/^(duplicate|inside-extracted-region)$/)], ['Speaker body', 'duplicate']]));
     expect(pass.rejected.find(r => r.name === 'Speaker body')!.duplicateOf).toBe('pass-1-layer-01.png');
     // Call accounting: nothing hidden. The gradient around every product is a plain field, so no image edit is needed.
-    expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 0 });
+    expect(run.calls).toEqual({ planner: 1, seedreamInitial: 1, seedreamResidual: 1, backgroundReconstruction: 0 });
     expect(s.reconstruct).not.toHaveBeenCalled();
     // Clean background: the gradient continued from the original, the products gone.
     const base = run.outputLayers![0];
@@ -119,7 +140,7 @@ describe('recursive decomposition: complex offer creative with fake providers', 
     expect(debug.curation.entries.find((e: { file: string }) => e.file === 'pass-1-layer-00.png')).toMatchObject({ disposition: 'internal', editorVisible: false });
     expect(debug.curation.entries.find((e: { file: string }) => e.file === 'pass-1-layer-04.png')).toMatchObject({ disposition: 'drop', editorVisible: false });
     expect(debug.editorLayerFiles).toEqual(run.outputLayers!.map(l => l.file));
-    expect(debug.callSummary).toEqual(['Template fit check (OpenAI): 0', 'Planner (OpenAI): 1', 'Initial layerize (Seedream): 1', 'Residual layerize (Seedream): 1', 'Background reconstruction (OpenAI image edit): 0']);
+    expect(debug.callSummary).toEqual(['Planner (OpenAI): 1', 'Initial layerize (Seedream): 1', 'Residual layerize (Seedream): 1', 'Background reconstruction (OpenAI image edit): 0']);
     // Every layer is a real element of the creative: nothing is left out.
     expect(run.refinement!.layerPlan).toMatchObject({ editableLayers: 10, dropped: [] });
     expect(run.warnings.some(w => /^RECURSIVE_DECOMPOSITION: 2 pass\(es\) \(1 initial \+ 1 residual\); stopped: clean/.test(w))).toBe(true);
@@ -196,7 +217,7 @@ describe('recursive decomposition: when to recurse and when to stop', () => {
     const s = await scenario({ passes: [{ parts: ALL_PARTS, base: [] }] });
     const run = readRun(s.dir);
     expect(run.refinement).toMatchObject({ passesExecuted: 1, stopReason: 'clean', passes: [] });
-    expect(run.calls).toEqual({ fitCheck: 0, planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 0 });
+    expect(run.calls).toEqual({ planner: 1, seedreamInitial: 1, seedreamResidual: 0, backgroundReconstruction: 0 });
     expect(s.reconstruct).not.toHaveBeenCalled();
     expect(run.outputLayers![0]).toMatchObject({ file: 'layer-00.png', cleanBackground: { status: 'provider-clean', method: 'provider-base' } });
     expect(run.outputLayers![0].rawFile).toBeUndefined();
@@ -359,7 +380,7 @@ describe('recursive decomposition: unrefined runs are unchanged', () => {
       expect((await post('false')).body).not.toHaveProperty('refinement');
       const refined = (await post('true')).body;
       expect(refined.refinement).toMatchObject({ version: 1, state: 'pending', options: { maxDepth: 2, maxTotalLayers: 32, reconstructBackground: true, deterministicBackground: true } });
-      expect(refined.calls).toEqual({ fitCheck: 0, planner: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 });
+      expect(refined.calls).toEqual({ planner: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 });
       expect(await post('maybe')).toMatchObject({ status: 400, body: { error: { code: 'INVALID_RECURSIVE' } } });
     } finally { server.close(); }
   }, 30_000);
@@ -444,5 +465,53 @@ describe('contamination, masks and request sizes', () => {
     expect(reconstructionSize({ width: 4096, height: 4096 })).toEqual({ width: 1920, height: 1920 });
     expect(reconstructionSize({ width: 800, height: 600 })).toEqual({ width: 1184, height: 896 });
     expect(reconstructionSize({ width: 4000, height: 1000 })).toBeUndefined();
+  });
+});
+
+describe('plan coverage: whether every planned foreground element was extracted', () => {
+  /** Planned elements [id, type, description] back to front, all independent. */
+  const plan = (elements: [string, string, string][]): SemanticAnalysis => ({ image_type: 'creative', scene_summary: 'A creative.', relationships: [], ambiguities: [], recommended_layer_count: elements.length,
+    decomposition_strategy: 'Separate the elements.', downstream_decomposition_prompt: 'Separate the elements.',
+    elements: elements.map(([id, type, description], z) => ({ id, type, description, editable_independently: true, approximate_region: 'see image', z_order: z, confidence: 'high',
+      occlusion: { is_occluded: false, occluded_by: [], requires_reconstruction: false }, attachment: { relation: 'none', parent_id: '', separation_risk: 'low', keep_with_parent: false } })) });
+  const layer = (file: string, name: string, description = '') => ({ file, name, description });
+
+  it('a reused template plan (roles, no content words) matches what Seedream names in a different image', () => {
+    // The saved template says "primary subject / held object / headline / cta"; Seedream names this image's content.
+    const roles = plan([['background', 'background', 'the scene behind everything'], ['primary_subject', 'primary_subject', 'the main person'], ['held_object', 'held_object', 'an object held by the subject'],
+      ['headline', 'headline', 'the main line of text'], ['cta', 'cta', 'the call-to-action button']]);
+    const coverage = planCoverage(roles, [], [layer('layer-01.png', 'Man in a blue shirt'), layer('layer-02.png', 'Football'), layer('layer-03.png', 'Headline text', 'Big bold title'), layer('layer-04.png', 'Shop now button')]);
+    expect(coverage).toEqual({ planned: ['primary_subject', 'held_object', 'headline', 'cta'], complete: true,
+      matched: { primary_subject: 'layer-01.png', held_object: 'layer-02.png', headline: 'layer-03.png', cta: 'layer-04.png' } });
+  });
+
+  it('a reused plan takes a toddler as the subject and reads layers by their names, not by Seedream\'s instructions in descriptions', () => {
+    const roles = plan([['primary_subject', 'primary_subject', 'the main person'], ['prop', 'prop', 'a pedestal'], ['supporting_product', 'supporting_product', 'a smaller product'], ['main_product', 'main_product', 'the main product']]);
+    const boilerplate = 'preserve original shape, color, edge details, no extra invented content.';
+    const coverage = planCoverage(roles, [], [layer('layer-01.png', 'Full toddler with held ball', `The complete whole toddler, keep all body parts fully intact, ${boilerplate}`),
+      layer('layer-02.png', 'Pink cylindrical display pedestal', `The pink stand at the bottom, ${boilerplate}`), layer('layer-03.png', 'Top left small earbud product', `The smaller earbud, ${boilerplate}`),
+      layer('layer-04.png', 'Main earbud charging case product', `The charging case, ${boilerplate}`)]);
+    expect(coverage).toMatchObject({ complete: true, matched: { primary_subject: 'layer-01.png' } });
+    expect(Object.values(coverage!.matched).sort()).toEqual(['layer-01.png', 'layer-02.png', 'layer-03.png', 'layer-04.png']);
+    // A generic name still lets the description say what the layer is.
+    expect(planCoverage(plan([['headline', 'headline', 'the main line of text']]), [], [layer('layer-05.png', 'Layer 5', 'Bold headline text')])?.complete).toBe(true);
+  });
+
+  it('a role with no fitting layer leaves the plan incomplete: the reused template does not fit this image', () => {
+    const roles = plan([['background', 'background', 'the scene'], ['primary_subject', 'primary_subject', 'the main person'], ['held_object', 'held_object', 'an object held by the subject']]);
+    // A product-only creative: no person for the subject role, and a text layer is never taken as the held object.
+    expect(planCoverage(roles, [], [layer('layer-01.png', 'Wireless earbuds'), layer('layer-02.png', 'Headline text')])).toEqual({ planned: ['primary_subject', 'held_object'], complete: false, matched: { held_object: 'layer-01.png' } });
+    // Each layer serves one planned element: two subjects and one person layer is incomplete.
+    const two = plan([['primary_subject', 'primary_subject', 'the main person'], ['secondary_subject', 'secondary_subject', 'another person']]);
+    expect(planCoverage(two, [], [layer('layer-01.png', 'Woman smiling')])?.complete).toBe(false);
+  });
+
+  it('a planner-generated plan matches by shared words; scene elements, merged and dependent elements are not planned', () => {
+    const generated = plan([['studio_backdrop', 'photographic background', 'grey studio wall'], ['baby', 'person', 'baby in a white onesie'], ['phone', 'product', 'a black smartphone'], ['phone_glow', 'effect', 'light around the phone']]);
+    generated.elements[3]!.editable_independently = false;
+    expect(planCoverage(generated, [], [layer('layer-01.png', 'Baby', 'Baby wearing a onesie'), layer('layer-02.png', 'Smartphone', 'Black phone')])).toEqual({ planned: ['baby', 'phone'], complete: true, matched: { baby: 'layer-01.png', phone: 'layer-02.png' } });
+    expect(planCoverage(generated, ['phone'], [layer('layer-01.png', 'Baby')])).toEqual({ planned: ['baby'], complete: true, matched: { baby: 'layer-01.png' } });
+    expect(planCoverage(plan([['background', 'background', 'the scene']]), [], [layer('layer-01.png', 'Background')])).toBeUndefined();
+    expect(planCoverage(undefined, [], [])).toBeUndefined();
   });
 });

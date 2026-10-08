@@ -23,8 +23,10 @@ describe('run dashboard default view', () => {
   it('keeps prompts and request IDs out of the default tree', () => { expect(html()).toContain('Planner instructions'); expect(html()).not.toContain('Huge private prompt'); expect(html()).not.toContain('secret-request-id'); });
   it('shows recorded runtime and fixed budget FX', () => { expect(html()).toContain('2m 31s'); expect(html()).toContain('project budget rate: ₹90 / $'); });
   it('failure is understandable without a raw trace', () => {
-    const text = html({ ...run, stage: 'failed', error: { stage: 'queued', code: 'PROVIDER_DECOMPOSITION_REJECTED', message: 'RAW STACK' } });
+    const text = html({ ...run, stage: 'failed', error: { stage: 'queued', code: 'PROVIDER_DECOMPOSITION_REJECTED', message: 'RAW STACK', provider: { code: 'PROVIDER_REJECTED', status: 422, messages: [{ msg: 'The provided image could not be processed for layer decomposition.' }] } } });
     expect(text).toContain('FAILED'); expect(text).toContain('could not produce a valid decomposition'); expect(text).not.toContain('RAW STACK'); expect(text).not.toContain('/files/phone.png');
+    expect(text).toContain('Provider response (HTTP 422)'); expect(text).toContain('The provided image could not be processed');
+    expect(text).toContain('Resume cannot recover it'); expect(text).toContain('new paid Seedream request');
   });
   it('never claims readiness for an invalid saved editor selection', () => expect(html({ ...run, editorLayerFiles: ['absent.png'] })).toContain('PARTIAL'));
   it('unknown total shows known subtotal and defers comparison', () => {

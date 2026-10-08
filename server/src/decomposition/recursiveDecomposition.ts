@@ -33,20 +33,23 @@ import sharp from 'sharp';
 import { buildProviderInput, endpointRegistry, normalizeProviderOutput, ProviderError, type ProviderLayerMetadata } from './providers/adapters.js';
 import type { FalTransport } from './providers/falClient.js';
 import { backgroundRole, composeLayers, placeLayers, writeContactSheet, type Canvas, type CleanBackgroundMethod, type CleanBackgroundStatus, type LayerInfo, type Placement } from './layerizeArtifacts.js';
-import { layerWords, posterRole, similarity } from './layerCount.js';
-import { assessBackgroundContamination, backgroundModel, compositeOnGrid, coverageOnGrid, fidelity, flattenRgba, gridFor, intersectCount, layerShape, meaningfulRegions, objectRetention, overlapStats, rgbOnGrid, unionOf,
+import { head, layerWords, posterRole, similarity } from './layerCount.js';
+import { assessBackgroundContamination, backgroundModel, compositeOnGrid, coverageOnGrid, fidelity, flattenRgba, gridFor, intersectCount, layerShape, meaningfulRegions, objectRetention, recreates, overlapStats, rgbOnGrid, unionOf,
   type ContaminationAssessment, type Fidelity, type Grid, type LayerShape, type Retention } from './backgroundContamination.js';
 import { blendIntoCanvas, CLEAN_BACKGROUND_PROMPT, editInputs, featherMask, localFill, reconstructionSize, resizeMap, type BackgroundReconstructor } from './cleanBackground.js';
-import { backgroundDifficulty, backgroundQuality, graphicFill, plainFieldFill, type BackgroundDifficulty, type BackgroundQuality, type PlainRegion } from './backgroundRecovery.js';
+import { backgroundDifficulty, backgroundQuality, continuationTrust, graphicFill, plainFieldFill, type BackgroundDifficulty, type BackgroundQuality, type ContinuationTrust, type PlainRegion } from './backgroundRecovery.js';
 import { grow } from './outerBackground.js';
 import { castShadows, type ShadowDetection } from './shadowResidue.js';
 import { isPlate, layerCategory, layerPlan, screenFillers, screenPlates, type LayerPlan, type UsefulnessDecision } from './layerUsefulness.js';
 import { curateLayers, type CurationCandidate, type CurationRecord } from './layerCuration.js';
 import { groupInteractions, type InteractionOptions } from './interactionGrouping.js';
-import { idWords, PERSON, SCENE, TEXTISH } from './interactionTerms.js';
-import type { SemanticAnalysis } from './semanticPlanner.js';
+import { isTemplateRole, type TemplateRole } from '@frameflow/shared';
+import { EFFECT, idWords, PERSON, SCENE, TEXTISH } from './interactionTerms.js';
+import type { SemanticAnalysis, SemanticElement } from './semanticPlanner.js';
 import type { RunRecord } from './layerizeExperiment.js';
 import { semanticAnalysisOf, semanticProtectionOf } from './runPlan.js';
+import { backdropComponents, COMPONENT_ROLES, keepShapesFree, planRoles, SMOOTH_STEP, type BackdropDecision } from './backdropComponents.js';
+import { agreeing, baseTone, completeHidden, convexHull, MIN_REGION, matte, over, ownerOf, parts, retainedContent, smoothReach, touchingBackdrop, uncoveredContent, type OwnerCandidate } from './coverageRecovery.js';
 
 /** Types of planned elements that are the scene itself (held by the base or scene layers, never an extracted object). */
 const SCENE_TYPE = /\b(?:background|backdrop|environment|scene|wall|floor|sky|canvas|plate|gradient|vignette|texture|backplate)\b/i;
@@ -60,12 +63,71 @@ export type PlanCoverage = { planned: string[]; matched: Record<string, string>;
  * or a "contaminated" verdict then needs a region that stands out as strongly as a product. Undefined without a plan.
  */
 export function planCoverage(semantic: SemanticAnalysis | undefined, merged: string[], layers: { file: string; name?: string; description?: string }[]): PlanCoverage | undefined {
-  const planned = (semantic?.elements ?? []).filter(e => e.editable_independently && !merged.includes(e.id) && !SCENE_TYPE.test(idWords(e.type)));
+  const planned = (semantic?.elements ?? []).filter(e => e.editable_independently && !merged.includes(e.id) && !SCENE_TYPE.test(idWords(e.type)) && !(isTemplateRole(e.type) && SCENE_ROLES.has(e.type)));
   if (!planned.length) return undefined;
-  const pairs = planned.flatMap(e => layers.map(l => ({ e, l, score: similarity(layerWords(l.name, l.description), layerWords(idWords(e.id), e.description)) }))).sort((a, b) => b.score - a.score);
+  const score = (e: SemanticElement, l: { name?: string; description?: string }) => isTemplateRole(e.type) ? roleMatch(e.type, l) : similarity(layerWords(l.name, l.description), layerWords(idWords(e.id), e.description));
+  const pairs = planned.flatMap(e => layers.map(l => ({ e, l, score: score(e, l) }))).sort((a, b) => b.score - a.score);
   const matched: Record<string, string> = {}, used = new Set<string>();
   for (const pair of pairs) { if (pair.score < 0.15 || matched[pair.e.id] || used.has(pair.l.file)) continue; matched[pair.e.id] = pair.l.file; used.add(pair.l.file); }
   return { planned: planned.map(e => e.id), matched, complete: planned.every(e => matched[e.id]) };
+}
+
+/**
+ * Planned layers the editor does not get, for a plan with roles (a template's): each element the plan asked for as its
+ * own layer (independent, not kept with a parent or merged by protection, not the base canvas) has an editor layer
+ * carrying it, alone or in a protected group. If not, a warning says whether the provider returned it and it was left
+ * out (and why), or never returned it as a layer of its own (backdrop components only: a missing foreground element
+ * already starts residual passes). A run that lost a requested layer never reads as complete.
+ */
+export function plannedLayerIssues(semantic: SemanticAnalysis | undefined, roleOf: (id: string) => TemplateRole | undefined, merged: string[],
+  raw: Pick<LayerInfo, 'file' | 'name' | 'semantic'>[], editor: Pick<LayerInfo, 'file' | 'semantic' | 'grouping' | 'rawFile'>[], dropped: UsefulnessDecision[], roleMatched: Record<string, string> = {}): string[] {
+  const elementOf = new Map(raw.filter(l => l.semantic).map(l => [l.file, l.semantic!.id]));
+  // A reused plan's roles are matched by what a layer is (planCoverage), not by words: those matches count too.
+  for (const [id, file] of Object.entries(roleMatched)) if (!elementOf.has(file)) elementOf.set(file, id);
+  for (const l of editor) if (l.semantic) elementOf.set(l.file, l.semantic.id);
+  const shownFiles = new Set(editor.flatMap(l => [l.file, ...(l.rawFile ? [l.rawFile] : []), ...(l.grouping?.members.map(m => m.file) ?? [])]));
+  const shown = new Set([...shownFiles].map(file => elementOf.get(file)).filter((id): id is string => !!id));
+  for (const [id, file] of Object.entries(roleMatched)) if (shownFiles.has(file)) shown.add(id);
+  const issues: string[] = [];
+  for (const e of semantic?.elements ?? []) {
+    const role = roleOf(e.id);
+    if (!role || role === 'background' || !e.editable_independently || e.attachment?.keep_with_parent || merged.includes(e.id) || shown.has(e.id)) continue;
+    const returned = raw.find(l => l.semantic?.id === e.id || roleMatched[e.id] === l.file), why = returned && dropped.find(d => d.file === returned.file);
+    if (returned) issues.push(`PLANNED_LAYER_MERGED: the plan's ${role.replace(/_/g, ' ')} was returned ("${returned.name ?? returned.file}") but is not a layer of its own${why ? `: ${why.detail}` : ''}.`);
+    else if (COMPONENT_ROLES.has(role)) issues.push(`PLANNED_LAYER_MISSING: the plan's ${role.replace(/_/g, ' ')} has no layer of its own: the provider merged it into another layer or did not return it.`);
+  }
+  return issues;
+}
+
+const SCENE_ROLES = new Set<TemplateRole>(['background', 'backdrop']);
+const CTA_WORDS = /\b(?:button|cta|call to action|shop|buy|order|book|download|sign up|learn more)\b/i, BADGE_WORDS = /\b(?:badge|sticker|seal|tag|stamp|ribbon)\b/i;
+const LOGO_WORDS = /\b(?:logo|logotype|wordmark|brand mark|emblem)\b/i, DECOR_WORDS = /\b(?:decor\w*|ornament\w*|graphics?|shapes?|stars?|clouds?|confetti|sparkles?|patterns?|accents?|dots?|bubbles?|circles?|swirls?|waves?|lines?|stripes?)\b/i;
+/**
+ * How well a layer Seedream returned fits a creative template's planned role. A template plan names roles, not content
+ * ("primary subject"), while Seedream names what it sees ("Man in a blue shirt"), so roles match by what the layer is:
+ * a person for a subject, text for text, and any remaining object layer for an object role. Without this every reused
+ * plan would look uncovered and invite residual passes its decomposition does not need.
+ */
+function roleMatch(role: TemplateRole, layer: { name?: string; description?: string }): number {
+  // What a layer is comes from its name. Seedream's descriptions add instructions ("preserve original shape, color, no
+  // invented content") whose words read as decoration or text; they stand in only for a missing or generic name.
+  const generic = !layer.name?.trim() || /^(?:layer|image|element|object)\s*\d*$/i.test(layer.name.trim());
+  const words = idWords(generic ? layer.description ?? layer.name ?? '' : layer.name!);
+  // A ball "held in a hand" is an object, not a person. Classify the named subject before relationship clauses.
+  const subject = head(idWords(layer.name || layer.description || '')).split(/\b(?:held|worn|carried)\b/i)[0];
+  const person = PERSON.test(subject), text = TEXTISH.test(words);
+  const scene = SCENE.test(idWords(layer.name ?? '')), decor = DECOR_WORDS.test(words), effect = EFFECT.test(idWords(layer.name ?? ''));
+  switch (role) {
+    case 'primary_subject': case 'secondary_subject': return person ? 0.6 : 0;
+    case 'headline': case 'body_text': case 'price': return text && !CTA_WORDS.test(words) ? 0.5 : 0;
+    case 'cta': return CTA_WORDS.test(words) ? 0.6 : 0;
+    case 'badge': return BADGE_WORDS.test(words) ? 0.6 : 0;
+    case 'logo': return LOGO_WORDS.test(words) ? 0.6 : 0;
+    case 'decoration': return decor ? 0.5 : 0;
+    case 'effect': return effect ? 0.5 : 0;
+    case 'held_object': case 'main_product': case 'supporting_product': case 'prop': return person || text || scene || decor || effect ? 0 : 0.3;
+    default: return 0;
+  }
 }
 
 /** Residual passes after the initial decomposition: a hard cap whatever a run asks for. */
@@ -100,9 +162,9 @@ export const REFINEMENT_DEFAULTS: RefinementOptions = { maxDepth: MAX_RESIDUAL_P
   minRegionPercent: 0.25, contaminatedPercent: 0.6, minConfidence: 0.5, retainedPercent: 25, duplicateIoU: 0.5, duplicateContainment: 0.7, reconstructBackground: true, deterministicBackground: true };
 
 /** Every paid or metered provider request of a run, counted when sent (a failed request still counts). */
-export type CallCounts = { fitCheck: number; planner: number; seedreamInitial: number; seedreamResidual: number; backgroundReconstruction: number };
-export const noCalls = (): CallCounts => ({ fitCheck: 0, planner: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 });
-export const callLines = (calls: CallCounts) => [`Template fit check (OpenAI): ${calls.fitCheck}`, `Planner (OpenAI): ${calls.planner}`, `Initial layerize (Seedream): ${calls.seedreamInitial}`,
+export type CallCounts = { planner: number; seedreamInitial: number; seedreamResidual: number; backgroundReconstruction: number };
+export const noCalls = (): CallCounts => ({ planner: 0, seedreamInitial: 0, seedreamResidual: 0, backgroundReconstruction: 0 });
+export const callLines = (calls: CallCounts) => [`Planner (OpenAI): ${calls.planner}`, `Initial layerize (Seedream): ${calls.seedreamInitial}`,
   `Residual layerize (Seedream): ${calls.seedreamResidual}`, `Background reconstruction (OpenAI image edit): ${calls.backgroundReconstruction}`];
 
 export type StopReason = 'clean' | 'below-threshold' | 'low-confidence' | 'not-assessable' | 'residue-only' | 'max-depth' | 'no-new-layers' | 'all-duplicates' | 'pass-failed' | 'max-total-layers' | 'resume-no-new-calls';
@@ -132,7 +194,13 @@ export type BackgroundRecord = {
   shadow?: Pick<ShadowDetection, 'percent' | 'assessed' | 'model' | 'components' | 'note'>;
   /** Whether the area around every removed region is a plain field (plainFieldFill), region by region. */
   plainField?: { plain: boolean; regions: PlainRegion[] };
+  /** Whether a local continuation can be trusted behind the foreground (continuationTrust), and why. */
+  trust?: ContinuationTrust;
+  /** Every recovery step in order: chosen, rejected or skipped, why, and whether it made a paid call. */
+  steps?: BackgroundStep[];
 };
+export type BackgroundStep = { step: 'provider-base' | 'scene-composite' | 'local-continuation' | 'ai-reconstruction' | 'fallback'; outcome: 'chosen' | 'rejected' | 'skipped'; reason: string; call?: boolean };
+const LOCAL_METHODS = new Set<CleanBackgroundMethod>(['plain-field', 'graphic-fill', 'local-fill']);
 export type RefinementRecord = {
   version: 1; options: RefinementOptions; state: 'pending' | 'running' | 'done' | 'failed';
   /** Residual passes that were sent (kept across resumes: their request IDs and responses are reused, never resent). */
@@ -150,6 +218,15 @@ export type RefinementRecord = {
   curation?: CurationRecord;
   /** Whether every foreground element the planner listed has an extracted layer (planCoverage): if so, leftovers must stand out like objects to count. */
   planCoverage?: PlanCoverage;
+  /** Large scene layers judged as backdrop components (panels, cards, shapes on the base canvas) or as part of the base (backdropComponents.ts). */
+  backdrops?: BackdropDecision[];
+  /**
+   * Original content no layer covered and the clean base lacked (coverageRecovery.ts): each region, the layer it joined
+   * (null: none), and smooth backdrops whose visible pixels were corrected or hidden part completed.
+   */
+  coverage?: { typical: number; cut: number; regions: { areaPercent: number; meanDiff: number; smooth: boolean; owner: string | null; ofBase?: boolean }[];
+    /** Per smooth backdrop: object content its layer carried (handed to the objects), visible pixels corrected, hidden pixels completed; unverified when its own pixels show the creative almost nowhere. */
+    backdrops: { layer: string; verified: boolean; carriedPercent: number; correctedPercent: number; completedPercent: number }[] };
   /** The one background edit: its cache key (source + mask + size + prompt + model), so a re-render reuses it. */
   reconstruction?: { key: string; model: string; size: { width: number; height: number }; state: 'sent' | 'done' | 'failed'; sentAt: string; requestId?: string; durationMs?: number; error?: { code: string; message: string } };
   fidelity?: { before: Fidelity; after: Fidelity };
@@ -169,9 +246,9 @@ export const newRefinementRecord = (options: RefinementOptions): RefinementRecor
 
 export const RESIDUAL_PROMPT = 'This is the background of an offer creative after some objects were already taken out. Separate every distinct object still visible in it (products, devices, pedestals or platforms, gift boxes, major decorations, logos and text blocks) into its own layer, each complete and unchanged. Keep the plain scene (wall, floor or table surface, gradients, lighting and background patterns) as the base. Group tiny scattered decorations such as confetti into one layer. Do not invent objects.';
 /** The residual prompt, with where the remaining objects were found (positions in words, never coordinates). */
-export function residualPrompt(assessment: ContaminationAssessment, minConfidence: number): string {
+export function residualPrompt(assessment: ContaminationAssessment, minConfidence: number, missingRoles: string[] = []): string {
   const where = [...new Set(assessment.regions.filter(r => r.confidence >= minConfidence).map(r => r.position))].slice(0, 6);
-  return where.length ? `${RESIDUAL_PROMPT} Remaining objects are around: ${where.join(', ')}.` : RESIDUAL_PROMPT;
+  return `${RESIDUAL_PROMPT}${where.length ? ` Remaining objects are around: ${where.join(', ')}.` : ''}${missingRoles.length ? ` Look for these missing planned roles if visible: ${missingRoles.slice(0, 8).map(idWords).join(', ')}. Do not duplicate already extracted layers.` : ''}`;
 }
 
 export type RefineDeps = { backgroundReconstructor?: BackgroundReconstructor; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number; pollTimeoutMs?: number };
@@ -421,7 +498,7 @@ const pngOfMap = (map: Uint8Array, width: number, height: number) => sharp(Buffe
 export async function refineDecomposition(ctx: RefineContext): Promise<{ layers: LayerInfo[]; warnings: string[] }> {
   const { dir, run, canvas } = ctx, record = run.refinement!, options = record.options, calls = run.calls!;
   Object.assign(record, { state: 'running', assessments: [], warnings: [] });
-  for (const key of ['stopReason', 'stopDetail', 'passesExecuted', 'finalLayers', 'mask', 'background', 'fidelity', 'error', 'layerPlan', 'planCoverage', 'curation'] as const) delete record[key];
+  for (const key of ['stopReason', 'stopDetail', 'passesExecuted', 'finalLayers', 'mask', 'background', 'fidelity', 'error', 'layerPlan', 'planCoverage', 'curation', 'backdrops', 'coverage'] as const) delete record[key];
   const merged = (semanticProtectionOf(run)?.merged ?? []).map(m => m.id);
   /** The contamination options for what is extracted so far: stricter once every planned element has its layer. */
   const assessing = (extracted: Item[]) => {
@@ -486,7 +563,8 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
       stop('resume-no-new-calls', `Residual pass ${depth} would be a new paid Seedream call, and a resume or re-render never makes one: ${assessment.reasons.join(' ')}`); break;
     }
     let raw: unknown, pass: PassRecord;
-    try { ({ raw, pass } = await runPass(ctx, record, depth, residual, residualFile, residualPrompt(assessment, options.minConfidence))); entry.sent = true; }
+    const missingRoles = run.promptSource?.mode === 'template-plan' ? record.planCoverage?.planned.filter(id => !record.planCoverage!.matched[id]) ?? [] : [];
+    try { ({ raw, pass } = await runPass(ctx, record, depth, residual, residualFile, residualPrompt(assessment, options.minConfidence, missingRoles))); entry.sent = true; }
     catch (error) {
       const failed = (error as { pass?: PassRecord }).pass, code = error instanceof PassError ? error.code : 'RESIDUAL_PASS_FAILED', message = error instanceof Error ? error.message : String(error);
       if (failed) Object.assign(failed, { state: 'failed', error: { code, message } });
@@ -534,7 +612,10 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   let order = stacking.order.map((item, i): Item => ({ ...item, layer: { ...item.layer, ...(renumber ? { zIndex: i + 1 } : {}) } }));
   // The layers as Seedream returned them: whether a base still shows a layer is judged per layer, never per group (a
   // group of skin and bangles would hide that the base still shows the bangles).
-  const ungrouped = order;
+  let ungrouped = order;
+  const coverageGroups: { file: string; members: string[] }[] = [];
+  /** Uncovered content that continues the base (coverage step): the base's own, which a background rightly shows. */
+  let baseContent: Uint8Array | undefined;
 
   // Protected people and interactions over every layer (residual-pass ones too, so a bangle or finger piece a residual
   // pass found joins its person instead of becoming a layer), before the background mask.
@@ -564,6 +645,18 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     const category = layerCategory(item, nA);
     return ['person', 'product', 'text'].includes(category) ? { ...item, kind: 'foreground' as const } : item;
   });
+  // Backdrop components (a panel, a card, a shape on the base canvas) are layers of their own, never folded into the
+  // background as a "plate"; the base is then judged clean behind them too, so hiding one reveals the base.
+  const semantic = ctx.interactions?.semantic ?? semanticAnalysisOf(run), roleOf = planRoles(semantic, run.planner?.capture?.roles);
+  const matched = new Set(order.flatMap(item => item.layer.semantic ? [item.layer.semantic.id] : []));
+  const openSlots = (semantic?.elements ?? []).filter(e => e.editable_independently && !e.attachment?.keep_with_parent && !merged.includes(e.id) && !matched.has(e.id))
+    .map(e => roleOf(e.id)).filter((role): role is TemplateRole => role === 'backdrop' || role === 'decoration');
+  record.backdrops = backdropComponents(order, A, roleOf, openSlots);
+  const components = record.backdrops.filter(d => d.component);
+  if (components.length) {
+    const promoted = new Set(components.map(d => d.file)), promote = (item: Item): Item => promoted.has(item.layer.file) ? { ...item, kind: 'foreground', role: 'backdrop' } : item;
+    order = order.map(promote); ungrouped = ungrouped.map(promote);
+  }
 
   // Which layers are worth an editor layer: invented fillers, hidden guesses, faint remnants and detached shadow stains
   // are left out (people, products and text always stay). Judged against the original, so only when it is the source.
@@ -572,6 +665,191 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   const removed = order.filter(item => droppedFiles.get(item.layer.file)?.action === 'remove');
   const dropped = order.filter(item => droppedFiles.has(item.layer.file));
   order = order.filter(item => !droppedFiles.has(item.layer.file));
+  // Shape-only backdrops (no plan role) stay in the base when separating them would turn its free, trusted local
+  // rebuild into a paid edit: judged on the real removal (after screening), as the background step will see it.
+  if (source.name === 'original' && record.backdrops.some(d => d.component && d.basis === 'shape')) {
+    const grown = Math.max(1, Math.round(dilateM * A.scale / M.scale)), stains = removed.map(item => item.shape.alpha);
+    record.backdrops = keepShapesFree(record.backdrops, files => {
+      const kept = order.filter(item => item.kind === 'foreground' && (item.role !== 'backdrop' || files.includes(item.layer.file) || !record.backdrops!.some(d => d.file === item.layer.file && d.basis === 'shape')));
+      const core = grow(unionOf([...kept.map(item => item.shape.alpha), ...stains], nA), A.width, A.height, grown);
+      return continuationTrust(backgroundDifficulty(originalA, core, A.width, A.height), plainFieldFill(originalA, core, A.width, A.height).plain).trusted;
+    });
+    const demoted = new Set(components.filter(d => !record.backdrops!.find(x => x.file === d.file)!.component).map(d => d.file));
+    if (demoted.size) {
+      const demote = (item: Item): Item => demoted.has(item.layer.file) ? { ...item, ...classify(item.layer, item.shape, A) } : item;
+      order = order.map(demote); ungrouped = ungrouped.map(demote);
+      record.warnings.push(`BACKDROP_KEPT_IN_BASE: ${[...demoted].map(file => components.find(d => d.file === file)!.name ?? file).join('; ')} stay in the base: separating ${demoted.size > 1 ? 'them' : 'it'} would need a paid background edit the plan does not ask for.`);
+    }
+  }
+  const separated = record.backdrops.filter(d => d.component && order.some(item => item.layer.file === d.file));
+  if (separated.length) record.warnings.push(`BACKDROP_LAYERS: ${separated.map(d => `${d.name ?? d.file} (${d.basis === 'plan' ? `plan: ${d.role}` : 'shape'})`).join('; ')} kept as their own layer${separated.length > 1 ? 's' : ''} above the base canvas.`);
+  // Coverage: original content no layer took and the clean base lacks (an object's part Seedream left out of every layer,
+  // a backdrop's missing fade) joins the layer it belongs to, cut from the original against the base; a smooth backdrop
+  // shows the original where it is visible and is completed where it is hidden. Never a mask grown blindly.
+  if (source.name === 'original') {
+    const reference = await rgbOnGrid(base0Png, A), alphaOf = (item: Item) => { const a = new Uint8Array(nA); for (let i = 0; i < nA; i++) if (item.shape.rgba[i * 4 + 3] > 64) a[i] = 1; return a; };
+    // What the editor's layers cover: foreground layers and scene layers that stay layers (a full plate is the background).
+    const layered = unionOf(order.filter(item => item.kind === 'foreground' || !isPlate(item, A)).map(alphaOf), nA), found = uncoveredContent(originalA, reference, layered, A);
+    // Backdrops here: the separated backdrop components, and every smooth scene layer that stays in the base without being
+    // the base canvas itself (a disc kept in the base still owns its missing wedge; an object never does). The base
+    // canvas, plate or not (a wall and floor with holes behind the people), is the background: what it lacks is the base's.
+    const smoothFiles = new Set(record.backdrops.filter(d => d.smoothness <= SMOOTH_STEP && d.role !== 'background' && (d.component || order.some(item => item.layer.file === d.file && item.kind !== 'foreground' && !isPlate(item, A)))).map(d => d.file));
+    const backdropFiles = new Set([...record.backdrops.filter(d => d.component).map(d => d.file), ...smoothFiles]);
+    const candidates = order.map((item): OwnerCandidate => ({ id: item.layer.file, alpha: alphaOf(item), z: item.layer.zIndex, rgba: item.shape.rgba,
+      kind: backdropFiles.has(item.layer.file) ? 'backdrop' : item.kind === 'foreground' && !['scene', 'effect'].includes(layerCategory(item, nA)) ? 'object' : 'other' }));
+    const joins = new Map<string, Uint8Array[]>(), nameOf = (id: string) => order.find(item => item.layer.file === id)!.layer.name ?? id;
+    record.coverage = { typical: found.typical, cut: found.cut, regions: [], backdrops: [] };
+    const assign = (mask: Uint8Array, owner: OwnerCandidate | undefined, smooth: boolean, meanDiff: number, ofBase = false) => {
+      let px = 0; for (const v of mask) px += v;
+      record.coverage!.regions.push({ areaPercent: round(100 * px / nA), meanDiff, smooth, owner: owner ? nameOf(owner.id) : null, ...(ofBase ? { ofBase } : {}) });
+      if (owner) joins.set(owner.id, [...(joins.get(owner.id) ?? []), mask]);
+    };
+    // Where each smooth backdrop really is (coverageRecovery.smoothReach): grown from where its own pixels already show
+    // the creative, never across an edge of the original (an edge is a step of more than twice what a smooth surface
+    // steps on average). Unverified, and left as the provider drew it, when its pixels show the creative almost nowhere,
+    // or when the base already shows it (the original matches the base over most of it): a base that still has the
+    // backdrop is no reference to cut it from (it would cut it away).
+    const bridge = Math.max(2, Math.round(0.02 * Math.min(A.width, A.height))), uncovered = unionOf(found.regions.map(r => r.mask), nA);
+    const objectLike = new Uint8Array(nA); for (let i = 0; i < nA; i++) if (Math.max(Math.abs(originalA[i * 3] - reference[i * 3]), Math.abs(originalA[i * 3 + 1] - reference[i * 3 + 1]), Math.abs(originalA[i * 3 + 2] - reference[i * 3 + 2])) > found.cut) objectLike[i] = 1;
+    type Reach = { reach: Uint8Array; carried: Uint8Array } | null;
+    const reaches = new Map<string, Reach>();
+    const reachOf = (backdrop: OwnerCandidate): Reach => {
+      if (reaches.has(backdrop.id)) return reaches.get(backdrop.id)!;
+      let result: Reach = null;
+      if (smoothFiles.has(backdrop.id)) {
+        const front = unionOf(candidates.filter(c => c.z > backdrop.z).map(c => c.alpha), nA), nearFront = grow(front, A.width, A.height, 2);
+        const visible = new Uint8Array(nA), domain = new Uint8Array(nA), settled = new Uint8Array(nA);
+        let shown = 0, inBase = 0, settledCount = 0;
+        for (let i = 0; i < nA; i++) { if (backdrop.alpha[i] && !front[i]) { visible[i] = 1; shown++; if (!nearFront[i]) { settled[i] = 1; settledCount++; if (!objectLike[i]) inBase++; } } if (visible[i] || uncovered[i]) domain[i] = 1; }
+        const own = order.find(item => item.layer.file === backdrop.id)!.shape.rgba, seeds = agreeing(own, originalA, reference, settled), fits = agreeing(own, originalA, reference, visible);
+        let seeded = 0; for (const v of seeds) seeded += v;
+        if (shown && seeded >= 0.1 * shown && inBase < 0.5 * settledCount) {
+          const reach = smoothReach(domain, seeds, front, originalA, A, 2 * SMOOTH_STEP, bridge);
+          // Object content inside the backdrop's outline that the backdrop layer does not show (a lid's rim where it drew
+          // its own grey): unreached, unlike the base, not what the layer has there, and part of uncovered content or as
+          // large as a region. Small unreached specks (its own anti-aliased edge) stay.
+          const foreign = new Uint8Array(nA); for (let i = 0; i < nA; i++) if (visible[i] && !reach[i] && objectLike[i] && !fits[i]) foreign[i] = 1;
+          const nextToUncovered = grow(uncovered, A.width, A.height, 1), carried = new Uint8Array(nA);
+          for (const part of parts(foreign, A, 1)) {
+            let px = 0, touches = false; for (let i = 0; i < nA; i++) if (part[i]) { px++; if (nextToUncovered[i]) touches = true; }
+            if (touches || px >= Math.round(MIN_REGION * nA)) for (let i = 0; i < nA; i++) if (part[i]) carried[i] = 1;
+          }
+          result = { reach, carried };
+        }
+      }
+      reaches.set(backdrop.id, result);
+      return result;
+    };
+    // The base's own missing content: what continues the base where it already shows the creative, never across an edge
+    // (a wedge of a disc the base keeps, cut out of it). The base lacks it, so no object owns it: a gap, never a join.
+    const baseSeeds = new Uint8Array(nA), open = new Uint8Array(nA), nearLayers = grow(layered, A.width, A.height, 2);
+    for (let i = 0; i < nA; i++) { if (layered[i]) continue; open[i] = 1; if (!nearLayers[i] && Math.max(Math.abs(originalA[i * 3] - reference[i * 3]), Math.abs(originalA[i * 3 + 1] - reference[i * 3 + 1]), Math.abs(originalA[i * 3 + 2] - reference[i * 3 + 2])) <= 24) baseSeeds[i] = 1; }
+    const ofBase = smoothReach(open, baseSeeds, layered, originalA, A, 2 * SMOOTH_STEP, bridge);
+    baseContent = Uint8Array.from(ofBase, (v, i) => v && uncovered[i] ? 1 : 0);
+    const objectParts = new Uint8Array(nA);
+    for (const region of found.regions) {
+      // Content touching a smooth backdrop is the backdrop where the backdrop reaches it; what the base reaches is the
+      // base's; the rest (an object's part in front of it) is an object's.
+      const backdrop = touchingBackdrop(region.mask, candidates, A), known = backdrop ? reachOf(backdrop) : null;
+      const continues = new Uint8Array(nA), base = new Uint8Array(nA); let any = false, anyBase = false;
+      for (let i = 0; i < nA; i++) if (region.mask[i]) { if (known?.reach[i]) { continues[i] = 1; any = true; } else if (ofBase[i]) { base[i] = 1; anyBase = true; } else objectParts[i] = 1; }
+      if (any) assign(continues, backdrop!, true, region.meanDiff);
+      if (anyBase) { let px = 0; for (const v of base) px += v; if (px >= Math.round(MIN_REGION * nA)) assign(base, undefined, region.smooth, region.meanDiff, true); }
+    }
+    for (const candidate of candidates) if (candidate.kind === 'backdrop') { const known = reachOf(candidate); if (known) for (let i = 0; i < nA; i++) if (known.carried[i]) objectParts[i] = 1; }
+    const reached = unionOf([...reaches.values()].filter((r): r is NonNullable<Reach> => !!r).map(r => r.reach), nA);
+    // An object's part is all of it the original shows: from its clear core (above the cut) out through what still
+    // differs clearly from the base (a grey lid on a pale glow differs by less than the cut), never into another layer,
+    // where a backdrop is verified, or into the base re-lit (the original's glow or shade the provider's base renders
+    // differently). A piece the cut missed lies inside the object's outline, between its clear parts and the layers
+    // around it; one open to the base along more than a quarter of its outline is the base's tone, not the object.
+    // `faint`: well above the base's own tone drift.
+    const faint = Math.max(24, 2 * found.typical + 12), drift = Math.max(8, found.typical);
+    const elsewhere = unionOf(order.filter(item => (item.kind === 'foreground' || !isPlate(item, A)) && !reaches.get(item.layer.file)).map(alphaOf), nA), extent = new Uint8Array(nA);
+    for (let i = 0; i < nA; i++) if (objectParts[i] || (!elsewhere[i] && !reached[i] && Math.max(Math.abs(originalA[i * 3] - reference[i * 3]), Math.abs(originalA[i * 3 + 1] - reference[i * 3 + 1]), Math.abs(originalA[i * 3 + 2] - reference[i * 3 + 2])) > faint && !baseTone(originalA, reference, i))) extent[i] = 1;
+    const core = Uint8Array.from(objectParts), extension = new Uint8Array(nA);
+    for (const part of parts(extent, A, 1)) if (part.some((v, i) => v && core[i])) for (let i = 0; i < nA; i++) if (part[i] && !core[i]) extension[i] = 1;
+    for (const piece of parts(extension, A, 1)) {
+      const ring = grow(piece, A.width, A.height, 1); let outline = 0, open = 0;
+      for (let i = 0; i < nA; i++) if (ring[i] && !piece[i]) { outline++; if (!core[i] && !extension[i] && !elsewhere[i] && !reached[i]) open++; }
+      if (open <= 0.25 * outline) for (let i = 0; i < nA; i++) if (piece[i]) objectParts[i] = 1;
+    }
+    // Pieces of one part split by something thin in front of it (a lid cut by an earbud's stem) are one part: grouped
+    // across small gaps, each group joins the back-most object it touches.
+    for (const group of parts(grow(objectParts, A.width, A.height, bridge), A, 1)) {
+      const mask = new Uint8Array(nA); let px = 0;
+      for (let i = 0; i < nA; i++) if (group[i] && objectParts[i]) { mask[i] = 1; px++; }
+      if (px < Math.round(MIN_REGION * nA)) continue;
+      const touchingAny = grow(mask, A.width, A.height, bridge), owner = ownerOf(touchingAny, candidates, A, { original: originalA, part: mask });
+      const overlapping = found.regions.filter(r => r.mask.some((v, i) => v && mask[i]));
+      let diff = 0; for (let i = 0; i < nA; i++) if (mask[i]) diff += Math.max(Math.abs(originalA[i * 3] - reference[i * 3]), Math.abs(originalA[i * 3 + 1] - reference[i * 3 + 1]), Math.abs(originalA[i * 3 + 2] - reference[i * 3 + 2]));
+      assign(mask, owner, overlapping.length > 0 && overlapping.every(r => r.smooth), Math.round(diff / px));
+    }
+    const smoothBackdrops = order.filter(item => smoothFiles.has(item.layer.file));
+    if (joins.size || smoothBackdrops.length) {
+      const W = canvas.width, H = canvas.height, full = { width: W, height: H, scale: 1 }, nC = W * H;
+      const originalC = await sharp(source.png).resize(W, H, { fit: 'fill' }).removeAlpha().raw().toBuffer(), referenceC = await sharp(base0Png).resize(W, H, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+      const toCanvas = (map: Uint8Array) => { const out = new Uint8Array(nC); for (let y = 0; y < H; y++) { const sy = Math.min(A.height - 1, Math.floor(y * A.height / H)); for (let x = 0; x < W; x++) out[y * W + x] = map[sy * A.width + Math.min(A.width - 1, Math.floor(x * A.width / W))]; } return out; };
+      const rewrite = async (item: Item, rgba: Buffer, note: string): Promise<Item> => {
+        const from = item.layer.rawFile ?? item.layer.file, file = `${from.replace(/\.png$/i, '')}-covered.png`, png = await sharp(rgba, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
+        writeFileSync(join(dir, file), png);
+        let opaque = 0; for (let i = 3; i < rgba.length; i += 4) if (rgba[i] > 127) opaque++;
+        const layer: LayerInfo = { ...item.layer, file, rawFile: from, pixelWidth: W, pixelHeight: H, opaquePercent: round(100 * opaque / nC, 1), placement: { kind: 'full-canvas', x: 0, y: 0, width: W, height: H },
+          description: [item.layer.description, note].filter(Boolean).join(' ') };
+        if (!coverageGroups.some(g => g.file === file)) coverageGroups.push({ file, members: [from] });
+        return { ...item, png, layer, shape: await layerShape(png, layer, A) };
+      };
+      const replace = (next: Item, previous: string) => { order = order.map(item => item.layer.file === previous ? next : item); ungrouped = ungrouped.map(item => item.layer.file === previous ? next : item); };
+      for (const [file, regions] of joins) {
+        // An object's part stops where a backdrop is verified to continue (the two meet there, never overlap). Opaque where
+        // it differs from the base by what made it part of the object; its one-pixel edge only where it clearly differs
+        // (an anti-aliased edge, not the base's glow beside it).
+        const item = order.find(x => x.layer.file === file)!, part = unionOf(regions, nA), edge = grow(part, A.width, A.height, 1);
+        for (let i = 0; i < nA; i++) if (part[i] || (!smoothFiles.has(file) && reached[i])) edge[i] = 0;
+        const own = await compositeOnGrid([{ png: item.png, placement: item.layer.placement }], full);
+        const cut = over(matte(originalC, referenceC, toCanvas(part), drift, faint), matte(originalC, referenceC, toCanvas(edge), faint, faint + 48));
+        replace(await rewrite(item, over(own, cut), 'Completed from the original where no layer showed it.'), file);
+      }
+      // Where a backdrop meets content an object took: completed like its hidden part, never copied from the original (the
+      // object's anti-aliased edge would stay behind on the backdrop when the object moves).
+      const taken = toCanvas(grow(unionOf([...joins.values()].flat(), nA), A.width, A.height, 1));
+      for (const backdrop of smoothBackdrops) {
+        const item = order.find(x => x.layer.rawFile === backdrop.layer.file || x.layer.file === backdrop.layer.file)!, known = reaches.get(backdrop.layer.file) ?? null;
+        const rgba = await compositeOnGrid([{ png: item.png, placement: item.layer.placement }], full);
+        const front = await coverageOnGrid(order.filter(x => x.layer.zIndex > item.layer.zIndex).map(x => ({ png: x.png, placement: x.layer.placement })), full);
+        let corrected = 0, completed = 0, carried = 0;
+        if (known) {
+          for (const v of known.carried) carried += v;
+          // Visible: where nothing is in front of it and it is verified to be there (or the original shows nothing the
+          // base lacks), it is what the creative shows (matted against the base, above the base's own tone drift).
+          const blocked = new Uint8Array(nA); for (let i = 0; i < nA; i++) if (!known.reach[i] && objectLike[i]) blocked[i] = 1;
+          const blockedC = toCanvas(blocked), visible = new Uint8Array(nC);
+          for (let i = 0; i < nC; i++) if (!front[i] && !blockedC[i] && !taken[i] && rgba[i * 4 + 3] > 16) visible[i] = 1;
+          const shown = matte(originalC, referenceC, visible, drift, drift + 40);
+          // Only where the provider's own pixel over the base does not show the creative: where it does, its own split into
+          // colour and opacity is kept (a soft shadow stays a transparent darkening, not an opaque grey that looks alike here).
+          for (let i = 0; i < nC; i++) {
+            if (!visible[i]) continue;
+            const a = rgba[i * 4 + 3] / 255;
+            if ([0, 1, 2].some(c => Math.abs(rgba[i * 4 + c] * a + referenceC[i * 3 + c] * (1 - a) - originalC[i * 3 + c]) > 24)) { for (let c = 0; c < 4; c++) rgba[i * 4 + c] = shown[i * 4 + c]; corrected++; }
+          }
+        }
+        // Hidden: inside its own outline (convex hull) and behind what is in front, continued from its own pixels (never
+        // the provider's guess there: a product's grey baked into it).
+        const solid = new Uint8Array(nC); for (let i = 0; i < nC; i++) if (rgba[i * 4 + 3] > 64) solid[i] = 1;
+        const hull = convexHull(solid, W, H), hidden = new Uint8Array(nC);
+        for (let i = 0; i < nC; i++) if (hull[i] && (front[i] || taken[i])) hidden[i] = 1;
+        // Replaced only where its visible part proved the provider's colours wrong; otherwise only its holes are filled.
+        const done = completeHidden(rgba, hidden, hull, W, H, corrected > 0);
+        for (let i = 0; i < nC; i++) if (hidden[i] && [0, 1, 2, 3].some(c => done[i * 4 + c] !== rgba[i * 4 + c])) completed++;
+        record.coverage.backdrops.push({ layer: item.layer.name ?? item.layer.file, verified: !!known, carriedPercent: round(100 * carried / nA, 2), correctedPercent: round(100 * corrected / nC, 2), completedPercent: round(100 * completed / nC, 2) });
+        if (corrected || completed) replace(await rewrite(item, done, 'Visible pixels as the creative shows them; hidden part continued inside its outline.'), item.layer.file);
+      }
+    }
+    const joined = record.coverage.regions.filter(r => r.owner), left = record.coverage.regions.filter(r => !r.owner);
+    if (joined.length) record.warnings.push(`COVERAGE_COMPLETED: ${joined.map(r => `${r.areaPercent}% → ${r.owner}`).join('; ')}: original content no layer showed and the clean base lacked, cut from the original into the layer it belongs to.`);
+    if (left.length) record.warnings.push(`COVERAGE_GAPS: ${left.map(r => `${r.areaPercent}% (${r.ofBase ? 'continues the base, which lacks it' : r.smooth ? 'smooth' : 'textured'})`).join('; ')} of the original is in no layer and no layer it could join touches it. Review the layers.`);
+  }
   for (const item of dropped) passTiles.push({ png: item.png, title: `✗ Not a layer · ${item.layer.name ?? item.layer.file}`, sub: `${droppedFiles.get(item.layer.file)!.reason} · ${droppedFiles.get(item.layer.file)!.action === 'remove' ? 'removed' : 'kept in background'}` });
 
   // The foreground union mask: every foreground layer (and every removed stain), grown a little (edges, halos), feathered.
@@ -608,7 +886,10 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   // when every removed region sits on one, else the region-aware graphic continuation. Every candidate is compared with
   // it, so a ghost of the removed subject (a darker silhouette, a shadow) is caught however soft it is.
   const plainA = plainFieldFill(originalA, coreA, A.width, A.height);
-  const expectedA = plainA.plain ? plainA.out : graphicFill(originalA, coreA, A.width, A.height);
+  // A continuation judges other candidates only where it can be trusted: next to a guessed fill, a correct edit of a
+  // shaded or photographic background would read as residue or darkening.
+  const trust = continuationTrust(difficulty, plainA.plain);
+  const expectedA = !trust.trusted ? undefined : plainA.plain ? plainA.out : graphicFill(originalA, coreA, A.width, A.height);
   // Every candidate background is judged the same way: does it still show a removed layer (per layer, never per group),
   // and is the area behind the foreground a usable continuation of its surroundings (backgroundRecovery.ts)?
   type Candidate = { method: CleanBackgroundMethod; png: Buffer; quality: BackgroundQuality; recreated: Retention[] };
@@ -618,21 +899,24 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   const evaluate = async (method: CleanBackgroundMethod, png: Buffer, ai?: Buffer): Promise<Candidate> => {
     await breathe();
     const rgbA = await rgbOnGrid(png, A);
-    const recreated = source.name === 'original' ? objectRetention(rgbA, originalA, model, major).filter(r => r.retainedPercent >= options.retainedPercent) : [];
+    const recreated = source.name === 'original' ? objectRetention(rgbA, originalA, model, major, A.width).filter(r => recreates(r, options.retainedPercent)) : [];
     await breathe();
     // Provider candidates must also be the creative's background outside the removed area (not a re-rendered or
     // placeholder base); candidates built from the original are that by construction.
     const provider = (method === 'provider-base' || method === 'scene-composite') && source.name === 'original';
-    const quality = backgroundQuality({ rgb: rgbA, core: coreA, w: A.width, h: A.height, recreated: recreated.length, ...(expectedA ? { expected: expectedA, plain: plainA.plain } : {}), ...(provider ? { original: originalA } : {}),
+    let quality = backgroundQuality({ rgb: rgbA, core: coreA, w: A.width, h: A.height, recreated: recreated.length, ...(expectedA ? { expected: expectedA, plain: plainA.plain } : {}), ...(provider ? { original: originalA } : {}),
       ...(ai && source.name === 'original' ? { outside: { ai: await rgbOnGrid(ai, A), source: originalA } } : {}) });
+    // A local continuation of surroundings it cannot reliably continue is at best a fallback, never "usable".
+    if (LOCAL_METHODS.has(method) && !trust.trusted && removal.length) quality = { ...quality, quality: quality.quality === 'usable' ? 'degraded' : quality.quality, reasons: [...quality.reasons, 'untrusted-continuation'] };
     const candidate = { method, png, quality, recreated };
     candidates.push(candidate);
     return candidate;
   };
   const acceptable = (c: Candidate) => c.quality.quality === 'usable' && !c.recreated.length;
-  const baseRetention = source.name === 'original' ? objectRetention(await rgbOnGrid(base0Png, A), originalA, model, major) : [];
-  const reasons: string[] = [];
-  let chosen: Candidate | undefined, reconstructionReason: string | undefined, fallbackUsed = false, aiTried = false;
+  const baseRetention = source.name === 'original' ? objectRetention(await rgbOnGrid(base0Png, A), originalA, model, major, A.width) : [];
+  const reasons: string[] = [], steps: BackgroundStep[] = [];
+  const faults = (c: Candidate) => [...c.quality.reasons, ...c.recreated.map(r => `recreates ${r.name ?? r.file}`)].join(', ');
+  let chosen: Candidate | undefined, reconstructionReason: string | undefined, fallbackUsed = false, aiTried = false, providerKept = false;
   // 1. Seedream's base, when it no longer shows any extracted layer and its hidden area is usable: no call.
   if (!removal.length) { chosen = await evaluate('provider-base', base0Png); reasons.push('There is no foreground layer to remove.'); }
   else if (source.name === 'original') {
@@ -640,6 +924,9 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     if (acceptable(base)) { chosen = base; reasons.push('Seedream\'s base no longer shows any extracted layer, so it is kept as returned (no reconstruction call).'); }
     else reasons.push(base.recreated.length ? `Seedream's base still shows ${base.recreated.map(r => `${r.name ?? r.file} (${r.retainedPercent}%)`).join(', ')}.` : `Seedream's base is not usable behind the foreground (${base.quality.reasons.join(', ')}).`);
   } else reasons.push('The original does not match the canvas aspect, so the provider base is cleaned instead and cannot be compared.');
+  steps.push(!removal.length ? { step: 'provider-base', outcome: 'chosen', reason: 'No foreground layer is removed, so Seedream\'s base is the background (no call).' }
+    : source.name !== 'original' ? { step: 'provider-base', outcome: 'skipped', reason: reasons[reasons.length - 1] }
+    : { step: 'provider-base', outcome: chosen ? 'chosen' : 'rejected', reason: reasons[reasons.length - 1] });
   // 2. Seedream's own scene layers (white field, brand curve, gradient) over its base: they often already hold the
   // complete background behind the person. No call.
   const scene = order.filter(item => item.kind === 'background' && item.shape.count > 0).sort((a, b) => a.layer.zIndex - b.layer.zIndex);
@@ -650,6 +937,9 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     if (acceptable(composite)) { chosen = composite; reasons.push(`Seedream's scene layers (${scene.map(item => item.layer.name ?? item.layer.file).join(', ')}) over its base hold a clean background behind every extracted layer (no reconstruction call).`); }
     else reasons.push(`Seedream's scene layers over its base are not clean enough (${[...composite.recreated.map(r => `still shows ${r.name ?? r.file}`), ...composite.quality.reasons].join(', ')}).`);
   }
+  const sceneCandidate = candidates.find(c => c.method === 'scene-composite');
+  steps.push(sceneCandidate ? { step: 'scene-composite', outcome: sceneCandidate === chosen ? 'chosen' : 'rejected', reason: reasons[reasons.length - 1] }
+    : { step: 'scene-composite', outcome: 'skipped', reason: chosen ? 'Not needed: Seedream\'s base is already clean (no call).' : !scene.length ? 'Seedream returned no scene layer to rebuild the background from.' : 'The original does not match the canvas aspect.' });
   // The deterministic continuation from the ORIGINAL: the AI edit's starting image (so the model never sees the removed
   // subject) and the fallback. A plain field continues as its smooth surface; simple graphic backgrounds continue region
   // by region; anything else by local fill.
@@ -672,8 +962,8 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   // colors (a white field and a yellow curve) — is continued locally: its smooth surface, or region by region with the
   // boundaries extended. Validated like any candidate; no call, and nothing a model could repaint as a silhouette. A clean
   // simplified continuation is preferred to an edit that may be photoreal but broken.
-  const simpleGraphic = difficulty.simpleGraphic && difficulty.palette.length <= 3;
-  if (!chosen && (plainA.plain || simpleGraphic) && options.deterministicBackground !== false && removal.length) {
+  const simpleGraphic = difficulty.simpleGraphic && difficulty.palette.length <= 3, continuable = plainA.plain || simpleGraphic;
+  if (!chosen && continuable && trust.trusted && options.deterministicBackground !== false && removal.length) {
     const start = await prefilled();
     if (start.method === 'plain-field' || start.method === 'graphic-fill') {
       const continued = await evaluate(start.method, start.png);
@@ -684,13 +974,23 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
       } else reasons.push(`The ${start.method === 'plain-field' ? 'plain-field' : 'graphic'} continuation is not usable (${[...continued.quality.reasons, ...continued.recreated.map(r => `recreates ${r.name ?? r.file}`)].join(', ')}).`);
     }
   }
+  const localCandidate = candidates.find(c => LOCAL_METHODS.has(c.method));
+  if (localCandidate) steps.push({ step: 'local-continuation', outcome: localCandidate === chosen ? 'chosen' : 'rejected', reason: reasons[reasons.length - 1] });
+  else {
+    const reason = chosen ? 'Not needed: an earlier background is already clean (no call).' : !removal.length ? 'Nothing was removed.'
+      : options.deterministicBackground === false ? 'This run tries the reconstruction first; the continuation is only its fallback.'
+      : !continuable ? 'The background is neither a plain field nor a simple graphic design, so a local continuation would be a guess.'
+      : `${trust.reason} The reconstruction pass runs instead.`;
+    steps.push({ step: 'local-continuation', outcome: 'skipped', reason });
+    if (!chosen && removal.length) reasons.push(`No local continuation: ${reason}`);
+  }
   // 4. One AI image edit from the original, validated. Never retried.
   if (!chosen) {
     reconstructionReason = reasons.join(' ');
     const size = reconstructionSize(canvas), reconstructor = ctx.deps.backgroundReconstructor;
     const key = size && reconstructor ? sha256(Buffer.from(JSON.stringify({ source: sha256(source.png), mask: sha256(coreM), size, prompt: CLEAN_BACKGROUND_PROMPT, model: reconstructor.model, prefill: plainA.plain ? 'plain-field' : difficulty.simpleGraphic ? 'graphic-fill' : 'local-fill' }))) : undefined;
-    let ai: Buffer | undefined, why = '';
-    if (key && record.reconstruction?.key === key && record.reconstruction.state === 'done' && existsSync(join(dir, AI_FILE))) ai = read(AI_FILE);
+    let ai: Buffer | undefined, why = '', aiCall = false, aiReused = false;
+    if (key && record.reconstruction?.key === key && record.reconstruction.state === 'done' && existsSync(join(dir, AI_FILE))) { ai = read(AI_FILE); aiReused = true; }
     else if (!options.reconstructBackground) why = 'AI reconstruction is turned off for this run';
     else if (!size) why = `the canvas aspect ${canvas.width}×${canvas.height} is outside the 1:3–3:1 an image edit accepts`;
     else if (!reconstructor) why = 'no background reconstructor is configured';
@@ -705,7 +1005,7 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
         image: `<clean-background-input.png: ${source.name === 'original' ? `original image ${source.file}` : `provider base ${source.file}`} with the removal area pre-filled (${start.method}), ${size!.width}x${size!.height}>`, mask: '<clean-background-mask.png: transparent = remove>',
         difficulty: difficulty.level, cacheKey: key }, null, 2));
       record.reconstruction = { key: key!, model: reconstructor.model, size: size!, state: 'sent', sentAt: new Date().toISOString() };
-      calls.backgroundReconstruction++;
+      calls.backgroundReconstruction++; aiCall = true;
       ctx.save();
       const started = Date.now();
       try {
@@ -731,17 +1031,34 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
       else why = `the AI edit is ${aiCandidate.quality.quality} (${[...aiCandidate.quality.reasons, ...aiCandidate.recreated.map(r => `recreates ${r.name ?? r.file}`)].join(', ')})`;
     }
     // 5. The deterministic continuation, when the edit is unavailable, failed or not usable. A degraded edit is only kept
-    // when the fallback is no better.
+    // when the fallback is no better, and so is the provider's base when its only fault is its tones outside the removed
+    // area: clean behind the foreground (nothing of a removed layer, no ghost), and what differs is mostly its tone, not
+    // content of the creative's background it lacks (a disc's wedge missing from it: the continuation keeps that).
     if (!chosen) {
       const fill = await prefilled(), fallback = candidates.find(c => c.png === fill.png) ?? await evaluate(fill.method, fill.png);
       const rank = (c: Candidate) => (c.recreated.length ? 3 : 0) + ({ usable: 0, degraded: 1, failed: 2 } as const)[c.quality.quality];
-      chosen = aiCandidate && aiCandidate.quality.quality !== 'failed' && rank(aiCandidate) < rank(fallback) ? aiCandidate : fallback;
-      if (chosen === fallback) {
+      let providerBase = candidates.find(c => c.method === 'provider-base' && c.quality.quality === 'degraded' && !c.recreated.length && c.quality.reasons.every(r => r === 'background-mismatch'));
+      if (providerBase) {
+        const rgb = await rgbOnGrid(providerBase.png, A), keep = grow(coreA, A.width, A.height, 2);
+        let mismatched = 0, lacking = 0;
+        for (let i = 0; i < nA; i++) if (!keep[i] && Math.max(Math.abs(rgb[i * 3] - originalA[i * 3]), Math.abs(rgb[i * 3 + 1] - originalA[i * 3 + 1]), Math.abs(rgb[i * 3 + 2] - originalA[i * 3 + 2])) > 40) { mismatched++; if (baseContent?.[i]) lacking++; }
+        if (lacking > 0.25 * mismatched) providerBase = undefined;
+      }
+      // On a tie the edit is kept, then the provider's base: each is this background, the fallback a guess at it.
+      chosen = aiCandidate && aiCandidate.quality.quality !== 'failed' && rank(aiCandidate) <= rank(fallback) ? aiCandidate
+        : providerBase && rank(providerBase) <= rank(fallback) ? providerBase : fallback;
+      if (chosen === providerBase) providerKept = !!reasons.push(`Kept Seedream's base although its tones differ from the creative's outside the removed area (background-mismatch): it is clean behind the foreground, and the continuation is no better. Review it: it is not a verified clean background.`);
+      else if (chosen === fallback) {
         fallbackUsed = true;
-        reasons.push(`Fell back to a ${fill.method === 'plain-field' ? 'plain-field continuation of the surrounding background' : fill.method === 'graphic-fill' ? 'graphic continuation of the surrounding background' : 'local fill'} because ${why}. This is not an AI-reconstructed background.`);
+        reasons.push(`Fell back to a ${fill.method === 'plain-field' ? 'plain-field continuation of the surrounding background' : fill.method === 'graphic-fill' ? 'graphic continuation of the surrounding background' : 'local fill'} because ${why}. This is not an AI-reconstructed background.${chosen.quality.quality !== 'usable' ? ' Review it: it is not a verified clean background.' : ''}`);
       } else reasons.push(`Kept the AI edit although it is ${aiCandidate!.quality.quality}: the fallback is no better.`);
     }
-  }
+    steps.push(aiCandidate ? { step: 'ai-reconstruction', outcome: aiCandidate === chosen ? 'chosen' : 'rejected', call: aiCall,
+      reason: aiCandidate === chosen ? `The image edit is ${aiCandidate.quality.quality}${aiCandidate.quality.quality === 'usable' ? '' : ` (${faults(aiCandidate)}), and the fallback is no better`}${aiReused ? ' (the saved edit was reused: no new call)' : ''}.` : `The image edit is ${aiCandidate.quality.quality} (${faults(aiCandidate)}).` }
+      : { step: 'ai-reconstruction', outcome: 'skipped', call: aiCall, reason: why ? `${why[0].toUpperCase()}${why.slice(1)}.` : 'No image edit was made.' });
+    if (fallbackUsed) steps.push({ step: 'fallback', outcome: 'chosen', reason: reasons[reasons.length - 1] });
+    if (providerKept) steps.push({ step: 'provider-base', outcome: 'chosen', reason: reasons[reasons.length - 1] });
+  } else steps.push({ step: 'ai-reconstruction', outcome: 'skipped', reason: 'Not needed: a clean background was found without a call.' });
   const backgroundPng = chosen!.png, method = chosen!.method;
   if (method !== 'provider-base') writeFileSync(join(dir, CLEAN_FILE), backgroundPng);
   // Validation: no extracted product recreated, and nothing left that no layer holds.
@@ -755,13 +1072,18 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
   if (recreated.length) reasons.push(`The background still shows ${recreated.map(r => `${r.name ?? r.file} (${r.retainedPercent}% of its distinctive pixels)`).join(', ')}.`);
   if (chosen!.quality.quality !== 'usable') reasons.push(`The area behind the foreground is ${chosen!.quality.quality}: ${chosen!.quality.reasons.join(', ')}.`);
   if (leftover.contaminated) reasons.push(`Objects no layer holds remain in the background: ${leftover.reasons.join(' ')}`);
-  const contaminated = recreated.length > 0 || leftover.contaminated || chosen!.quality.quality === 'failed';
-  const status: CleanBackgroundStatus = fallbackUsed ? 'fallback' : contaminated || chosen!.quality.quality !== 'usable' ? 'contaminated'
+  // A background continued from the original keeps whatever no layer took: content the clean base lacks makes it
+  // contaminated, whatever else it passed (the check above cannot see it between the layers around it).
+  const retained = source.name === 'original' ? retainedContent(backgroundA, originalA, await rgbOnGrid(base0Png, A),
+    unionOf(order.filter(item => item.kind === 'foreground' || !isPlate(item, A)).map(item => { const a = new Uint8Array(nA); for (let i = 0; i < nA; i++) if (item.shape.rgba[i * 4 + 3] > 64) a[i] = 1; return a; }), nA), A, baseContent) : [];
+  if (retained.length) record.warnings.push(`BACKGROUND_RETAINS_UNEXTRACTED: the background still shows ${retained.map(r => `${r.areaPercent}%`).join(', ')} of the image that no layer holds and the clean base lacks. Review the background.`);
+  const contaminated = recreated.length > 0 || leftover.contaminated || chosen!.quality.quality === 'failed' || retained.length > 0;
+  const status: CleanBackgroundStatus = retained.length ? 'contaminated' : fallbackUsed || providerKept ? 'fallback' : contaminated || chosen!.quality.quality !== 'usable' ? 'contaminated'
     : method === 'provider-base' ? 'provider-clean' : method === 'scene-composite' ? 'scene-clean' : method === 'ai-reconstruction' ? 'ai-reconstructed' : 'continued-clean';
   // Full background plates are the background, never a second layer on it (merged, duplicated, or replaced by the clean
   // background); then the editor's layers in numbers.
   const toScreen = (item: Item) => ({ layer: item.layer, shape: item.shape, kind: item.kind, role: item.role });
-  const plates = screenPlates(order.map(toScreen), backgroundA, method, A), platesOut = new Map(plates.filter(d => !d.kept).map(d => [d.file, d]));
+  const plates = screenPlates(order.map(toScreen), backgroundA, method, A, (chosen!.quality.quality === 'usable' || providerKept) && !contaminated), platesOut = new Map(plates.filter(d => !d.kept).map(d => [d.file, d]));
   for (const item of order.filter(item => platesOut.has(item.layer.file))) passTiles.push({ png: item.png, title: `✗ Not a layer · ${item.layer.name ?? item.layer.file}`, sub: `${platesOut.get(item.layer.file)!.reason} · in the background` });
   order = order.filter(item => !platesOut.has(item.layer.file));
   const backgroundFile = method === 'provider-base' ? base0.file : CLEAN_FILE;
@@ -773,7 +1095,7 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     candidates: candidates.map(c => ({ method: c.method, quality: c.quality.quality, reasons: [...c.quality.reasons, ...c.recreated.map(r => `recreates ${r.name ?? r.file}`)], metrics: c.quality.metrics, chosen: c === chosen })),
     ...(reconstructionReason ? { reconstructionReason } : {}), fallbackUsed, aiTried, ...(aiCandidateRecord?.quality.metrics.outsideMaskChangedPercent !== undefined ? { outsideMaskChangedPercent: aiCandidateRecord.quality.metrics.outsideMaskChangedPercent } : {}),
     ...(shadow ? { shadow: { percent: shadow.percent, assessed: shadow.assessed, model: shadow.model, components: shadow.components, note: shadow.note } } : {}),
-    plainField: { plain: plainA.plain, regions: plainA.regions.slice(0, 12) } };
+    plainField: { plain: plainA.plain, regions: plainA.regions.slice(0, 12) }, trust, steps };
 
   // The final stack contains curated editor layers only. Unplaced and superseded assets remain in the forensic record.
   const provenance = (item: Item) => {
@@ -788,11 +1110,13 @@ export async function refineDecomposition(ctx: RefineContext): Promise<{ layers:
     background: { layer: backgroundLayer, shape: await layerShape(backgroundPng, backgroundLayer, A), kind: 'background', role: 'background' },
     candidates: [...rawCandidates, ...grouping.groups.map(g => ({ layer: g.entry.layer, item: { ...g.entry, ...classify(g.entry.layer, g.entry.shape, A) }, source: 'group' as const })),
       ...items.filter(item => !rawCandidates.some(c => c.layer.file === item.layer.file)).map(item => ({ layer: item.layer, item, source: 'group' as const }))],
-    decisions: [...screening, ...plates], groups: [...grouping.groups.map(g => ({ file: g.entry.layer.file, members: g.members.map(m => m.layer.file) })),
+    decisions: [...screening, ...plates], groups: [...coverageGroups, ...grouping.groups.map(g => ({ file: g.entry.layer.file, members: g.members.map(m => m.layer.file) })),
       ...record.passes.filter(p => p.grouped?.length).map(p => ({ file: `pass-${p.pass}-grouped.png`, members: p.grouped! }))] });
   order = curation.items; record.curation = curation.record;
   record.layerPlan = layerPlan(order.map(toScreen), [...screening, ...plates] as UsefulnessDecision[], A, plainA.plain ? 'plain' : simpleGraphic ? 'graphic' : 'scene');
   if (record.layerPlan.dropped.length) record.warnings.push(`LAYERS_LEFT_OUT: ${record.layerPlan.dropped.length} layer(s) are not editor layers (${record.layerPlan.dropped.map(d => `${d.name ?? d.file}: ${d.reason}`).join('; ')}); ${record.layerPlan.editableLayers} editable layers remain.`);
+  // Requested versus returned: an element the plan asked for as its own layer has one, or the run says why not.
+  record.warnings.push(...plannedLayerIssues(semantic, roleOf, merged, rawCandidates.map(c => c.layer), order.map(item => item.layer), record.layerPlan.dropped, record.planCoverage?.matched));
   const stacked = order.map((item, i) => ({ ...item.layer, ...(renumber ? { zIndex: i + 1 } : {}), provenance: provenance(item) }));
   if (renumber) backgroundLayer.zIndex = 0;
   const layers: LayerInfo[] = [backgroundLayer, ...stacked]

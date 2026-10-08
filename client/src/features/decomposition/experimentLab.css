@@ -15,6 +15,10 @@
 .ff-lab-body { font-size: 14px; line-height: 1.55; }
 .ff-lab-body [hidden] { display: none !important; }
 .ff-lab-page { width: 100%; max-width: 1216px; margin: 0 auto; padding: 30px 28px 48px; display: grid; gap: 24px; }
+.ff-lab-page > .lx-card { display: grid; gap: 14px; }
+.ff-lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 14px; }
+.ff-lab-fieldset { min-width: 0; }
+.ff-lab-page .ws-btn { overflow-wrap: anywhere; white-space: normal; }
 .ff-lab-page h2, .ff-lab-page h3, .ff-lab-page p, .ff-lab-welcome h2 { margin: 0; }
 .ff-lab-page h2 { font-size: 26px; font-weight: 600; letter-spacing: -.6px; }
 .ff-lab-page h3 { font-size: 16px; font-weight: 600; }

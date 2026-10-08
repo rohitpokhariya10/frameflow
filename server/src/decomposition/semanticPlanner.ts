@@ -1,3 +1,4 @@
+import { isTemplateRole, TEMPLATE_ROLES, type TemplateRole } from '@frameflow/shared';
 import { EFFECT, FRAGMENT, idWords, PERSON } from './interactionTerms.js';
 
 /** Image-template planning is independent of the legacy layout presets. */
@@ -16,19 +17,44 @@ Generate downstream_decomposition_prompt LAST, after completing the structural a
 const str = { type: 'string' };
 const strings = { type: 'array', items: str };
 const obj = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
-export const SEMANTIC_SCHEMA = obj({
-  image_type: str, scene_summary: str,
-  elements: { type: 'array', items: obj({
-    id: str, type: str, description: str, editable_independently: { type: 'boolean' }, approximate_region: str,
-    z_order: { type: 'integer' }, confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
-    occlusion: obj({ is_occluded: { type: 'boolean' }, occluded_by: strings, requires_reconstruction: { type: 'boolean' } }),
-    attachment: obj({ relation: { type: 'string', enum: ['none', 'held_in_hand', 'worn_by_human', 'attached_to_human', 'part_of_object'] }, parent_id: str,
-      separation_risk: { type: 'string', enum: ['low', 'medium', 'high'] }, keep_with_parent: { type: 'boolean' } }),
-  }) },
+const ELEMENT = {
+  id: str, type: str, description: str, editable_independently: { type: 'boolean' }, approximate_region: str,
+  z_order: { type: 'integer' }, confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+  occlusion: obj({ is_occluded: { type: 'boolean' }, occluded_by: strings, requires_reconstruction: { type: 'boolean' } }),
+  attachment: obj({ relation: { type: 'string', enum: ['none', 'held_in_hand', 'worn_by_human', 'attached_to_human', 'part_of_object'] }, parent_id: str,
+    separation_risk: { type: 'string', enum: ['low', 'medium', 'high'] }, keep_with_parent: { type: 'boolean' } }),
+};
+const ANALYSIS = { image_type: str, scene_summary: str };
+const PLAN = {
   relationships: { type: 'array', items: obj({ source: str, relationship: str, target: str }) },
   ambiguities: strings, recommended_layer_count: { type: 'integer' }, decomposition_strategy: str,
   downstream_decomposition_prompt: str,
-});
+};
+export const SEMANTIC_SCHEMA = obj({ ...ANALYSIS, elements: { type: 'array', items: obj(ELEMENT) }, ...PLAN });
+
+/**
+ * Template capture: a CREATE_TEMPLATE run's one planner call also returns what the new template keeps, so creating a
+ * template needs no second (image-understanding or prompt-writing) call. Every element gets a structural role, and the
+ * composition a role-based name and description. Content stays in the analysis above; the template keeps only roles.
+ */
+export const TEMPLATE_CAPTURE_INSTRUCTION = `This image creates a reusable template for later creatives with the same composition but different content. In the same answer:
+- give every element a template_role from the fixed list: what it does in the composition, never what it is. A person or character is primary_subject (secondary_subject for others); what they hold is held_object; the advertised product is main_product (supporting_product for smaller ones beside it); a pedestal, stand or surface is prop; the scene behind everything is background; a frame, panel or decorative backdrop behind the subject is backdrop; text is headline, body_text or price; a button is cta; shadows and glows are effect.
+- fill reusable_template: a 2–5 word structural name and one sentence describing the composition in role words only, for example "Subject Holding Product" and "A primary subject holding an object in front of a decorative backdrop." Never name what anything is: no object or product names, no descriptions of people (age, gender, clothing), no colors, brands, themes or visible text.`;
+export const TEMPLATE_CAPTURE_SCHEMA = obj({ ...ANALYSIS, elements: { type: 'array', items: obj({ ...ELEMENT, template_role: { type: 'string', enum: [...TEMPLATE_ROLES] } }) }, ...PLAN,
+  reusable_template: obj({ name: str, description: str }) });
+/** What a template-capturing planner call adds: a role per element id, and the composition's role-based name and description (checked again locally). */
+export type TemplateCapture = { roles: Record<string, TemplateRole>; name: string; description: string };
+/** Splits a capturing planner answer into the plain semantic analysis (validated as usual) and its template capture. */
+export function splitTemplateCapture(value: unknown): { semantic: unknown; capture: TemplateCapture } {
+  const answer = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const reusable = answer.reusable_template as { name?: unknown; description?: unknown } | undefined;
+  const elements = Array.isArray(answer.elements) ? answer.elements as Record<string, unknown>[] : [];
+  if (!reusable || typeof reusable.name !== 'string' || typeof reusable.description !== 'string' || elements.some(e => !isTemplateRole(e.template_role))) throw new Error('The planner did not return the reusable template structure.');
+  const { reusable_template: _template, ...semantic } = answer;
+  void _template;
+  return { semantic: { ...semantic, elements: elements.map(({ template_role: _role, ...e }) => { void _role; return e; }) },
+    capture: { roles: Object.fromEntries(elements.map(e => [String(e.id), e.template_role as TemplateRole])), name: reusable.name, description: reusable.description } };
+}
 export type SemanticAnalysis = {
   image_type: string; scene_summary: string;
   elements: SemanticElement[];
@@ -54,7 +80,9 @@ function matches(value: unknown, schema: Record<string, unknown>): boolean {
 /** Why an element the model planned as its own layer stays with its parent (protected people and interactions). */
 export type ProtectedMerge = { id: string; parent: string; reason: 'worn_ornament' | 'held_object' | 'finger_fragment' | 'attached_part' | 'keep_with_parent' | 'text_effect' | 'cast_shadow' };
 /** What code enforced on the model's plan: merged elements, and whether the prompt was rebuilt or given the protection clause. */
-export type SemanticProtection = { merged: ProtectedMerge[]; promptRebuilt: boolean; clauseAppended: boolean };
+/** A merge the inventory asked for but protection refused: another layer lies between the two in depth (see protect). */
+export type KeptApart = { id: string; parent: string; between: string };
+export type SemanticProtection = { merged: ProtectedMerge[]; promptRebuilt: boolean; clauseAppended: boolean; keptApart?: KeptApart[] };
 /** Appended (when it fits) to every prompt of an image with people: code-owned, whatever the model wrote. */
 export const PROTECTION_CLAUSE = 'Keep every person whole with their hands, fingers, worn jewelry and accessories; never output finger, hand, grip or jewelry fragments as separate layers.';
 const PROMPT_BUDGET = 1750;
@@ -81,7 +109,7 @@ const isMark = (e: SemanticElement) => /^(?:small_|tiny_)?(?:tm|trademark|regist
  * anything marked keep_with_parent stay with their parent; so does whatever is part of an element merged that way (a
  * badge on a held phone). Merges go to the nearest independent ancestor; an element with no such parent is left alone.
  */
-function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; merged: ProtectedMerge[] } {
+function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; merged: ProtectedMerge[]; keptApart: KeptApart[] } {
   const elements = analysis.elements.map(e => ({ ...e })), byId = new Map(elements.map(e => [e.id, e]));
   const belongsTo = (e: SemanticElement) => e.attachment.parent_id || analysis.relationships.find(r => r.source === e.id && /belongs|part|of$|held|worn|attached/i.test(r.relationship) && byId.has(r.target))?.target || '';
   const independentAncestor = (id: string, seen = new Set<string>()): SemanticElement | undefined => {
@@ -90,10 +118,23 @@ function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; mer
     seen.add(id);
     return e.editable_independently ? e : independentAncestor(belongsTo(e), seen);
   };
-  const merged: ProtectedMerge[] = [];
+  const merged: ProtectedMerge[] = [], keptApart: KeptApart[] = [];
+  /**
+   * An independent layer between a part and the element it would join, in front of the one and behind the other (the
+   * planner's own occlusion lists): an earbud seated between a case's lid and its front shell. One layer cannot be both
+   * behind and in front of it, so merging the two asks the layer model for an impossible order.
+   */
+  const between = (e: SemanticElement, parent: SemanticElement) => {
+    const [back, front] = e.z_order < parent.z_order ? [e, parent] : [parent, e];
+    return elements.find(x => x !== e && x !== parent && x.editable_independently && x.z_order > back.z_order && x.z_order < front.z_order
+      && back.occlusion.occluded_by.includes(x.id) && x.occlusion.occluded_by.includes(front.id));
+  };
   const merge = (e: SemanticElement, reason: ProtectedMerge['reason']) => {
     const parent = independentAncestor(belongsTo(e));
     if (!parent || parent === e || !e.editable_independently) return false;
+    // A part of an object (not of a person) stays its own layer rather than sandwich another layer inside its parent's.
+    const x = (reason === 'keep_with_parent' || reason === 'attached_part') ? between(e, parent) : undefined;
+    if (x) { keptApart.push({ id: e.id, parent: parent.id, between: x.id }); return false; }
     e.editable_independently = false;
     merged.push({ id: e.id, parent: parent.id, reason });
     return true;
@@ -141,6 +182,8 @@ function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; mer
     const nearest = candidates.filter(s => s.z_order > e.z_order && (isPerson(s) || /product/i.test(s.type))).sort((a, b) => a.z_order - b.z_order)[0];
     const parent = attached ?? named ?? nearest;
     if (!parent) continue;
+    const x = between(e, parent);
+    if (x) { keptApart.push({ id: e.id, parent: parent.id, between: x.id }); continue; }
     e.editable_independently = false;
     merged.push({ id: e.id, parent: parent.id, reason: 'cast_shadow' });
   }
@@ -152,7 +195,7 @@ function protect(analysis: SemanticAnalysis): { elements: SemanticElement[]; mer
       if (e.editable_independently && parent && !parent.editable_independently && e.attachment.relation !== 'none' && merge(e, 'attached_part')) changed = true;
     }
   }
-  return { elements, merged };
+  return { elements, merged, keptApart };
 }
 const words = (e: SemanticElement) => idWords(e.id);
 /** A prompt from the protected inventory, back to front: each layer with what it keeps, within PROMPT_BUDGET characters. */
@@ -164,9 +207,22 @@ function protectedPrompt(elements: SemanticElement[], merged: ProtectedMerge[]):
   const head = `Create ${layers.length} layer${layers.length === 1 ? '' : 's'} back-to-front: `;
   const tail = `${effects.length ? `. Each text layer keeps its own part of the ${effects.join(', ')}` : ''}. Preserve exact positions, colors, edges and visible text; do not invent content.`;
   const withs = layers.map(e => (kept(e).length ? ` together with ${kept(e).join(', ')} in the same layer` : ''));
-  const room = Math.max(40, Math.floor((PROMPT_BUDGET - head.length - tail.length - withs.join('').length - layers.length * 8) / layers.length));
-  const describe = (e: SemanticElement) => { const d = e.description.trim().replace(/\s+/g, ' '); return d.length <= room ? d.replace(/[.;]+$/, '') : `${d.slice(0, room - 1).replace(/[\s,;.]+\S*$/, '')}…`; };
-  return `${head}${layers.map((e, i) => `(${i + 1}) ${describe(e)}${withs[i]}`).join('; ')}${tail}`;
+  const descriptions = layers.map(e => e.description.trim().replace(/\s+/g, ' ').replace(/[.;]+$/, ''));
+  const render = () => `${head}${descriptions.map((description, i) => `(${i + 1}) ${description}${withs[i]}`).join('; ')}${tail}`;
+  // Use the whole budget before shortening anything. Equal per-layer quotas used to cut even a short total prompt
+  // mid-instruction ("Do not split the attached…"). Remove only complete trailing sentences; never slice instructions.
+  let prompt = render();
+  while (prompt.length > PROMPT_BUDGET) {
+    const candidates = descriptions.map((description, i) => {
+      const sentences = description.split(/(?<=[.!?])\s+(?=[A-Z])/);
+      const shorter = sentences.length > 1 ? sentences.slice(0, -1).join(' ').replace(/[.;]+$/, '') : words(layers[i]);
+      return { i, shorter, saving: description.length - shorter.length };
+    }).filter(c => c.saving > 0).sort((a, b) => b.saving - a.saving);
+    if (!candidates.length) throw new Error('The protected layer inventory exceeds the prompt budget; no instructions were truncated.');
+    descriptions[candidates[0].i] = candidates[0].shorter;
+    prompt = render();
+  }
+  return prompt;
 }
 
 export function semanticPlan(value: unknown) {
@@ -183,12 +239,13 @@ export function semanticPlan(value: unknown) {
   }
   // Protection is enforced in code. When it had to change the model's inventory, the model's prompt (which names those
   // elements as layers) no longer agrees with it, so the prompt is rebuilt from the protected inventory.
-  const { elements, merged } = protect(analysis);
+  const { elements, merged, keptApart } = protect(analysis);
   const independent = elements.filter(e => e.editable_independently).sort((a, b) => a.z_order - b.z_order);
-  let prompt = merged.length ? protectedPrompt(elements, merged) : analysis.downstream_decomposition_prompt.trim();
+  // A refused merge changes the inventory too: the planner's prompt may still put the part in its parent's layer.
+  let prompt = merged.length || keptApart.length ? protectedPrompt(elements, merged) : analysis.downstream_decomposition_prompt.trim();
   const clauseAppended = elements.some(isPerson) && prompt.length + 1 + PROTECTION_CLAUSE.length <= 2000;
   if (clauseAppended) prompt = `${prompt} ${PROTECTION_CLAUSE}`;
-  const protection: SemanticProtection = { merged, promptRebuilt: merged.length > 0, clauseAppended };
+  const protection: SemanticProtection = { merged, promptRebuilt: merged.length > 0 || keptApart.length > 0, clauseAppended, ...(keptApart.length ? { keptApart } : {}) };
   return { prompt, planned_layers: independent.map(e => ({ name: e.id, description: e.description })),
     warnings: [...analysis.ambiguities, ...merged.map(m => `PROTECTED: ${m.id} stays with ${m.parent} (${m.reason.replace(/_/g, ' ')}).`)],
     semantic_analysis: analysis, semantic_protection: protection };

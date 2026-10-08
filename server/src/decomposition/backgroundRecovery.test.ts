@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FalTransport } from './providers/falClient.js';
 import { createRun, executeRun, readRun, resumeRun, type RunnerDeps } from './layerizeExperiment.js';
 import { createOpenAIPlanner } from './layerizePlanner.js';
-import { backgroundDifficulty, backgroundQuality, graphicFill, plainFieldFill } from './backgroundRecovery.js';
+import { backgroundDifficulty, backgroundQuality, continuationTrust, graphicFill, plainFieldFill } from './backgroundRecovery.js';
+import { objectRetention, recreates } from './backgroundContamination.js';
 import { rowFillEdit } from './complexOffer.fixture.js';
 import { BANGLE_PARTS, bangleAnalysis, blackSilhouetteEdit, creative, flatEdit, HOLDING_PARTS, holdingAnalysis, part, partPng, WHITE_FIELD_PART } from './protectedInteraction.fixture.js';
 
@@ -39,7 +40,7 @@ async function run(original: Buffer, analysis: unknown, passes: { base: Part[]; 
   });
   const deps: RunnerDeps = { planner: createOpenAIPlanner({ client: { responses: { create } } as never }), transport: () => transport, sleep: async () => undefined,
     ...(edit === 'none' ? {} : { backgroundReconstructor: { model: 'test-edit', reconstruct } }) };
-  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'background-')), original, { mode: 'generated' }, { templateKey: 'template-b', semanticPlanning: true, refinement });
+  const { dir } = await createRun(mkdtempSync(join(tmpdir(), 'background-')), original, { mode: 'generated' }, { refinement });
   await executeRun(dir, deps);
   return { dir, run: readRun(dir), submitted, reconstruct, deps };
 }
@@ -170,6 +171,41 @@ describe('worn jewelry: bangles go with their hands and leave no ghost', () => {
     expect(s.run.refinement!.background).toMatchObject({ quality: 'usable', status: 'continued-clean', method: 'plain-field' });
     expect(s.run.calls!.backgroundReconstruction).toBe(0);
   }, 60_000);
+});
+
+describe('recovery decisions: trust, recreated layers and darkening', () => {
+  const W = 200, N = W * W, PURPLE = [124, 92, 196], WHITE = [250, 250, 252];
+  const fill = (color: (x: number, y: number) => number[]) => { const out = new Uint8Array(N * 3); for (let i = 0; i < N; i++) out.set(color(i % W, Math.floor(i / W)), i * 3); return out; };
+  const inRect = (x: number, y: number) => x >= 60 && x < 140 && y >= 60 && y < 140;
+
+  it('a layer is recreated only when its outline returns: a kept panel is, a soft glow of the same color is not', () => {
+    const original = fill((x, y) => inRect(x, y) ? WHITE : PURPLE), model = Float32Array.from(fill(() => PURPLE)), alpha = Uint8Array.from({ length: N }, (_, i) => inRect(i % W, Math.floor(i / W)) ? 1 : 0);
+    const glow = fill((x, y) => { const t = Math.max(0, 1 - Math.hypot(x - 100, y - 100) / 75) ** 0.35; return PURPLE.map((c, k) => Math.round(c + t * (WHITE[k] - c))); });
+    const [kept] = objectRetention(original, original, model, [{ file: 'panel.png', alpha }], W);
+    const [glowing] = objectRetention(glow, original, model, [{ file: 'panel.png', alpha }], W);
+    expect(kept).toMatchObject({ retainedPercent: 100, edgeRetainedPercent: 100 });
+    expect(recreates(kept, 25)).toBe(true);
+    // The glow matches the panel's color over much of it, but none of its outline: a coincidence of color, not the panel.
+    expect(glowing.retainedPercent).toBeGreaterThanOrEqual(25);
+    expect(glowing.edgeRetainedPercent).toBeLessThan(20);
+    expect(recreates(glowing, 25)).toBe(false);
+    // Without the grid width (or outline to judge) the color alone decides, as before.
+    expect(recreates(objectRetention(glow, original, model, [{ file: 'panel.png', alpha }])[0], 25)).toBe(true);
+  });
+
+  it('darkening counts against a known clean continuation only; a large hole on a textured surround is not trusted to a local fill', () => {
+    const core = Uint8Array.from({ length: N }, (_, i) => inRect(i % W, Math.floor(i / W)) ? 1 : 0);
+    const darker = fill((x, y) => inRect(x, y) ? [120, 120, 120] : [200, 200, 200]), plain = fill(() => [200, 200, 200]);
+    expect(backgroundQuality({ rgb: darker, core, w: W, h: W, expected: plain, plain: true }).reasons).toContain('darkened-region');
+    expect(backgroundQuality({ rgb: darker, core, w: W, h: W }).reasons).not.toContain('darkened-region');
+    // A 16% hole: trusted on a plain field or flat colors, not on a mottled texture.
+    const mottled = fill((x, y) => { const v = Math.round(18 * Math.sin(x * 0.7) * Math.cos(y * 0.9) + 9 * Math.sin((x + 2 * y) * 0.31)); return [150 + v, 120 + v, 200 + v]; });
+    const flat = fill((x) => x < 100 ? WHITE : [250, 204, 21]);
+    expect(continuationTrust(backgroundDifficulty(flat, core, W, W), false)).toMatchObject({ trusted: true });
+    expect(backgroundDifficulty(flat, core, W, W)).toMatchObject({ level: 'hard-large-occlusion', flatGraphic: true });
+    expect(continuationTrust(backgroundDifficulty(mottled, core, W, W), false)).toMatchObject({ trusted: false });
+    expect(continuationTrust(backgroundDifficulty(mottled, core, W, W), true)).toMatchObject({ trusted: true });
+  });
 });
 
 describe('background recovery units', () => {
