@@ -89,6 +89,11 @@ export type RunRecord = {
   interactions?: InteractionRecord;
   /** Every provider request this run sent, by kind, counted when sent. Recorded on refined runs only. */
   calls?: CallCounts;
+  /**
+   * A creative variant's exact layers in this run (creativeTemplates/composedRun.ts): either the whole run was composed
+   * locally from them (extraction none: no provider call), or they were added above a decomposition of its new scenery.
+   */
+  composed?: { source: 'creative-variant'; setId: string; variantId: string; layers: string[]; extraction: 'none' | 'scenery' };
 };
 export type RunnerDeps = {
   planner: Planner;

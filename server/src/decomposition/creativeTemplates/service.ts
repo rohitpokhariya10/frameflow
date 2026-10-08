@@ -14,13 +14,15 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExtractionPlan, type GenerationReview, type TemplateEditOptions, type TemplateExecution, type TemplateVersion, type TemplateInspection } from '@frameflow/shared';
+import { sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExtractionPlan, type GenerationReview, type TemplateEditOptions, type TemplateExecution, type TemplateStructure, type TemplateVersion, type TemplateInspection } from '@frameflow/shared';
 import type { GenerationConfig } from '../generationGroups.js';
 import { validateReferenceUpload } from '../imageTemplates.js';
 import { createRun, executeRun, saveRunRecord, PlannerNotAllowedError, readRun, resumeRun, RunError, type RunnerDeps, type RunRecord, type Stage } from '../layerizeExperiment.js';
 import type { Planner } from '../layerizePlanner.js';
 import { captureTemplateVersion } from './capture.js';
-import { compileSimpleTemplatePlan, compileTemplatePlan } from './compile.js';
+import { compileSimpleTemplatePlan, compileTemplatePlan, templatePlanPrompt, templatePlanStrategy } from './compile.js';
+import { addVariantLayers, createComposedRun, type VariantRunLayer } from './composedRun.js';
+import type { SmartCreative } from './smartCreative.js';
 import { reviewGeneration } from './review.js';
 import type { ExecutionStore } from './executions.js';
 import { editTemplateImage, ImageEditError } from './imageEdit.js';
@@ -31,15 +33,26 @@ export type TemplateServices = {
   templates: TemplateStore; executions: ExecutionStore; runsDir: string;
   deps: () => RunnerDeps; generation: () => GenerationConfig;
   inspector?: () => StructureInspector;
+  /** Smart edits (resolved change plans) and creative variants: their binding checks, review inputs and AI check. */
+  smart?: SmartCreative;
   /** Runs work when no other decomposition is active, one at a time, in the order asked (the router's turn). */
   inTurn: (label: string, work: () => Promise<unknown>) => void;
   log?: (line: string) => void;
 };
-export type StartRequest = { mode: unknown; values?: unknown; options?: unknown; updatesTemplate?: TemplateExecution['updatesTemplate']; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; planFresh?: boolean; idempotencyKey: unknown; templateId?: unknown; editInstruction?: unknown; upload: { bytes: Buffer; fileName?: string; mimeType?: string } };
+export type StartRequest = { mode: unknown; values?: unknown; analysisId?: unknown; resolutionId?: unknown; draft?: unknown; options?: unknown; updatesTemplate?: TemplateExecution['updatesTemplate']; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; planFresh?: boolean; idempotencyKey: unknown; templateId?: unknown; editInstruction?: unknown; upload: { bytes: Buffer; fileName?: string; mimeType?: string } };
 /** Run stages, as the execution shows them. */
 const STATE_OF: Partial<Record<Stage, ExecutionState>> = { planning: 'planning', planned: 'decomposing', uploading: 'decomposing', submitting: 'decomposing', queued: 'decomposing', in_progress: 'decomposing', downloading: 'decomposing', refining: 'decomposing' };
 /** fal's stored answer for these is final: resuming would read the same error. */
 const FINAL_RUN_ERRORS = new Set(['PROVIDER_DECOMPOSITION_REJECTED', 'PROVIDER_SAFETY_REJECTED']);
+/** A creative variant's new scenery, as a template version: what its scenery-only extraction asks for (no planner). */
+function sceneryVersion(version: TemplateVersion): TemplateVersion {
+  const structure: TemplateStructure = { layers: [{ id: 'background', role: 'background', order: 0, independent: true, required: true, zone: 'full-canvas' },
+    { id: 'backdrop', role: 'backdrop', order: 1, independent: true, required: false, zone: 'center' }, { id: 'decoration', role: 'decoration', order: 2, independent: true, required: false }], relationships: [] };
+  return { ...version, name: `${version.name} · new scenery`, description: 'New scenery around a subject that is added back as its own exact layer.', structure,
+    plan: { strategy: templatePlanStrategy(structure), prompt: templatePlanPrompt(structure, true), recommendedLayers: 3, occlusionWording: true } };
+}
+/** Plans a creative variant may be extracted with: its own composed layers, or its new scenery split (simply, or with a fresh plan). */
+const VARIANT_PLANS: readonly ExtractionPlan[] = ['composed', 'simple', 'refresh'];
 
 export function createTemplateExecutions(services: TemplateServices) {
   const { templates, executions, runsDir } = services, log = services.log ?? ((line: string) => console.info(line));
@@ -150,6 +163,13 @@ export function createTemplateExecutions(services: TemplateServices) {
     } };
   };
 
+  /** A chosen variant's layers as run layers, back to front: the clean scenery plate, its contact shadow, the exact subject. */
+  const variantLayers = (execution: TemplateExecution, withPlate: boolean): VariantRunLayer[] => {
+    const v = execution.variant!, read = (file: string) => readFileSync(executions.path(execution.id, file)), subjectName = v.protectedLabels.join(' + ') || 'Subject';
+    return [...(withPlate ? [{ file: 'layer-1-new-scenery.png', name: 'New scenery', description: 'The generated scenery, with the subject\'s area filled locally', png: read(v.layers.plate.file), kind: 'full-canvas' as const, placement: { x: 0, y: 0, width: v.layers.plate.width, height: v.layers.plate.height }, semantic: { id: 'new_scenery', type: 'background' } }] : []),
+      ...(v.layers.shadow ? [{ file: 'layer-2-contact-shadow.png', name: 'Contact shadow', description: 'A soft shadow under the subject (editable)', png: read(v.layers.shadow.file), kind: 'bbox-crop' as const, placement: v.layers.shadow.placement, semantic: { id: 'contact_shadow', type: 'effect' } }] : []),
+      { file: 'layer-3-subject.png', name: `${subjectName} (exact source pixels)`, description: 'The protected subject: the reference image\'s own pixels', png: read(v.layers.subject.file), kind: 'bbox-crop', placement: v.layers.subject.placement, semantic: { id: 'protected_subject', type: 'product' } }];
+  };
   /** What a finished run means for its execution: a saved template (create), reuse statistics (reuse), or a failure. */
   const finish = (id: string, run: RunRecord, started: number, decompositionStarted: number): TemplateExecution => {
     const plannerCalls = run.calls?.planner ?? (run.planner ? 1 : 0);
@@ -161,7 +181,10 @@ export function createTemplateExecutions(services: TemplateServices) {
     if (run.stage !== 'done') return failed(id, run.error?.code ?? 'DECOMPOSITION_FAILED', run.error?.message ?? 'The decomposition did not finish.', 'decomposing', started);
     // A layer the plan asked for that the editor does not get is a quality issue the user sees, never a silent success.
     const lostLayers = run.warnings.filter(w => w.startsWith('PLANNED_LAYER_'));
-    if (execution.mode === 'CREATE_TEMPLATE') {
+    if (execution.variant) {
+      // A variant's layers are its own: the template's saved plan and layer counts do not describe its new scenery.
+      execution = executions.update(id, (x) => { x.warnings = [...lostLayers]; });
+    } else if (execution.mode === 'CREATE_TEMPLATE') {
       if (lostLayers.length) execution = executions.update(id, x => { x.warnings = [...x.warnings.filter(w => !w.startsWith('PLANNED_LAYER_')), ...lostLayers]; });
       executions.update(id, (x) => { x.state = 'saving'; });
       const upload = execution.upload, ext = upload.file.split('.').at(-1)!;
@@ -223,7 +246,10 @@ export function createTemplateExecutions(services: TemplateServices) {
       } else if (policy.imageGeneration) {
         const config = services.generation(), reference = execution.edit?.reference;
         const compiled = execution.slotValues ? compileEdit(version!, execution.slotValues, execution.editOptions ?? {}, !!reference) : undefined;
-        const prompt = compiled ? compiled.text : compileEditPrompt(version!.generationPrompt, execution.edit!.instruction);
+        // A smart edit recompiles its persisted resolution: it must be exactly the prompt bound when it was submitted.
+        const smart = execution.resolution ? services.smart?.reviewInputs(execution) : undefined;
+        if (execution.resolution && (!smart || smart.compiled.text !== execution.edit!.prompt)) return failed(id, 'STALE_RESOLUTION', 'The resolved prompt no longer matches what was submitted; nothing was sent. Resolve the changes again.', 'generating', started);
+        const prompt = smart ? smart.compiled.text : compiled ? compiled.text : compileEditPrompt(version!.generationPrompt, execution.edit!.instruction);
         execution = executions.update(id, (x) => { x.state = 'generating'; x.edit = { ...x.edit!, prompt, model: config.model }; Object.assign(x.usage, { imageGenerationCalled: true, imageGenerationCalls: 1, imageModel: config.model }); });
         log(`[GENERATION] invoked: one image edit (saved template prompt + edit instruction) execution=${id}`);
         try {
@@ -235,11 +261,19 @@ export function createTemplateExecutions(services: TemplateServices) {
           bytes = edited.bytes;
           // The local review (pixel comparisons; never a semantic judgment): what it found waits for the user.
           let review: GenerationReview | undefined;
-          if (compiled) {
-            try { review = await reviewGeneration({ source: readFileSync(executions.path(id, execution.upload.file)), generated: edited.bytes, version: version!, changes: compiled.changes, sourceRunDir: sourceRunFor(version!, execution.upload.sha256) }); }
+          const changes = compiled?.changes ?? smart?.compiled.changes;
+          if (changes) {
+            try { review = await reviewGeneration({ source: readFileSync(executions.path(id, execution.upload.file)), generated: edited.bytes, version: version!, changes, sourceRunDir: sourceRunFor(version!, execution.upload.sha256) }); }
             catch (error) { review = { method: 'whole-image', checks: [{ id: 'region-unknown', severity: 'info', message: `The local review could not run (${error instanceof Error ? error.message : String(error)}).`, evidence: {} }], requiresAcknowledgement: false, note: 'Review the image before using it.' }; }
             // A replaced or removed object can never be confirmed by pixels: a person checks it, whatever the review found.
-            if (compiled.changes.some(c => c.operation === 'replace' || c.operation === 'remove')) review = { ...review, requiresAcknowledgement: true };
+            const objectChange = compiled ? compiled.changes.some(c => c.operation === 'replace' || c.operation === 'remove') : smart!.objectChange;
+            if (objectChange) review = { ...review, requiresAcknowledgement: true };
+            // The AI check of a smart edit: its own status; a contradiction waits for a person, a failed checker is never a pass.
+            if (smart && services.smart) {
+              const { verification, called } = await services.smart.verify(readFileSync(executions.path(id, execution.upload.file)), edited.bytes, smart.expectations, (file, value) => executions.writeFile(id, file, value));
+              if (called) executions.update(id, x => { x.usage.verificationCalls = (x.usage.verificationCalls ?? 0) + 1; if (verification.model) x.usage.verifierModel = verification.model; });
+              review = { ...review, semantic: verification, checks: [...review.checks, ...services.smart.semanticChecks(verification)], requiresAcknowledgement: review.requiresAcknowledgement || verification.status === 'contradiction' };
+            }
             const found = review;
             execution = executions.update(id, x => { x.edit = { ...x.edit!, review: found }; });
           }
@@ -255,7 +289,29 @@ export function createTemplateExecutions(services: TemplateServices) {
       const input = policy.imageGeneration ? { source: 'approved-generated' as const, sha256: execution.edit!.image!.sha256 } : { source: 'original-upload' as const, sha256: execution.upload.sha256 };
       if (sha(bytes) !== input.sha256) return failed(id, 'INPUT_IDENTITY_MISMATCH', `The image to decompose is not the ${input.source === 'approved-generated' ? 'approved generated creative' : 'uploaded image'} on record; nothing was sent. Generate or upload it again.`, 'decomposing', started);
       // 3. The decomposition run: the planner when a template is created, or when the user chose to refresh the plan.
-      const choice: ExtractionPlan = policy.planner ? 'refresh' : execution.planDecision?.choice ?? 'saved';
+      const choice: ExtractionPlan = policy.planner ? 'refresh' : execution.planDecision?.choice ?? (execution.variant ? 'composed' : 'saved');
+      if (execution.variant) {
+        const origin = { kind: 'template-execution' as const, generationId: id }, variant = { setId: execution.variant.setId, variantId: execution.variant.variantId }, plateSize = execution.variant.layers.plate;
+        const own = { executionId: id, mode: execution.mode, ...(execution.template ? { template: execution.template } : {}), plan: choice };
+        if (choice === 'composed') {
+          // Its own layers, composed locally: no planner, no Seedream, nothing flattened and decomposed again.
+          const created = await createComposedRun(runsDir, { composite: bytes, layers: variantLayers(execution, true), origin, variant, templateExecution: { ...own, input } });
+          log(`[DECOMPOSE] composed creative variant layers locally run=${created.run.id} (no provider call)`);
+          execution = executions.update(id, (x) => { x.runId = created.run.id; x.state = 'decomposing'; x.usage.decompositionPlanSource = 'saved-template'; });
+          return finish(id, created.run, started, Date.now());
+        }
+        // Only the new scenery is split; the exact subject and its shadow go back on top, never re-rendered.
+        const plate = readFileSync(executions.path(id, execution.variant.layers.plate.file));
+        if (sha(plate) !== execution.variant.layers.plate.sha256) return failed(id, 'INPUT_IDENTITY_MISMATCH', 'The variant\'s scenery plate changed on disk; nothing was sent. Choose the variant again.', 'decomposing', started);
+        const sceneryInput = { source: 'variant-scenery' as const, sha256: execution.variant.layers.plate.sha256 };
+        const created = choice === 'refresh' ? await createRun(runsDir, plate, { mode: 'generated' }, { refinement: false, origin, templateExecution: { ...own, planRefresh: true, input: sceneryInput } })
+          : await createRun(runsDir, plate, compileTemplatePlan(sceneryVersion(version!)), { refinement: false, origin, templateExecution: { ...own, input: sceneryInput } });
+        if (choice === 'refresh') executions.update(id, x => { x.usage.decompositionPlanSource = 'planner'; });
+        log(`[DECOMPOSE] creative variant: ${choice === 'refresh' ? 'planner + ' : ''}Seedream on the new scenery only run=${created.run.id}`);
+        execution = executions.update(id, (x) => { x.runId = created.run.id; x.state = choice === 'refresh' ? 'planning' : 'decomposing'; });
+        const decompositionStarted = Date.now(), done = await executeRun(created.dir, depsFor(execution));
+        return finish(id, done.stage === 'done' ? await addVariantLayers(created.dir, variantLayers(execution, false), variant, plateSize) : done, started, decompositionStarted);
+      }
       const origin = { kind: 'template-execution' as const, generationId: id }, templateExecution = { executionId: id, mode: execution.mode, inspection: execution.inspection, plannerReason: execution.plannerReason,
         ...(execution.template ? { template: execution.template } : {}), plan: choice, ...(choice === 'refresh' && !policy.planner ? { planRefresh: true } : {}), input };
       const created = policy.planner
@@ -301,8 +357,17 @@ export function createTemplateExecutions(services: TemplateServices) {
       }
       const version = template ? usableVersion(template.id, template.version) : undefined;
       if (template && !version) throw new RunError('STALE_TEMPLATE_VERSION', 'The selected template is incomplete or unavailable. Choose another template or create a new one.');
-      let compiled: CompiledTemplateEdit | undefined, editOptions: TemplateEditOptions | undefined;
-      if (request.values !== undefined) {
+      let compiled: CompiledTemplateEdit | undefined, editOptions: TemplateEditOptions | undefined, smartPlan: ReturnType<SmartCreative['forGeneration']> | undefined;
+      if (request.resolutionId !== undefined) {
+        // A smart edit: generated only from a ready, clear resolution whose binding to these exact inputs is checked here.
+        if (!services.smart) throw new RunError('SMART_EDIT_UNAVAILABLE', 'Smart edits are not available on this server.');
+        if (mode !== 'REUSE_TEMPLATE_WITH_EDIT' || !request.reviewBeforeDecompose) throw new RunError('INVALID_REQUEST', 'A smart edit is generated for review first.');
+        if (request.values !== undefined || request.editInstruction !== undefined || request.options !== undefined) throw new RunError('INVALID_REQUEST', 'Use either a resolved smart edit or template fields, not both.');
+        smartPlan = services.smart.forGeneration({ analysisId: request.analysisId, resolutionId: request.resolutionId, draft: request.draft, uploadSha256: sha(request.upload.bytes),
+          ...(request.productReference ? { referenceSha256: sha(request.productReference.bytes) } : {}), template: { id: template!.id, version: template!.version } });
+        request.editInstruction = `${smartPlan.compiled.summary.slice(0, 440)} · resolution ${smartPlan.resolution.id}`;
+      } else if (request.analysisId !== undefined || request.draft !== undefined) throw new RunError('INVALID_REQUEST', 'A smart edit names its resolution.');
+      if (smartPlan) { /* resolved above */ } else if (request.values !== undefined) {
         if (request.editInstruction) throw new RunError('INVALID_REQUEST', 'Use either dynamic fields or an edit instruction.');
         if (!version) { slotInstruction(version, request.values); throw new RunError('INVALID_REQUEST', 'Fields belong to a selected template.'); }
         editOptions = editOptionsOf(request.options);
@@ -319,7 +384,7 @@ export function createTemplateExecutions(services: TemplateServices) {
       const editing = EXECUTION_POLICY[mode].imageGeneration;
       if (!editing && request.editInstruction !== undefined && request.editInstruction !== '') throw new RunError('INVALID_REQUEST', `${mode} takes no edit instruction.`);
       // Fields are checked one by one by the compiler; a free-text instruction as a whole.
-      if (editing && !compiled?.changes.length) { const problems = editInstructionProblems(request.editInstruction); if (problems.length) throw new RunError('INVALID_EDIT_INSTRUCTION', problems.join(' ')); }
+      if (editing && !compiled?.changes.length && !smartPlan) { const problems = editInstructionProblems(request.editInstruction); if (problems.length) throw new RunError('INVALID_EDIT_INSTRUCTION', problems.join(' ')); }
       const reference = request.productReference ? await validateReferenceUpload(request.productReference.bytes, { checkExtension: true, ...(request.productReference.fileName ? { originalName: request.productReference.fileName } : {}), ...(request.productReference.mimeType ? { mimeType: request.productReference.mimeType } : {}) }) : undefined;
       if (request.productReference && !EXECUTION_POLICY[mode].imageGeneration) throw new RunError('INVALID_REQUEST', 'A product reference is used only when a creative is generated.');
       const meta = await validateReferenceUpload(request.upload.bytes, { checkExtension: true, ...(request.upload.fileName ? { originalName: request.upload.fileName } : {}), ...(request.upload.mimeType ? { mimeType: request.upload.mimeType } : {}) });
@@ -328,12 +393,19 @@ export function createTemplateExecutions(services: TemplateServices) {
       const fitWarnings = version ? localFitWarnings(version, request.upload.bytes, width, height) : [];
       if (fitWarnings.length && !request.allowMismatch) throw new RunError('TEMPLATE_MAY_NOT_FIT', 'Selected template may not fit this image.', { warnings: fitWarnings });
       if (request.inspect && (mode !== 'CREATE_TEMPLATE' || request.planFresh)) throw new RunError('INVALID_REQUEST', 'Automatic detection takes an upload only.');
-      const result = executions.create({ live: id => active.has(id), ...(request.updatesTemplate ? { updatesTemplate: request.updatesTemplate } : {}), ...(editOptions && Object.keys(editOptions).length ? { editOptions } : {}), ...(compiled ? { compatibility: compiled.compatibility } : {}),
+      const smartFields = smartPlan ? { resolution: { id: smartPlan.resolution.id, analysisId: smartPlan.analysis.id, summary: smartPlan.compiled.summary, changes: smartPlan.resolution.plan!.entries.filter(e => e.operation !== 'keep').length,
+        inferred: smartPlan.resolution.plan!.entries.filter(e => e.operation !== 'keep' && e.source === 'inferred').length }, editPrompt: smartPlan.compiled.text, generationPromptSource: 'resolved-plan' as const, compatibility: smartPlan.compiled.compatibility } : {};
+      const result = executions.create({ live: id => active.has(id), ...smartFields, ...(request.updatesTemplate ? { updatesTemplate: request.updatesTemplate } : {}), ...(editOptions && Object.keys(editOptions).length ? { editOptions } : {}), ...(compiled ? { compatibility: compiled.compatibility } : {}),
         ...(request.productReference && reference ? { productReference: { bytes: request.productReference.bytes, ext: reference.format === 'jpeg' ? 'jpg' : reference.format!, mimeType: `image/${reference.format}`, width: reference.width!, height: reference.height! } } : {}),
         inspect: request.inspect, reviewBeforeDecompose: request.reviewBeforeDecompose, ...(request.values ? { slotValues: Object.fromEntries(Object.entries(request.values).map(([key, value]) => [key, sanitizeEditInstruction(value)])) } : {}), mode, plannerReason: mode === 'CREATE_TEMPLATE' ? request.planFresh ? 'plan-fresh' : 'new-structure' : undefined, idempotencyKey: String(request.idempotencyKey ?? ''), ...(template ? { template } : {}), ...(editing ? { editInstruction: sanitizeEditInstruction(request.editInstruction) } : {}),
         upload: { bytes: request.upload.bytes, ext: meta.format === 'jpeg' ? 'jpg' : meta.format!, mimeType: `image/${meta.format}`, width: (turned ? meta.height : meta.width)!, height: (turned ? meta.width : meta.height)!, ...(request.upload.fileName ? { originalName: request.upload.fileName } : {}) } });
       if (result.created && fitWarnings.length) {
         result.execution = executions.update(result.execution.id, x => { x.warnings = fitWarnings; });
+      }
+      // The calls that came before this generation, counted apart: the image's analysis and the plan's resolution.
+      if (result.created && smartPlan) {
+        for (const [file, value] of Object.entries(smartPlan.callFiles)) executions.writeFile(result.execution.id, file, value);
+        result.execution = executions.update(result.execution.id, x => { x.usage.analysisCalls = smartPlan!.analysis.calls; x.usage.resolutionCalls = smartPlan!.resolution.resolver.called ? 1 : 0; });
       }
       if (result.created) schedule(result.execution.id, () => request.inspect ? inspect(result.execution.id) : run(result.execution.id));
       else log(`[TEMPLATE] duplicate submission: returning execution=${result.execution.id}`);
@@ -369,6 +441,8 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (execution.state !== 'generated' && !(execution.state === 'queued' && execution.imageAcceptedAt)) throw new RunError('NOT_READY', 'This creative is not ready for decomposition.');
       if (!execution.template || !usableVersion(execution.template.id, execution.template.version)) throw new RunError('STALE_TEMPLATE_VERSION', 'This saved template version is unavailable. Choose another template.');
       if (request.plan !== undefined && !EXTRACTION_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'Choose the saved plan, a simpler grouping or a refreshed plan.');
+      if (request.plan !== undefined && execution.variant && !VARIANT_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'A creative variant has new scenery that the saved plan does not describe: use its own layers, or split only the new scenery.');
+      if (request.plan === 'composed' && !execution.variant) throw new RunError('INVALID_REQUEST', 'Only a creative variant has its own composed layers.');
       if (request.acknowledgeReview !== undefined && typeof request.acknowledgeReview !== 'boolean') throw new RunError('INVALID_REQUEST', 'acknowledgeReview is true or false.');
       // Explicit decisions, never assumed: a creative whose review needs a person, and a plan that may no longer fit.
       const review = execution.edit.review;
@@ -394,7 +468,12 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (!dir || !record?.seedream.requestId || record.stage === 'done' || FINAL_RUN_ERRORS.has(record.error?.code ?? '')) throw new RunError('NOT_RESUMABLE', 'This execution cannot be resumed; start it again.');
       const resumed = executions.update(id, (x) => { x.state = 'decomposing'; delete x.error; delete x.finishedAt; });
       log(`[DECOMPOSE] resume run=${record.id} execution=${id} (saved fal request; no new call)`);
-      schedule(id, async () => { const started = Date.now(); return finish(id, await resumeRun(dir, depsFor(resumed)), started, started); });
+      schedule(id, async () => {
+        const started = Date.now(), done = await resumeRun(dir, depsFor(resumed));
+        // A creative variant's scenery run gets its exact subject back on top, as a first finish would have.
+        const v = resumed.variant, withLayers = v && done.stage === 'done' && record.templateExecution?.input?.source === 'variant-scenery' ? await addVariantLayers(dir, variantLayers(resumed, false), { setId: v.setId, variantId: v.variantId }, v.layers.plate) : done;
+        return finish(id, withLayers, started, started);
+      });
       return resumed;
     },
     /**
@@ -406,6 +485,7 @@ export function createTemplateExecutions(services: TemplateServices) {
       const execution = executions.get(id);
       if (active.has(id)) throw new RunError('BUSY', 'This execution is already being extracted.');
       if (!EXTRACTION_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'Choose the saved plan, a simpler grouping or a refreshed plan.');
+      if (execution.variant ? !VARIANT_PLANS.includes(request.plan as ExtractionPlan) : request.plan === 'composed') throw new RunError('INVALID_REQUEST', execution.variant ? 'A creative variant uses its own layers, or splits only its new scenery.' : 'Only a creative variant has its own composed layers.');
       if (execution.mode === 'CREATE_TEMPLATE') throw new RunError('NOT_RETRYABLE', 'A template that was not created is created again from Create New Template.');
       if (execution.state !== 'failed' || !execution.runId || !execution.error || execution.error.state === 'generating') throw new RunError('NOT_RETRYABLE', 'Only a failed extraction of a saved image can be retried.');
       if (!execution.template || !usableVersion(execution.template.id, execution.template.version)) throw new RunError('STALE_TEMPLATE_VERSION', 'This saved template version is unavailable. Choose another template.');

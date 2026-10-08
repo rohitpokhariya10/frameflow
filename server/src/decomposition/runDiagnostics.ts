@@ -62,8 +62,18 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
     try { execution = options.executions?.get(run.origin.generationId); } catch { execution = undefined; }
     const mode = run.templateExecution?.mode;
     const edit = execution?.edit, editDir = execution && options.executions ? (file: unknown) => safeFile(file) ? json(dirname(options.executions!.path(execution!.id, file)), file) : {} : undefined;
-    const inspection = execution?.inspection ?? run.templateExecution?.inspection;
-    if (inspection?.calls) {
+    const inspection = execution?.inspection ?? run.templateExecution?.inspection, usage = execution?.usage;
+    if (execution?.resolution && usage) {
+      // A smart edit: the image's analysis (shared by every generation from that image) and its plan's resolution.
+      const calls = [...padCalls(usage.analysisCalls ? [recordedCall('text', editDir?.('analysis.openai-response.json') ?? {}, editDir?.('analysis.openai-request.json') ?? {})] : [], usage.analysisCalls ?? 0, 'text'),
+        ...(usage.resolutionCalls ? [recordedCall('text', editDir?.('resolution.openai-response.json') ?? {}, editDir?.('resolution.openai-request.json') ?? {})] : [])];
+      add('reference', 'Image analysis & change resolution', 'Complete', calls, `${usage.analysisCalls ?? 0} analysis call(s) of this image (shared) · ${usage.resolutionCalls ?? 0} resolution call · prompt compiled locally`);
+      notes.push('The image analysis is shared by every smart edit made from that image; its full retained charge is included here. Do not sum run totals as an account bill.');
+    } else if (execution?.variant) {
+      const concepts = editDir?.('concepts.openai-response.json') ?? {};
+      add('reference', 'Subject cutout & scene concepts', 'Complete', Object.keys(concepts).length ? [recordedCall('text', concepts, editDir?.('concepts.openai-request.json') ?? {})] : [], 'Made in the creative variant set: the subject mask (fal, priced by fal) and the scene concepts (shared by the set\'s variants)', false);
+      notes.push('This creative variant came from a set: its subject mask requests and scene concepts are shared by the set\'s variants. The subject layer is the reference\'s own pixels.');
+    } else if (inspection?.calls) {
       const response = editDir?.(inspection.responseFile) ?? {}, request = editDir?.(inspection.requestFile) ?? {};
       add('reference', 'Structure analysis', inspection.outcome === 'uncertain' ? 'Warning' : 'Complete', padCalls([recordedCall('text', response, request, { model: inspection.model })], inspection.calls, 'text'), inspection.reason);
       sourceTime += inspection.durationMs ?? 0; sourceTimeKnown &&= inspection.durationMs !== undefined;
@@ -74,6 +84,13 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
       prompts.push({ label: 'Image edit prompt (saved template + instruction)', text: edit.prompt, model: edit.model, inputTokens: call.usage?.inputTokens });
       sourceTime += edit.durationMs ?? 0; sourceTimeKnown &&= edit.durationMs !== undefined;
     } else add('generation', 'Generate image', 'Skipped', [], 'Original upload used unchanged · no image generation');
+    if (usage?.verificationCalls) {
+      const semantic = edit?.review?.semantic;
+      add('verification', 'AI check of the result', semantic?.status === 'contradiction' ? 'Warning' : semantic?.status === 'unchecked' ? 'Failed' : 'Complete',
+        padCalls([recordedCall('text', editDir?.('verification.openai-response.json') ?? {}, editDir?.('verification.openai-request.json') ?? {}, { model: usage.verifierModel })], usage.verificationCalls, 'text'),
+        semantic ? `${semantic.status}${semantic.reason ? ` · ${semantic.reason}` : ''}` : 'Recorded');
+    }
+    if (run.composed) notes.push(run.composed.extraction === 'none' ? 'Layers composed locally from the creative variant: no planner or Seedream call.' : 'Seedream split only the variant\'s new scenery; the exact subject and its shadow were added on top.');
   } else if (run.origin?.kind === 'image-template') {
     const root = options.imageTemplatesDir;
     const sourceDir = root && validRunId(run.origin.generationId) ? join(root, run.origin.generationId) : undefined;

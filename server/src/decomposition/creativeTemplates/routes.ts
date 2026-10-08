@@ -19,6 +19,9 @@
  *   POST   /template-executions/:id/resume         a stopped run read again from fal's saved request (no new call)
  *   POST   /template-executions/:id/opened         { runId } — the result was opened in the editor
  *
+ * A smart edit is a POST /template-executions with analysisId, resolutionId and draft (smartRoutes.ts resolves them):
+ * the server checks the resolution's binding to that image, draft, product photo and template version before any call.
+ *
  * Inspection may make one structure-only call. Starting an execution spends only what its resolved mode allows.
  */
 import express, { type Request, type Router } from 'express';
@@ -33,11 +36,11 @@ import { executionGenerationCost } from '../runDiagnostics.js';
 import { settingsChange, templateHealth, templateText, versionWithSettings } from './templateEdits.js';
 
 type ExecutionForm = { bytes: Buffer; fileName?: string; mimeType?: string; fields: Record<string, string>; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string } };
-const FORM_FIELDS = ['mode', 'idempotencyKey', 'templateId', 'templateVersion', 'editInstruction', 'values', 'options', 'planFresh', 'allowMismatch', 'reviewBeforeDecompose'];
+const FORM_FIELDS = ['mode', 'idempotencyKey', 'templateId', 'templateVersion', 'editInstruction', 'values', 'options', 'planFresh', 'allowMismatch', 'reviewBeforeDecompose', 'analysisId', 'resolutionId', 'draft'];
 function readExecutionForm(req: Request): Promise<ExecutionForm> {
   return new Promise((resolve, reject) => {
     let parser: ReturnType<typeof busboy>;
-    try { parser = busboy({ headers: req.headers, limits: { files: 2, fields: FORM_FIELDS.length, parts: FORM_FIELDS.length + 2, fieldSize: 2000, fileSize: MAX_UPLOAD_BYTES } }); }
+    try { parser = busboy({ headers: req.headers, limits: { files: 2, fields: FORM_FIELDS.length, parts: FORM_FIELDS.length + 2, fieldSize: 16_000, fileSize: MAX_UPLOAD_BYTES } }); }
     catch { reject(new RunError('INVALID_UPLOAD', 'Upload one image as multipart form data.')); return; }
     let file: Buffer | undefined, fileName: string | undefined, mimeType: string | undefined, truncated = false, reference: ExecutionForm['productReference'];
     const fields: Record<string, string> = {};
@@ -60,7 +63,7 @@ function readExecutionForm(req: Request): Promise<ExecutionForm> {
 }
 
 export type CreativeTemplateRouteContext = { templates: TemplateStore; executions: ExecutionStore; service: TemplateExecutions; runsDir: string; runState: (runId: string) => 'active' | 'waiting' | undefined };
-export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemplateRouteContext): void {
+export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemplateRouteContext): { shown: (execution: TemplateExecution) => unknown } {
   const { templates, executions, service } = ctx;
   const template = (id: string) => { const found = validTemplateId(id) ? templates.get(id) : undefined; if (!found || found.status !== 'active') throw new RunError('NOT_FOUND', 'Template not found.'); return found; };
   /** An execution as shown: work a stopped server left behind is shown as interrupted, with its decomposition's state. */
@@ -145,10 +148,12 @@ export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemp
   router.post('/template-executions', async (req, res, next) => {
     try {
       const form = await readExecutionForm(req);
-      let values: unknown, options: unknown;
+      let values: unknown, options: unknown, draft: unknown;
       if (form.fields.values !== undefined) { try { values = JSON.parse(form.fields.values); } catch { throw new RunError('INVALID_REQUEST', 'Template fields must be valid JSON.'); } }
+      if (form.fields.draft !== undefined) { try { draft = JSON.parse(form.fields.draft); } catch { throw new RunError('INVALID_REQUEST', 'The smart edit draft must be valid JSON.'); } }
       if (form.fields.options !== undefined) { try { options = JSON.parse(form.fields.options); } catch { throw new RunError('INVALID_REQUEST', 'Edit options must be valid JSON.'); } }
-      const { execution, created } = await service.start({ mode: form.fields.mode, values, ...(options !== undefined ? { options } : {}), ...(form.productReference ? { productReference: form.productReference } : {}), reviewBeforeDecompose: form.fields.reviewBeforeDecompose === 'true', allowMismatch: form.fields.allowMismatch === 'true', templateVersion: form.fields.templateVersion !== undefined ? Number(form.fields.templateVersion) : undefined,
+      const { execution, created } = await service.start({ mode: form.fields.mode, values, ...(options !== undefined ? { options } : {}),
+        ...(form.fields.resolutionId !== undefined ? { resolutionId: form.fields.resolutionId, analysisId: form.fields.analysisId, draft } : form.fields.analysisId !== undefined || draft !== undefined ? { analysisId: form.fields.analysisId, draft } : {}), ...(form.productReference ? { productReference: form.productReference } : {}), reviewBeforeDecompose: form.fields.reviewBeforeDecompose === 'true', allowMismatch: form.fields.allowMismatch === 'true', templateVersion: form.fields.templateVersion !== undefined ? Number(form.fields.templateVersion) : undefined,
         planFresh: form.fields.planFresh === 'true', idempotencyKey: form.fields.idempotencyKey, ...(form.fields.templateId !== undefined ? { templateId: form.fields.templateId } : {}),
         ...(form.fields.editInstruction !== undefined ? { editInstruction: form.fields.editInstruction } : {}), upload: { bytes: form.bytes, ...(form.fileName ? { fileName: form.fileName } : {}), ...(form.mimeType ? { mimeType: form.mimeType } : {}) } });
       res.status(created ? 202 : 200).json(shown(execution));
@@ -176,4 +181,5 @@ export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemp
     try { res.json(shown(service.opened(req.params.id, typeof req.body?.runId === 'string' ? req.body.runId : ''))); }
     catch (error) { next(error); }
   });
+  return { shown };
 }

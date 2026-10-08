@@ -22,7 +22,7 @@ export const AI_PRICING = {
   ],
 } as const;
 export type CostConfidence = 'Calculated' | 'Estimated' | 'Unknown';
-export type StageId = 'reference' | 'generation' | 'fit' | 'planner' | 'seedream' | 'residual' | 'background' | 'curation' | 'editor';
+export type StageId = 'reference' | 'generation' | 'verification' | 'fit' | 'planner' | 'seedream' | 'residual' | 'background' | 'curation' | 'editor';
 export type StageStatus = 'Complete' | 'Running' | 'Skipped' | 'Failed' | 'Warning' | 'Pending';
 export interface UsageFacts {
   inputTokens?: number; outputTokens?: number; cachedTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number;

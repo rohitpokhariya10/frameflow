@@ -7,7 +7,7 @@
  * Changed content can reach decomposition only through a generated image the user accepted; the original image is used
  * only while every content field is empty.
  */
-import { AI_PRICING, avoidedPlannerCost, describeTemplateSlots, TEMPLATE_ROLE_LABELS, type CostAmount, type CreativeTemplate, type ExecutionState, type ExtractionPlan, type RunDiagnostics, type SlotGroup, type TemplateEditOptions, type TemplateExecution, type TemplateRole, type TemplateSlot, type TemplateVersion } from '@frameflow/shared';
+import { AI_PRICING, avoidedPlannerCost, describeTemplateSlots, TEMPLATE_ROLE_LABELS, type CostAmount, type CreativeTemplate, type ExecutionState, type ExtractionPlan, type RunDiagnostics, type SceneDraft, type SlotGroup, type TemplateEditOptions, type TemplateExecution, type TemplateRole, type TemplateSlot, type TemplateVersion } from '@frameflow/shared';
 import type { DecompositionState } from './imageTemplates';
 
 export type ShownExecution = TemplateExecution & { decomposition?: DecompositionState; generationCost?: CostAmount };
@@ -63,7 +63,10 @@ export function wizardPrimary(v: WizardView): { label: string; action: WizardAct
 
 /** What survives a refresh in this tab. File bytes cannot: only the chosen file's name, to ask for it again. */
 export type MainProductOptions = NonNullable<TemplateEditOptions['mainProduct']>;
-export interface WizardDraft { step?: WizardStep; selected?: string; creating?: boolean; values?: Record<string, string>; options?: MainProductOptions; executionId?: string; uploadName?: string }
+/** smart: a smart edit's draft, kept only for the analysis it was made against (a new image starts empty). */
+export interface WizardDraft { step?: WizardStep; selected?: string; creating?: boolean; values?: Record<string, string>; options?: MainProductOptions; executionId?: string; uploadName?: string; smart?: { analysisId: string; draft: SceneDraft; rulesOnly?: boolean };
+  /** An open creative variant set (it keeps running on the server; a refresh shows it again). */
+  variantSetId?: string; studio?: boolean }
 export const WIZARD_DRAFT_KEY = 'frameflow-template-wizard-v1';
 export function readWizardDraft(storage: Pick<Storage, 'getItem'> | undefined): WizardDraft {
   try {
@@ -75,7 +78,12 @@ export function readWizardDraft(storage: Pick<Storage, 'getItem'> | undefined): 
     const o = d.options && typeof d.options === 'object' && !Array.isArray(d.options) ? d.options as Record<string, unknown> : undefined;
     const options: MainProductOptions | undefined = o ? { ...(o.mode === 'replace' || o.mode === 'details' ? { mode: o.mode } : {}), ...(typeof o.brand === 'string' ? { brand: o.brand } : {}),
       ...(typeof o.keepSupporting === 'boolean' ? { keepSupporting: o.keepSupporting } : {}) } : undefined;
-    return { ...(typeof d.step === 'number' && [0, 1, 2, 3].includes(d.step) ? { step: d.step as WizardStep } : {}), ...(text(d.selected) ? { selected: text(d.selected) } : {}),
+    // The server validates a restored smart draft again against its analysis before anything uses it.
+    const smart = d.smart && typeof d.smart === 'object' && !Array.isArray(d.smart) ? d.smart as Record<string, unknown> : undefined, smartDraft = smart?.draft as Record<string, unknown> | undefined;
+    const restored = smart && text(smart.analysisId) && smartDraft && typeof smartDraft === 'object' && smartDraft.edits && typeof smartDraft.edits === 'object' && !Array.isArray(smartDraft.edits) && smartDraft.corrections && typeof smartDraft.corrections === 'object' && !Array.isArray(smartDraft.corrections)
+      ? { analysisId: text(smart.analysisId)!, draft: { edits: smartDraft.edits, corrections: smartDraft.corrections, ...(text(smartDraft.referenceFor) ? { referenceFor: text(smartDraft.referenceFor) } : {}) } as SceneDraft, ...(smart.rulesOnly === true ? { rulesOnly: true } : {}) } : undefined;
+    return { ...(typeof d.step === 'number' && [0, 1, 2, 3].includes(d.step) ? { step: d.step as WizardStep } : {}), ...(text(d.selected) ? { selected: text(d.selected) } : {}), ...(restored ? { smart: restored } : {}),
+      ...(text(d.variantSetId) && /^[0-9TZ-]+-[a-f0-9]{6}$/.test(text(d.variantSetId)!) ? { variantSetId: text(d.variantSetId) } : {}), ...(d.studio === true ? { studio: true } : {}),
       ...(typeof d.creating === 'boolean' ? { creating: d.creating } : {}), ...(values ? { values } : {}), ...(options && Object.keys(options).length ? { options } : {}),
       ...(text(d.executionId) ? { executionId: text(d.executionId) } : {}), ...(text(d.uploadName) ? { uploadName: text(d.uploadName) } : {}) };
   } catch { return {}; }
@@ -114,10 +122,14 @@ export function costRows(execution: ShownExecution | undefined, diagnostics: Run
   const stage = (id: string) => diagnostics?.stages.find(s => s.id === id);
   const images = execution?.usage.imageGenerationCalls ?? 0, planner = execution?.state === 'done' || !creating ? execution?.usage.plannerCalls ?? 0 : 1;
   const extraction = [stage('seedream'), stage('residual')].flatMap(s => s?.calls ?? []).filter(call => call.kind === 'seedream').length, cleanup = stage('background')?.calls.length ?? 0;
+  // A smart edit's analysis and resolution, or a creative variant's set, replace the saved template's free prompt planning.
+  const smart = execution?.resolution ? [{ label: 'Image analysis', value: `${plural(execution.usage.analysisCalls ?? 0, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: plural(execution.usage.resolutionCalls ?? 0, 'call') }]
+    : execution?.variant ? [{ label: 'Creative variant', value: 'subject cutout and scene ideas made in its set' }] : [{ label: 'Prompt planning', value: '0 calls · ₹0' }];
   const rows = [
     { label: 'Structure analysis', value: plural(execution?.inspection?.calls ?? 0, 'call') },
-    { label: 'Prompt planning', value: '0 calls · ₹0' },
+    ...smart,
     { label: 'Image generation', value: `${plural(images, 'call')}${images ? ` · ${money(execution?.generationCost)}` : ''}` },
+    ...(execution?.usage.verificationCalls ? [{ label: 'AI check of the result', value: plural(execution.usage.verificationCalls, 'call') }] : []),
     { label: 'Decomposition planner', value: `${plural(planner, 'call')}${planner ? '' : ' · ₹0'}` },
   ];
   if (diagnostics) {
@@ -150,6 +162,12 @@ export const PLAN_CHOICES: { plan: ExtractionPlan; title: string; detail: (estim
   { plan: 'saved', title: 'Use saved plan', detail: () => 'Planner 0 · ₹0. Learned from the original products: the new product may be missed or merged with another layer.' },
   { plan: 'simple', title: 'Simpler grouping', detail: () => 'Planner 0 · ₹0. Fewer, larger layers: products together, decorations with the background.' },
   { plan: 'refresh', title: 'Refresh decomposition plan', detail: e => `1 planner call · about ₹${e.plannerInr.toFixed(2)} (estimate). Plans the layers this new image actually has.` },
+];
+/** A creative variant's choices: its own exact layers, or only its new scenery split (the subject is never re-rendered). */
+export const VARIANT_PLAN_CHOICES: typeof PLAN_CHOICES = [
+  { plan: 'composed', title: 'Use its own layers', detail: () => 'No extraction · ₹0. New scenery, a soft contact shadow and your exact subject as separate layers.' },
+  { plan: 'simple', title: 'Also split the new scenery', detail: e => `1 Seedream request on the scenery only (about ₹${e.seedreamInr.toFixed(2)}). Your exact subject is added back on top.` },
+  { plan: 'refresh', title: 'Plan and split the new scenery', detail: e => `1 planner call (about ₹${e.plannerInr.toFixed(2)}) + 1 Seedream request on the scenery only. Your exact subject is added back on top.` },
 ];
 /** A failed layer extraction of a saved image: the image is kept, and the user may retry explicitly. Never a creation. */
 export const extractionRecovery = (e: Pick<TemplateExecution, 'mode' | 'state' | 'runId' | 'error'> | undefined) =>

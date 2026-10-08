@@ -5,3 +5,7 @@ export * from './editPrompt.js';
 export * from './telemetry.js';
 export * from './structure.js';
 export * from './editPlan.js';
+export * from './scene.js';
+export * from './changePlan.js';
+export * from './verification.js';
+export * from './variants.js';

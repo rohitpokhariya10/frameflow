@@ -1,5 +1,7 @@
 import type { TemplateStructure } from './types.js';
 import type { BlueprintCompatibility, TemplateEditOptions } from './editPlan.js';
+import type { SemanticVerification } from './verification.js';
+import type { VariantLayer } from './variants.js';
 /**
  * Automatic inspection resolves a saved-template or fresh-planner execution mode. The backend enforces that mode's
  * planner/image policy; the UI shows it. The optional preceding structure-analysis call is counted in `inspection`.
@@ -49,11 +51,17 @@ export interface ExecutionUsage {
   imageGenerationCalls: number;
   plannerModel?: string;
   imageModel?: string;
-  /** Where the generation prompt came from: the creating planner call, the template's saved prompt, or none needed. */
-  generationPromptSource: 'planner' | 'saved-template' | 'none';
+  /**
+   * Where the generation prompt came from: the creating planner call, the template's saved prompt, a resolved change
+   * plan of the image's own analysis, a creative variant's scene, or none needed.
+   */
+  generationPromptSource: 'planner' | 'saved-template' | 'resolved-plan' | 'creative-variant' | 'none';
   /** Where the decomposition plan came from: the planner, or the template's saved plan. */
   decompositionPlanSource: 'planner' | 'saved-template';
   timings: { generationMs?: number; decompositionMs?: number; totalMs?: number };
+  /** Smart edits and creative variants: the paid calls that came before generation, and the check after it, counted apart. */
+  analysisCalls?: number; resolutionCalls?: number; verificationCalls?: number;
+  verifierModel?: string;
 }
 export interface ExecutionImage { file: string; mimeType: string; width: number; height: number; bytes: number; sha256: string }
 /**
@@ -61,21 +69,30 @@ export interface ExecutionImage { file: string; mimeType: string; width: number;
  * judgment. A check can show that a region still looks like the original; none can confirm that a new product is right.
  */
 export interface GenerationReviewCheck {
-  id: 'object-unchanged' | 'unrequested-change' | 'image-unchanged' | 'region-unknown';
+  id: 'object-unchanged' | 'unrequested-change' | 'image-unchanged' | 'region-unknown' | 'semantic' | 'cutout-limitation';
   slotId?: string; label?: string; severity: 'warning' | 'info'; message: string; evidence: Record<string, number>;
 }
 export interface GenerationReview {
-  /** Where the requested regions came from: the template's own source layers, its coarse zones, or nowhere (whole image). */
-  method: 'source-layer-masks' | 'template-zones' | 'whole-image';
+  /**
+   * Where the requested regions came from: the template's own source layers, its coarse zones, the analysis's approximate
+   * boxes, nowhere (whole image), or a creative variant (its subject is exact source pixels by construction).
+   */
+  method: 'source-layer-masks' | 'template-zones' | 'analysis-boxes' | 'whole-image' | 'creative-variant';
   checks: GenerationReviewCheck[];
   /** Any warning: decomposition waits for an explicit "use it anyway". */
   requiresAcknowledgement: boolean;
   note: string;
   acknowledgedAt?: string;
+  /** The AI vision check, when one was asked for: its own status, never folded into a pass. */
+  semantic?: SemanticVerification;
 }
-/** Which plan an extraction uses: the template's saved plan, a simpler grouping of it (no call), or a refreshed plan (one planner call). */
-export type ExtractionPlan = 'saved' | 'simple' | 'refresh';
-export const EXTRACTION_PLANS: readonly ExtractionPlan[] = ['saved', 'simple', 'refresh'];
+/**
+ * Which plan an extraction uses: the template's saved plan, a simpler grouping of it (no call), or a refreshed plan (one
+ * planner call). A creative variant also has its own composed layers (no extraction at all), and its simple and
+ * refreshed plans split only the new scenery, never its exact subject.
+ */
+export type ExtractionPlan = 'saved' | 'simple' | 'refresh' | 'composed';
+export const EXTRACTION_PLANS: readonly ExtractionPlan[] = ['saved', 'simple', 'refresh', 'composed'];
 export interface TemplateExecution {
   id: string;
   /** The original submission was automatic inspection; remains stable for retry deduplication. */
@@ -118,6 +135,10 @@ export interface TemplateExecution {
   error?: { code: string; message: string; state: ExecutionState };
   /** The finished decomposition opened in the editor. */
   editor?: { runId: string; openedAt: string };
+  /** A smart edit: the persisted resolution it was generated from, verified against its exact inputs before the call. */
+  resolution?: { id: string; analysisId: string; summary: string; changes: number; inferred: number };
+  /** A chosen creative variant: its set, and its exact layers (the subject is source pixels; the scenery is new). */
+  variant?: { setId: string; variantId: string; layers: { scenery: ExecutionImage; plate: ExecutionImage; shadow?: VariantLayer; subject: VariantLayer }; protectedLabels: string[] };
 }
 
 /** What a decomposition run records about the execution it belongs to (run.json `templateExecution`). */
@@ -128,7 +149,7 @@ export interface RunTemplateExecution {
   plan?: ExtractionPlan;
   planRefresh?: boolean;
   /** Exactly which image was decomposed, checked against the execution's record before anything was sent. */
-  input?: { source: 'approved-generated' | 'original-upload'; sha256: string };
+  input?: { source: 'approved-generated' | 'original-upload' | 'variant-scenery'; sha256: string };
   inspection?: TemplateInspection;
   plannerReason?: 'new-structure' | 'plan-fresh';
   template?: { id: string; name: string; version: number };

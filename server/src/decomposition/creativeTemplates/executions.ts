@@ -14,7 +14,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { BlueprintCompatibility, ExecutionImage, ExecutionMode, TemplateEditOptions, TemplateExecution } from '@frameflow/shared';
+import type { BlueprintCompatibility, ExecutionImage, ExecutionMode, ExecutionUsage, GenerationReview, TemplateEditOptions, TemplateExecution } from '@frameflow/shared';
 import { RunError, validRunId } from '../layerizeExperiment.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +30,15 @@ export type NewExecution = {
   inspect?: boolean;
   editOptions?: TemplateEditOptions; compatibility?: BlueprintCompatibility;
   /** An optional image of the new product (the edit's second input image). */
-  productReference?: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number }; reviewBeforeDecompose?: boolean; slotValues?: Record<string, string>; mode: ExecutionMode; plannerReason?: 'new-structure' | 'plan-fresh'; updatesTemplate?: TemplateExecution['updatesTemplate']; idempotencyKey: string; template?: TemplateExecution['template']; upload: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number; originalName?: string }; editInstruction?: string };
+  productReference?: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number }; reviewBeforeDecompose?: boolean; slotValues?: Record<string, string>; mode: ExecutionMode; plannerReason?: 'new-structure' | 'plan-fresh'; updatesTemplate?: TemplateExecution['updatesTemplate']; idempotencyKey: string; template?: TemplateExecution['template']; upload: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number; originalName?: string }; editInstruction?: string;
+  /** A smart edit: the resolution its prompt was compiled from (checked by the service before this is called). */
+  resolution?: TemplateExecution['resolution']; editPrompt?: string; generationPromptSource?: ExecutionUsage['generationPromptSource'];
+  /**
+   * A creative variant chosen for review: its image already exists (no new call). It is stored as the execution's
+   * generated image, waiting for the user's approval like any other.
+   */
+  prepared?: { image: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number }; prompt: string; model: string; size: string; review: GenerationReview; files: Record<string, Buffer | object>;
+    requestFile?: string; responseFile?: string; durationMs?: number; variant: NonNullable<TemplateExecution['variant']>; verificationCalls: number; verifierModel?: string } };
 export interface ExecutionStore {
   /** A new execution, or the one this submission already started (created: false). */
   create(input: NewExecution): { execution: TemplateExecution; created: boolean };
@@ -76,17 +84,23 @@ export function fileExecutionStore(root = DEFAULT_EXECUTIONS_DIR): ExecutionStor
       const now = new Date().toISOString(), id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`, file = `upload.${input.upload.ext}`;
       const upload: ExecutionImage & { originalName?: string } = { file, mimeType: input.upload.mimeType, width: input.upload.width, height: input.upload.height, bytes: input.upload.bytes.length, sha256,
         ...(input.upload.originalName ? { originalName: input.upload.originalName.slice(0, 200) } : {}) };
-      const execution: TemplateExecution = { id, automatic: !!input.inspect, mode: input.mode, plannerReason: input.plannerReason, ...(input.updatesTemplate ? { updatesTemplate: input.updatesTemplate } : {}), idempotencyKey: input.idempotencyKey, state: input.inspect ? 'detecting' : 'queued', createdAt: now, updatedAt: now, ...(input.template ? { template: input.template } : {}), upload,
+      const prepared = input.prepared, preparedImage = prepared ? { file: `edited.${prepared.image.ext}`, mimeType: prepared.image.mimeType, width: prepared.image.width, height: prepared.image.height, bytes: prepared.image.bytes.length, sha256: createHash('sha256').update(prepared.image.bytes).digest('hex') } : undefined;
+      const execution: TemplateExecution = { id, automatic: !!input.inspect, mode: input.mode, plannerReason: input.plannerReason, ...(input.updatesTemplate ? { updatesTemplate: input.updatesTemplate } : {}), idempotencyKey: input.idempotencyKey, state: input.inspect ? 'detecting' : prepared ? 'generated' : 'queued', createdAt: now, updatedAt: now, ...(input.template ? { template: input.template } : {}), upload,
+        ...(input.resolution ? { resolution: input.resolution } : {}), ...(prepared ? { variant: prepared.variant } : {}),
         ...(input.reviewBeforeDecompose ? { reviewBeforeDecompose: true } : {}), ...(input.slotValues ? { slotValues: input.slotValues } : {}),
         ...(input.editOptions ? { editOptions: input.editOptions } : {}), ...(input.compatibility ? { compatibility: input.compatibility } : {}),
-        ...(input.editInstruction ? { edit: { instruction: input.editInstruction, prompt: '', model: '', size: '', ...(input.productReference ? { reference: {
+        ...(input.editInstruction ? { edit: { instruction: input.editInstruction, prompt: prepared?.prompt ?? input.editPrompt ?? '', model: prepared?.model ?? '', size: prepared?.size ?? '',
+          ...(prepared ? { image: preparedImage, review: prepared.review, ...(prepared.requestFile ? { requestFile: prepared.requestFile } : {}), ...(prepared.responseFile ? { responseFile: prepared.responseFile } : {}), ...(prepared.durationMs ? { durationMs: prepared.durationMs } : {}) } : {}),
+          ...(input.productReference ? { reference: {
           file: `product-reference.${input.productReference.ext}`, mimeType: input.productReference.mimeType, width: input.productReference.width, height: input.productReference.height,
           bytes: input.productReference.bytes.length, sha256: createHash('sha256').update(input.productReference.bytes).digest('hex') } } : {}) } } : {}),
-        usage: { plannerCalled: false, promptGenerationCalled: false, imageGenerationCalled: false, plannerCalls: 0, imageGenerationCalls: 0,
-          generationPromptSource: input.mode === 'CREATE_TEMPLATE' ? 'planner' : 'saved-template', decompositionPlanSource: input.mode === 'CREATE_TEMPLATE' ? 'planner' : 'saved-template', timings: {} },
+        // A prepared variant's one image call was made in its variant set; it is this image's call, counted once here.
+        usage: { plannerCalled: false, promptGenerationCalled: false, imageGenerationCalled: !!prepared, plannerCalls: 0, imageGenerationCalls: prepared ? 1 : 0, ...(prepared ? { imageModel: prepared.model, verificationCalls: prepared.verificationCalls, ...(prepared.verifierModel ? { verifierModel: prepared.verifierModel } : {}) } : {}),
+          generationPromptSource: input.generationPromptSource ?? (prepared ? 'creative-variant' : input.mode === 'CREATE_TEMPLATE' ? 'planner' : 'saved-template'), decompositionPlanSource: input.mode === 'CREATE_TEMPLATE' ? 'planner' : 'saved-template', timings: { ...(prepared?.durationMs ? { generationMs: prepared.durationMs } : {}) } },
         warnings: [] };
       atomic(join(dirOf(id), file), input.upload.bytes);
       if (input.productReference && execution.edit?.reference) atomic(join(dirOf(id), execution.edit.reference.file), input.productReference.bytes);
+      if (prepared && preparedImage) { atomic(join(dirOf(id), preparedImage.file), prepared.image.bytes); for (const [file, value] of Object.entries(prepared.files)) atomic(join(dirOf(id), file), value); }
       atomic(join(dirOf(id), RECORD), execution);
       atomic(join(root, KEYS), { ...keys(), [input.idempotencyKey]: id });
       return { execution, created: true };

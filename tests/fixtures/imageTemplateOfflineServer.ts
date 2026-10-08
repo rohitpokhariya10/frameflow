@@ -14,7 +14,7 @@ import { createOpenAIPlanner } from '../../server/src/decomposition/layerizePlan
 import type { GenerationConfig } from '../../server/src/decomposition/generationGroups.js';
 import type { FalTransport } from '../../server/src/decomposition/providers/falClient.js';
 import { ProviderError } from '../../server/src/decomposition/providers/adapters.js';
-import type { TemplateRole } from '@frameflow/shared';
+import { parseSceneDescription, type ResolverProposal, type SemanticCheck, type TemplateRole } from '@frameflow/shared';
 import { ALL_PARTS, OFFER_PARTS, offerComposite, offerPart, partName, rowFillEdit, type OfferPart } from '../../server/src/decomposition/complexOffer.fixture.js';
 import { RESIDUAL_PROMPT } from '../../server/src/decomposition/recursiveDecomposition.js';
 import { TEMPLATE_CAPTURE_SCHEMA, SEMANTIC_SCHEMA, type SemanticAnalysis, type SemanticElement } from '../../server/src/decomposition/semanticPlanner.js';
@@ -82,10 +82,17 @@ const generate = async (request: { size: string; prompt: string; image?: File | 
     const attempt = (editAttempts.get(request.prompt) ?? 0) + 1;
     editAttempts.set(request.prompt, attempt);
     if (request.prompt.includes('Regenerate failure test') && attempt === 2) throw new Error('Fixture regeneration failure.');
-    const replaced = request.prompt.includes('Replace the main product') && !request.prompt.includes('Kept product test');
+    const replaced = (request.prompt.includes('Replace the main product') || request.prompt.includes('Replace the smartphone')) && !request.prompt.includes('Kept product test');
     const mark = `<rect x="4" y="4" width="10" height="10" fill="#${createHash('sha256').update(request.prompt).digest('hex').slice(0, 6)}"/>`;
     const bytes = await sharp(await svgPng(width, height, `${BACKDROP}${replaced ? SPEAKER : PHONE}${mark}`)).modulate({ hue: 25 }).png().toBuffer();
     if (request.prompt.includes('Extraction 422 test')) rejectFirstExtraction.add(digest(bytes));
+    return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
+  }
+  // A creative variant: new teal scenery around the (masked, kept) phone; the app restores the phone's own pixels on top.
+  if (request.prompt.startsWith('Create a new offer-creative scene.')) {
+    if (request.prompt.includes('Variant failure test')) throw Object.assign(new Error('Fixture variant failure.'), { status: 500 });
+    const hue = parseInt(createHash('sha256').update(request.prompt).digest('hex').slice(0, 2), 16);
+    const bytes = await sharp(await svgPng(width, height, `<rect width="1000" height="1000" fill="#2a8c8c"/><circle cx="210" cy="210" r="120" fill="#f5d76e"/><rect x="0" y="780" width="1000" height="220" fill="#1d5f5f"/><g transform="translate(14 10)">${PHONE}</g>`)).modulate({ hue }).png().toBuffer();
     return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
   }
   if (request.prompt.includes('Mint phone curation fixture')) {
@@ -249,7 +256,33 @@ const planner = createOpenAIPlanner({ model: 'gpt-5.6-sol', client: { responses:
       prompt: 'Extract the lavender phone as a whole object. Separate the studio background.', planned_layers: [{ name: 'Lavender phone', description: 'The main product, in one layer.' }], warnings: [],
     }) };
 } } } as never });
+/** The lavender phone artwork as the scene analysis describes it (synthetic, not a recorded answer). */
+const phoneScene = () => parseSceneDescription({ summary: 'A lavender smartphone standing in a lavender studio.', objects: [
+  { id: 'studio', kind: 'scenery', importance: 'background', category: 'background', description: 'Lavender studio with soft shapes', box: { x: 0, y: 0, w: 1, h: 1, certainty: 'approximate' }, occluded: true, properties: [{ key: 'color', value: 'lavender' }], identity: { brand: '', model: '', evidence: '', confidence: 0, markings: 'none' }, confidence: 0.95 },
+  { id: 'phone', kind: 'product', importance: 'main', category: 'smartphone', description: 'Lavender smartphone with a dual camera', box: { x: 0.345, y: 0.19, w: 0.31, h: 0.57, certainty: 'tight' }, occluded: false, properties: [{ key: 'color', value: 'lavender' }],
+    identity: { brand: 'Lumen', model: '', evidence: 'a logo disc on the back', confidence: 0.7, markings: 'physical' }, confidence: 0.94 }],
+  relations: [], marks: [{ id: 'logo', kind: 'product_brand', text: '', owner_id: 'phone', overlay: false, box: { x: 0.465, y: 0.455, w: 0.08, h: 0.08, certainty: 'approximate' } }], text_overlays: [],
+  lighting: { direction: 'left', quality: 'soft', color: 'neutral' }, main_candidates: ['phone'], uncertainties: [] });
+const textUsage = (model: string) => ({ model, id: 'offline-text', usage: referenceUsage });
 const router = createLayerizeRouter({
+  // Smart edits and creative variants: every model and fal call faked, each counted like the others.
+  smart: { analysesDir: join(root, 'analyses'), variantsDir: join(root, 'variants'), env: {},
+    analyzer: () => ({ model: 'gpt-5.6-sol', analyze: async (_image, _mime, save) => { callCounts.openai++; await pause(); save('scene.openai-request.json', { model: 'gpt-5.6-sol' }); save('scene.openai-response.json', textUsage('gpt-5.6-sol')); return phoneScene(); } }),
+    resolver: () => ({ model: 'gpt-5.6-sol', resolve: async (input, save) => {
+      callCounts.openai++; save('resolution.openai-request.json', { model: 'gpt-5.6-sol' }); save('resolution.openai-response.json', textUsage('gpt-5.6-sol'));
+      const words = Object.values(input.draft.edits).map(e => e.value ?? '').join(' '), brand = /xiaomi/i.test(words) ? 'Xiaomi' : '';
+      const target = Object.keys(input.draft.edits).find(id => input.draft.edits[id].action === 'replace') ?? '';
+      return { understanding: brand && target ? [{ targetId: target, brand, brandSource: 'inferred', identity: `a ${brand} smartphone`, specificity: 'brand_and_category' }] : [], inferred: [], conflicts: [],
+        productPhoto: { present: false, category: '', brand: '', evidence: '', matchesRequest: 'unclear', description: '' } } satisfies ResolverProposal;
+    } }),
+    verifier: () => ({ model: 'gpt-5.6-sol', verify: async (input, save) => { callCounts.openai++; save('verification.openai-request.json', { model: 'gpt-5.6-sol' }); save('verification.openai-response.json', textUsage('gpt-5.6-sol'));
+      return input.expectations.map((e): SemanticCheck => ({ id: e.id, status: 'pass', message: 'Consistent in the offline check.' })); } }),
+    concepts: () => ({ model: 'gpt-5.6-sol', write: async (input, save) => { callCounts.openai++; save('concepts.openai-request.json', { model: 'gpt-5.6-sol' }); save('concepts.openai-response.json', textUsage('gpt-5.6-sol'));
+      const scenes = ['polished marble plinth under soft window light', 'rooftop at dusk with glossy puddles', 'floating pastel paper shapes in a calm studio', 'desert dunes at golden hour'], titles = ['Marble studio', 'Rooftop dusk', 'Paper shapes', 'Desert light'];
+      return Array.from({ length: input.count }, (_, i) => ({ title: titles[i], scene: `${scenes[i]}${input.direction ? `, after: ${input.direction}` : ''}${/failure drill/.test(input.direction ?? '') && i === 1 ? ', Variant failure test' : ''}` })); } }),
+    segmenter: () => ({ provider: 'sam3', segment: async ({ width, height }) => { callCounts.fal++; await pause();
+      return { mask: await svgPng(width, height, '<rect width="1000" height="1000" fill="#000"/><rect x="345" y="190" width="310" height="570" rx="45" fill="#fff"/>'), requestIds: ['offline-sam3'] }; } }),
+  },
   runsDir: join(root, 'runs'), imageTemplatesDir: join(root, 'templates'),
   templatesDir: join(root, 'creative-templates'), executionsDir: join(root, 'executions'),
   inspector: () => ({ model: 'gpt-5.6-luna', inspect: async (_bytes, _mime, save) => {

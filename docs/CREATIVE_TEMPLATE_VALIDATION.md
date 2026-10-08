@@ -2,7 +2,9 @@
 
 **Status: READY FOR MANUAL LIVE TEST.** The primary flow is a four-step wizard with **manual template card selection**:
 **Template → Customize → Generate → Decompose**. Automatic layout detection and Plan fresh remain under
-**Advanced · planning experiments** and never run on their own.
+**Advanced · planning experiments** and never run on their own. Smart edits (the uploaded image analyzed, edits resolved into a change plan) and
+**Generate creative template** (new scenes around the image's own subjects) extend the Customize step: see
+[AI_CREATIVE_TEMPLATE_GENERATION.md](AI_CREATIVE_TEMPLATE_GENERATION.md).
 
 ## The flow
 

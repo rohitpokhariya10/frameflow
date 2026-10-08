@@ -21,6 +21,12 @@ import { registerCreativeTemplateRoutes } from './creativeTemplates/routes.js';
 import { createTemplateExecutions } from './creativeTemplates/service.js';
 import { liveStructureInspector, type StructureInspector } from './creativeTemplates/inspect.js';
 import { DEFAULT_TEMPLATES_DIR, fileTemplateStore } from './creativeTemplates/store.js';
+import { DEFAULT_ANALYSES_DIR, DEFAULT_VARIANTS_DIR, fileSceneStore, fileVariantStore } from './creativeTemplates/smartStores.js';
+import { createSmartCreative, readSmartFeatures, type SmartFeatures, type SmartProviders } from './creativeTemplates/smartCreative.js';
+import { liveChangeResolver, liveConceptWriter, liveSceneAnalyzer, liveSemanticVerifier } from './creativeTemplates/smartProviders.js';
+import { liveSegmenter } from './creativeTemplates/segmenter.js';
+import { registerSmartCreativeRoutes } from './creativeTemplates/smartRoutes.js';
+import { cutoutProvider } from './aiModels.js';
 import { readRunDiagnostics } from './runDiagnostics.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -86,10 +92,13 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
  * runsDir: the decomposition runs. deps: the planner, fal transport and background reconstructor. generation: the image
  * model (reference creatives and template edits). access: who may use it (default: from CLIENT_ORIGIN and NODE_ENV).
  * imageTemplatesDir, imagePrompt: where reference creatives are kept and what analyzes a reference. templatesDir,
- * executionsDir: the creative template library and its executions. Every default is the app's own folder and providers.
+ * executionsDir: the creative template library and its executions. smart: the smart-edit and creative-variant providers
+ * and folders (live OpenAI and fal by default; each feature reports itself unavailable when its keys are missing).
+ * Every default is the app's own folder and providers.
  */
 export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generation?: () => GenerationConfig; access?: ExperimentAccess;
-  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter; templatesDir?: string; executionsDir?: string; inspector?: () => StructureInspector } = {}): Router {
+  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter; templatesDir?: string; executionsDir?: string; inspector?: () => StructureInspector;
+  smart?: SmartProviders & { analysesDir?: string; variantsDir?: string; env?: NodeJS.ProcessEnv } } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
   const deps = options.deps ?? (() => liveDeps());
   const generation = options.generation ?? (() => liveGenerationConfig());
@@ -138,12 +147,23 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
     runInTurn: inTurn, runState,
   });
   const templates = fileTemplateStore(options.templatesDir ?? DEFAULT_TEMPLATES_DIR), executions = fileExecutionStore(options.executionsDir ?? DEFAULT_EXECUTIONS_DIR);
-  const service = createTemplateExecutions({ templates, executions, runsDir, deps, generation, inspector: options.inspector ?? (() => liveStructureInspector()), inTurn: (id, work) => inTurn(id, async () => {
+  // Smart edits and creative variants: injected providers (tests, the offline fixture) or the live ones, configured from env.
+  const smartEnv = options.smart?.env ?? process.env, injected = options.smart ?? {};
+  const providers: SmartProviders = { analyzer: injected.analyzer ?? (() => liveSceneAnalyzer()), resolver: injected.resolver ?? (() => liveChangeResolver()), verifier: injected.verifier ?? (() => liveSemanticVerifier()),
+    concepts: injected.concepts ?? (() => liveConceptWriter()), segmenter: injected.segmenter ?? (() => { const provider = cutoutProvider(smartEnv); return provider === 'none' ? undefined : liveSegmenter(provider, () => deps().transport()); }) };
+  const features = (): SmartFeatures => {
+    let cutout: string;
+    try { cutout = injected.segmenter ? 'injected' : cutoutProvider(smartEnv); } catch (error) { cutout = 'none'; return { ...readSmartFeatures(smartEnv, { openai: !!injected.analyzer, fal: false, cutout, models: { analysis: '', resolver: '', verifier: '' } }), variants: { available: false, reason: error instanceof Error ? error.message : String(error), maxVariants: 4 } }; }
+    return readSmartFeatures(smartEnv, { openai: !!injected.analyzer, fal: !!injected.segmenter, cutout, models: { analysis: providers.analyzer!().model, resolver: providers.resolver!().model, verifier: providers.verifier!().model } });
+  };
+  const smart = createSmartCreative({ scenes: fileSceneStore(injected.analysesDir ?? DEFAULT_ANALYSES_DIR), variants: fileVariantStore(injected.variantsDir ?? DEFAULT_VARIANTS_DIR), executions, templates, generation, providers, features });
+  const service = createTemplateExecutions({ templates, executions, runsDir, deps, generation, smart, inspector: options.inspector ?? (() => liveStructureInspector()), inTurn: (id, work) => inTurn(id, async () => {
     // The execution's run becomes the active run as soon as it exists (its dashboard polls it).
     const watch = setInterval(() => { try { activeRun = executions.get(id).runId ?? activeRun; } catch { /* read again next tick */ } }, 200);
     try { return await work(); } finally { clearInterval(watch); }
   }) });
-  registerCreativeTemplateRoutes(router, { templates, executions, service, runsDir, runState });
+  const { shown } = registerCreativeTemplateRoutes(router, { templates, executions, service, runsDir, runState });
+  registerSmartCreativeRoutes(router, { smart, shownExecution: shown });
 
   router.get('/runs/:id/diagnostics', async (req, res, next) => {
     try {
@@ -195,7 +215,9 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   router.use(((error: unknown, _req, res, next) => {
     void next;
     const code = error instanceof RunError ? error.code : 'INTERNAL';
-    const status = code === 'NOT_FOUND' || code === 'TEMPLATE_NOT_FOUND' ? 404 : code === 'BUSY' || code === 'RUN_ACTIVE_OR_AMBIGUOUS' || code === 'IDEMPOTENCY_CONFLICT' || code === 'PLAN_DECISION_REQUIRED' || code === 'REVIEW_REQUIRED' || code === 'NOT_RETRYABLE' ? 409 : code === 'UPLOAD_TOO_LARGE' ? 413 : error instanceof RunError ? 400 : 500;
+    const conflict = ['BUSY', 'RUN_ACTIVE_OR_AMBIGUOUS', 'IDEMPOTENCY_CONFLICT', 'PLAN_DECISION_REQUIRED', 'REVIEW_REQUIRED', 'NOT_RETRYABLE', 'STALE_RESOLUTION', 'RESOLUTION_NEEDS_INPUT', 'ANALYSIS_NOT_READY', 'CUTOUT_REQUIRED', 'NOT_NEEDED'];
+    const status = code === 'NOT_FOUND' || code === 'TEMPLATE_NOT_FOUND' ? 404 : conflict.includes(code) ? 409 : code === 'UPLOAD_TOO_LARGE' ? 413
+      : code === 'SMART_EDIT_UNAVAILABLE' || code === 'VARIANTS_UNAVAILABLE' ? 503 : error instanceof RunError ? 400 : 500;
     res.status(status).json({ error: { code, message: error instanceof Error ? error.message : 'Unexpected error.', ...(error instanceof RunError ? error.details : {}) } });
   }) as express.ErrorRequestHandler);
   return router;

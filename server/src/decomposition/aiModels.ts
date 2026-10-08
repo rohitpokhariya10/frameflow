@@ -32,3 +32,19 @@ export const DEFAULT_STRUCTURE_CHEAP_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_STRUCTURE_STRONG_MODEL = 'gpt-5.6-sol';
 export const structureCheapModel = (env = process.env) => env.OPENAI_STRUCTURE_CHEAP_MODEL?.trim() || DEFAULT_STRUCTURE_CHEAP_MODEL;
 export const structureStrongModel = (env = process.env) => env.OPENAI_STRUCTURE_STRONG_MODEL?.trim() || DEFAULT_STRUCTURE_STRONG_MODEL;
+
+/**
+ * Smart edits and creative variants (creativeTemplates/smartCreative.ts): reading the uploaded image, resolving an edit
+ * into a change plan, checking a result, and writing scene concepts. Each is its own paid call, counted apart.
+ */
+export const DEFAULT_SCENE_MODEL = DEFAULT_STRUCTURE_STRONG_MODEL;
+export const sceneModel = (env = process.env) => env.OPENAI_SCENE_MODEL?.trim() || DEFAULT_SCENE_MODEL;
+export const resolverModel = (env = process.env) => env.OPENAI_RESOLVER_MODEL?.trim() || sceneModel(env);
+export const verifierModel = (env = process.env) => env.OPENAI_VERIFIER_MODEL?.trim() || sceneModel(env);
+export const conceptModel = (env = process.env) => env.OPENAI_CONCEPT_MODEL?.trim() || sceneModel(env);
+/** The mask provider for exact subject cutouts: SAM-3 prompted per subject (default), BiRefNet matting, or none (upload a cutout). */
+export function cutoutProvider(env = process.env): 'sam3' | 'birefnet' | 'none' {
+  const value = env.CREATIVE_CUTOUT_PROVIDER?.trim() || 'sam3';
+  if (value !== 'sam3' && value !== 'birefnet' && value !== 'none') throw new Error('CREATIVE_CUTOUT_PROVIDER must be sam3, birefnet or none.');
+  return value;
+}
