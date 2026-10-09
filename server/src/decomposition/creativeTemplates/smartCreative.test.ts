@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
-import { compileResolvedEdit, compileTemplateEdit, parseSceneDescription, TEXT_FREE_RULE, type ResolverProposal, type SemanticCheck, type TemplateExecution, type TemplateStructure, type TemplateVersion, type VariantSet } from '@frameflow/shared';
+import { compileResolvedEdit, compileTemplateEdit, describeTemplateSlots, draftFromTemplateFields, parseSceneDescription, PLAN_RULES, TEXT_FREE_RULE, type ResolverProposal, type SemanticCheck, type TemplateExecution, type TemplateStructure, type TemplateVersion, type VariantSet } from '@frameflow/shared';
 import type { FalTransport } from '../providers/falClient.js';
 import { readRun } from '../layerizeExperiment.js';
 import { createOpenAIPlanner } from '../layerizePlanner.js';
@@ -13,8 +13,9 @@ import { fileExecutionStore } from './executions.js';
 import { createTemplateExecutions } from './service.js';
 import { fileTemplateStore } from './store.js';
 import { createSmartCreative, readSmartFeatures } from './smartCreative.js';
+import { regionAlpha } from './smartEditImage.js';
 import { fileSceneStore, fileVariantStore } from './smartStores.js';
-import { phoneOfferAnalysis } from './scene.fixture.js';
+import { holdingBallAnalysis, phoneOfferAnalysis } from './scene.fixture.js';
 import { SEMANTIC_SCHEMA } from '../semanticPlanner.js';
 import { readRunDiagnostics } from '../runDiagnostics.js';
 
@@ -38,6 +39,13 @@ function saveTemplate(templates: ReturnType<typeof fileTemplateStore>, thumbnail
     plan: { strategy: templatePlanStrategy(structure), prompt: templatePlanPrompt(structure, true), recommendedLayers: 4, occlusionWording: true }, generationPrompt: { text: templateEditPrompt(structure) },
     decomposition: { refinement: false, expectedEditorLayers: { min: 1, max: 12 } }, source: { executionId: 'none', runId: 'none', plannerModel: 'offline' } }), { bytes: thumbnail, ext: 'png' }).version;
 }
+/** A proposal as the resolver model writes it (snake_case, as parseResolverProposal reads it). */
+const rawProposal = (p: ResolverProposal) => ({
+  understanding: p.understanding.map(u => ({ target_id: u.targetId, brand: u.brand, brand_source: u.brandSource, identity: u.identity, specificity: u.specificity })),
+  inferred_changes: p.inferred.map(i => ({ target_id: i.targetId, operation: i.operation, property: i.property, to: i.to, reason: i.reason, evidence: i.evidence, confidence: i.confidence })),
+  conflicts: p.conflicts.map(c => ({ kind: c.kind, target_ids: c.targetIds, question: c.question, options: c.options.map(o => ({ label: o.label, target_id: o.targetId, action: o.action, value: o.value, brand: o.brand })) })),
+  product_photo: { present: p.productPhoto.present, category: p.productPhoto.category, brand: p.productPhoto.brand, evidence: p.productPhoto.evidence, matches_request: p.productPhoto.matchesRequest, description: p.productPhoto.description },
+});
 const emptyProposal = (): ResolverProposal => ({ understanding: [], inferred: [], conflicts: [], productPhoto: { present: false, category: '', brand: '', evidence: '', matchesRequest: 'unclear', description: '' } });
 
 async function setup() {
@@ -76,7 +84,8 @@ async function setup() {
   let sceneAnswer: unknown = phoneOfferAnalysis();
   const analyze = vi.fn(async (_image: Buffer, _mime: string, save: (file: string, value: object) => void) => { save('scene.openai-request.json', { model: 'fake-scene' }); save('scene.openai-response.json', { model: 'fake-scene', usage: { input_tokens: 1500, output_tokens: 900 } }); return parseSceneDescription(sceneAnswer); });
   let proposal: ResolverProposal | Error = emptyProposal();
-  const resolve = vi.fn(async (_input: unknown, save: (file: string, value: object) => void) => { save('resolution.openai-request.json', {}); if (proposal instanceof Error) throw proposal; save('resolution.openai-response.json', {}); return proposal; });
+  // The response is saved as a real call saves it: the model's answer as output_text (a resolution can be rebuilt from it).
+  const resolve = vi.fn(async (_input: unknown, save: (file: string, value: object) => void) => { save('resolution.openai-request.json', {}); if (proposal instanceof Error) throw proposal; save('resolution.openai-response.json', { output_text: JSON.stringify(rawProposal(proposal)) }); return proposal; });
   let verdict: ((asked: { id: string }[]) => SemanticCheck[]) | Error = asked => asked.map(a => ({ id: a.id as SemanticCheck['id'], status: 'pass' as const, message: 'Looks right.' }));
   const verify = vi.fn(async (input: { expectations: { id: string }[] }) => { if (verdict instanceof Error) throw verdict; return verdict(input.expectations); });
   let concepts = (count: number) => Array.from({ length: count }, (_, i) => ({ title: `Concept ${i + 1}`, scene: ['marble plinth under soft window light', 'neon city rooftop at dusk with glossy puddles', 'pastel paper shapes floating in a calm studio', 'desert dunes at golden hour with long shadows'][i] }));
@@ -104,7 +113,7 @@ async function setup() {
   const generate = async (analysisId: string, resolutionId: string, draft: unknown, extra: { bytes?: Buffer; key?: string; productReference?: { bytes: Buffer } } = {}) => {
     const { execution, created } = await service.start({ mode: 'REUSE_TEMPLATE_WITH_EDIT', templateId: version.templateId, templateVersion: version.version, reviewBeforeDecompose: true, analysisId, resolutionId, draft,
       idempotencyKey: extra.key ?? randomUUID(), upload: upload(extra.bytes), ...(extra.productReference ? { productReference: { ...extra.productReference, fileName: 'photo.png', mimeType: 'image/png' } } : {}) });
-    if (created) await vi.waitFor(() => expect(['generated', 'failed']).toContain(executions.get(execution.id).state));
+    if (created) await vi.waitFor(() => expect(['generated', 'failed']).toContain(executions.get(execution.id).state), { timeout: 20_000 });
     return { execution: executions.get(execution.id), created };
   };
   const settledSet = async (id: string): Promise<VariantSet> => { await vi.waitFor(() => expect(['ready', 'needs-cutout', 'failed']).toContain(smart.set(id).state), { timeout: 20_000 }); return smart.set(id); };
@@ -159,7 +168,9 @@ describe('smart edits: analysis, resolution, binding and generation (offline fak
     expect(resolution.plan!.status).toBe('clear');
     expect(resolution.plan!.entries.find(e => e.id === 'inferred:smartphone_1:modify:brand')).toMatchObject({ to: 'Xiaomi', source: 'inferred' });
     expect(resolution.prompt).toContain('Show the Xiaomi brand only as this product would plainly carry it.');
-    expect(resolution.prompt!.endsWith(TEXT_FREE_RULE)).toBe(true);
+    // B3: the text-free rule is kept, with the one exception that sentence asks for (it once forbade the brand it asked for).
+    expect(resolution.prompt).toContain(`${TEXT_FREE_RULE} The only exception is the Xiaomi brand marking on the new smartphone`);
+    expect(resolution.rules).toBe(PLAN_RULES);
     expect((await t.smart.resolve(analysis.id, { draft: replacePhone })).created).toBe(false);
     expect(t.resolve).toHaveBeenCalledTimes(2); // the conflict draft and the answered one; the repeat reused the saved plan
     const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
@@ -327,6 +338,29 @@ describe('Generate creative template: exact subjects, new scenery, per-variant s
     expect(d.notes.join(' ')).toMatch(/composed locally from the creative variant: no planner or Seedream call/);
   });
 
+  it('a variant set saved by the previous version (no ratio, concepts or per-product layers) still opens, and its chosen variant still reaches the editor as its own exact layers', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    const set = await t.settledSet((await start(t, analysis.id, { protectedIds: ['smartphone_1'], count: 1, surprise: false, direction: 'a plain studio' })).set.id);
+    // Rewritten with exactly the fields the previous version saved (e8ac236), nothing newer.
+    const pick = <T extends object>(o: T, keys: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => keys.includes(k)));
+    const file = join(t.root, 'variants', set.id, 'set.json'), saved = JSON.parse(readFileSync(file, 'utf8'));
+    const old = { ...pick(saved, ['id', 'createdAt', 'updatedAt', 'idempotencyKey', 'template', 'analysisId', 'source', 'protectedIds', 'protectedLabels', 'direction', 'surprise', 'count', 'state', 'concepts', 'usage', 'verify', 'corrections', 'signature', 'error']),
+      cutout: pick(saved.cutout, ['status', 'provider', 'mask', 'subject', 'box', 'coveragePercent', 'checks', 'limitations', 'error', 'requestIds']),
+      variants: saved.variants.map((v: Record<string, never>) => ({ ...pick(v, ['id', 'title', 'scene', 'prompt', 'status', 'attempts', 'model', 'size', 'requestFile', 'responseFile', 'durationMs', 'startedAt', 'finishedAt', 'image', 'verification', 'error', 'history', 'executionId']),
+        ...(v.layers ? { layers: pick(v.layers, ['scenery', 'plate', 'shadow', 'subject']) } : {}), ...(v.preservation ? { preservation: pick(v.preservation, ['method', 'checkedPixels', 'maxDifference']) } : {}) })) };
+    expect(old.variants[0]).not.toHaveProperty('concept');
+    writeFileSync(file, JSON.stringify(old, null, 2));
+    expect(t.smart.set(set.id)).toMatchObject({ state: 'ready', variants: [{ status: 'done' }] });
+    const chosen = t.smart.selectVariant(set.id, 'v1', { idempotencyKey: randomUUID() }).execution;
+    t.service.decompose(chosen.id, { plan: 'composed' });
+    const done = await t.settled(chosen.id);
+    expect(done).toMatchObject({ state: 'done', usage: { plannerCalls: 0 } });
+    const run = readRun(join(t.root, 'runs', done.runId!));
+    expect(run.outputLayers!.map(l => l.placement.kind)).toEqual(['full-canvas', 'bbox-crop', 'bbox-crop']);
+    const p = px(PHONE), subject = await sharp(join(t.root, 'runs', run.id, run.editorLayerFiles!.at(-1)!)).raw().toBuffer(), crop = await sharp(t.source).extract(p).ensureAlpha().raw().toBuffer();
+    expect(subject.equals(crop)).toBe(true);
+  });
+
   it('splits only the new scenery when asked, then puts the exact subject back on top', async () => {
     const t = await setup(), analysis = await t.analyzed();
     const set = await t.settledSet((await start(t, analysis.id, { count: 1, surprise: false, direction: 'दीयों के साथ उत्सव का दृश्य' })).set.id);
@@ -404,12 +438,234 @@ describe('Generate creative template: exact subjects, new scenery, per-variant s
     expect(t.imageEdits).toHaveBeenCalledTimes(1);
     const e = t.smart.selectVariant(set.id, 'v2', { idempotencyKey: randomUUID() }).execution;
     expect(e.edit!.review).toMatchObject({ requiresAcknowledgement: true, checks: expect.arrayContaining([expect.objectContaining({ id: 'cutout-limitation', severity: 'warning' })]) });
-    await expect(start(t, analysis.id, { protectedIds: [] })).rejects.toMatchObject({ code: 'PROTECTED_REQUIRED' });
+    // Nothing named: the advertised products are chosen automatically (the phone, and its earbuds shown as a set with it).
+    const automatic = await start(t, analysis.id, { protectedIds: [] });
+    expect([...automatic.set.protectedIds].sort()).toEqual(['earbuds_1', 'smartphone_1']);
+    expect(automatic.set.selection).toMatchObject({ basis: 'rules', reasons: { smartphone_1: 'what the creative is about', earbuds_1: 'an accessory of Smartphone' } });
     await expect(start(t, analysis.id, { protectedIds: ['background_1'] })).rejects.toMatchObject({ code: 'PROTECTED_REQUIRED' });
     await expect(start(t, analysis.id, { direction: 'gold text saying Diwali Offer', surprise: false })).rejects.toMatchObject({ code: 'INVALID_DIRECTION' });
     await expect(start(t, analysis.id, { count: 9 })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
     const key = randomUUID(), first = await start(t, analysis.id, { idempotencyKey: key, count: 1 }), second = await start(t, analysis.id, { idempotencyKey: key, count: 1 });
     expect(second).toMatchObject({ created: false, set: { id: first.set.id } });
     await expect(start(t, analysis.id, { idempotencyKey: key, count: 2 })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+});
+
+describe('Generate creative template: each product its own, and scene ideas written again without a new mask', { timeout: 90_000 }, () => {
+  const start = (t: Awaited<ReturnType<typeof setup>>, analysisId: string, extra: Record<string, unknown> = {}) => t.smart.startVariants({ analysisId, templateId: t.version.templateId, templateVersion: 1, protectedIds: ['smartphone_1'], surprise: true, count: 3, idempotencyKey: randomUUID(), ...extra });
+  const exactCrop = async (t: Awaited<ReturnType<typeof setup>>, runId: string, file: string, box: { x: number; y: number; w: number; h: number }) => {
+    const layer = await sharp(join(t.root, 'runs', runId, file)).ensureAlpha().raw().toBuffer(), crop = await sharp(t.source).extract(px(box)).ensureAlpha().raw().toBuffer();
+    return layer.equals(crop);
+  };
+
+  it('two products: each its own exact layer and its own shadow, through review to the editor run', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setMask([PHONE, BUDS]);
+    const set = await t.settledSet((await start(t, analysis.id, { protectedIds: ['smartphone_1', 'earbuds_1'], count: 1, surprise: false, direction: 'soft studio light on a stone plinth' })).set.id);
+    expect(set.cutout.masks!.map(m => [m.subjectId, m.file])).toEqual([['smartphone_1', 'mask-1.png'], ['earbuds_1', 'mask-2.png']]);
+    const v = set.variants[0];
+    expect(v).toMatchObject({ status: 'done', preservation: { method: 'exact-source-pixels', maxDifference: 0, outsideAlphaPixels: 0 } });
+    // Back to front by where they stand: the phone stands higher in the frame than the earbuds, so it is behind them.
+    expect(v.layers!.subjects!.map(l => [l.subjectId, l.label])).toEqual([['smartphone_1', 'Smartphone'], ['earbuds_1', 'Earbuds']]);
+    expect(v.layers!.shadows!.map(l => l.subjectId)).toEqual(['smartphone_1', 'earbuds_1']);
+    const e = t.smart.selectVariant(set.id, 'v1', { idempotencyKey: randomUUID() }).execution;
+    expect(e.variant!.layers.subjects).toHaveLength(2);
+    expect(e.edit!.review!.note).toMatch(/products are the reference's own pixels .* soft edge pixels blended as expected, none outside the cutout/);
+    t.service.decompose(e.id, { plan: 'composed' });
+    const done = await t.settled(e.id), run = readRun(join(t.root, 'runs', done.runId!));
+    expect(run.editorLayerFiles).toEqual(['layer-1-new-scenery.png', 'layer-2-shadow-1.png', 'layer-2-shadow-2.png', 'layer-3-subject-1.png', 'layer-3-subject-2.png']);
+    expect(run.outputLayers!.map(l => l.name)).toEqual(['New scenery', 'Contact shadow · Smartphone', 'Contact shadow · Earbuds', 'Smartphone (exact source pixels)', 'Earbuds (exact source pixels)']);
+    expect(await exactCrop(t, run.id, 'layer-3-subject-1.png', PHONE)).toBe(true);
+    expect(await exactCrop(t, run.id, 'layer-3-subject-2.png', BUDS)).toBe(true);
+  });
+
+  it('a person holding the product: the product in front of the hand, and no floor shadow for a held product or a figure the frame cuts off', async () => {
+    const t = await setup();
+    t.setScene(holdingBallAnalysis());
+    const analysis = await t.analyzed();
+    t.setMask([{ x: 0.25, y: 0.1, w: 0.5, h: 0.9 }, { x: 0.55, y: 0.45, w: 0.16, h: 0.14 }]);
+    const set = await t.settledSet((await start(t, analysis.id, { protectedIds: ['football_1'], count: 1, surprise: false, direction: 'sunny beach at noon' })).set.id);
+    expect([...set.protectedIds].sort()).toEqual(['football_1', 'man_1']);
+    expect(set.variants[0].status).toBe('done');
+    expect(set.variants[0].layers!.subjects!.map(l => l.subjectId)).toEqual(['man_1', 'football_1']);
+    expect(set.variants[0].layers!.shadows).toEqual([]);
+  });
+
+  it('scene ideas that failed or came back short are written again on request: one more concept call each, never a new mask request', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setConcepts(() => { throw new Error('Fixture concept failure.'); });
+    const set = await t.settledSet((await start(t, analysis.id, { count: 2 })).set.id);
+    expect(set).toMatchObject({ state: 'failed', cutout: { status: 'ready' }, usage: { segmentationCalls: 1, conceptCalls: 1, imageGenerationCalls: 0 } });
+    expect(set.variants.map(v => [v.status, v.error?.code])).toEqual([['failed', 'CONCEPTS_FAILED'], ['failed', 'CONCEPTS_FAILED']]);
+    // A short answer: one concept for the two variants without one. A repeated click with the same key starts nothing more.
+    t.setConcepts(() => [{ title: 'Marble', scene: 'marble plinth under soft window light' }]);
+    const key = randomUUID();
+    t.smart.rewriteConcepts(set.id, { idempotencyKey: key });
+    t.smart.rewriteConcepts(set.id, { idempotencyKey: key });
+    const partly = await t.settledSet(set.id);
+    expect(partly.usage).toMatchObject({ segmentationCalls: 1, conceptCalls: 2, imageGenerationCalls: 1 });
+    expect(partly.variants.map(v => [v.status, v.error?.code ?? null])).toEqual([['done', null], ['failed', 'CONCEPT_MISSING']]);
+    t.setConcepts(() => [{ title: 'Rooftop', scene: 'neon city rooftop at dusk with glossy puddles' }]);
+    t.smart.rewriteConcepts(set.id, { idempotencyKey: randomUUID() });
+    const done = await t.settledSet(set.id);
+    // One variant still needed: two more concepts than that are asked for, so the most different one can be chosen.
+    expect(t.write).toHaveBeenLastCalledWith(expect.objectContaining({ count: 3 }), expect.anything());
+    expect(done).toMatchObject({ state: 'ready', usage: { segmentationCalls: 1, conceptCalls: 3, imageGenerationCalls: 2 } });
+    expect(done.variants.map(v => [v.status, v.title])).toEqual([['done', 'Marble'], ['done', 'Rooftop']]);
+    expect(t.segment).toHaveBeenCalledTimes(1);
+    expect(() => t.smart.rewriteConcepts(set.id, { idempotencyKey: randomUUID() })).toThrow(expect.objectContaining({ code: 'NOT_NEEDED' }));
+  });
+
+  it('one click: the advertised products found automatically, a 4:5 canvas, the most different concepts, each product exact on its own layer, through review to the editor', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setMask([PHONE, BUDS]);
+    const concept = (title: string, family: string, environment: string, surface: string, palette: string[], composition: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      ({ title, family, theme: `${title} theme`, environment, surface, props: [], palette, lighting: 'soft window light', mood: 'calm', camera: 'eye-level', composition, ...extra });
+    const written = [
+      concept('Studio pedestal', 'studio', 'a seamless grey studio sweep', 'a matte grey cylinder pedestal', ['grey', 'white'], { x: 0.5, y: 0.6, scale: 0.6, copy_space: 'top' }),
+      concept('Studio pedestal in blue', 'studio', 'a seamless grey studio sweep', 'a matte grey cylinder pedestal', ['blue', 'white'], { x: 0.5, y: 0.6, scale: 0.6, copy_space: 'top' }),
+      concept('Forest stream', 'nature', 'mossy stones beside a clear forest stream', 'a flat wet river stone', ['moss green', 'slate'], { x: 0.4, y: 0.65, scale: 0.55, copy_space: 'right' }, { camera: 'low-angle', props: ['ferns'] }),
+      concept('Festive table', 'festive', 'a festive dinner table with brass diyas and marigolds', 'a carved wooden tray', ['saffron', 'maroon', 'gold'], { x: 0.55, y: 0.55, scale: 0.5, copy_space: 'bottom' }, { camera: 'high-angle', props: ['marigolds'] }),
+      concept('Rooftop dusk', 'architectural', 'a concrete rooftop at dusk with city lights far below', 'a polished concrete ledge', ['indigo', 'amber'], { x: 0.6, y: 0.62, scale: 0.65, copy_space: 'left' }),
+    ];
+    t.setConcepts(() => written as never);
+    const { set: started } = await start(t, analysis.id, { protectedIds: undefined, surprise: undefined, count: 3, aspectRatio: '4:5' });
+    expect(started).toMatchObject({ aspectRatio: '4:5', selection: { basis: 'rules' } });
+    const set = await t.settledSet(started.id);
+    expect(set).toMatchObject({ state: 'ready', usage: { segmentationCalls: 2, conceptCalls: 1, imageGenerationCalls: 3 } });
+    // Two more concepts than needed were asked for, with what a creative director needs about the products.
+    expect(t.write).toHaveBeenLastCalledWith(expect.objectContaining({ count: 5, ratio: '4:5', subjects: ['earbuds', 'smartphone'], brands: ['Apple'] }), expect.anything());
+    // The recolour of the studio set is never one of the creatives; the three chosen are of different families.
+    expect(set.variants.map(v => v.title)).not.toContain('Studio pedestal in blue');
+    expect(new Set(set.variants.map(v => v.concept!.family)).size).toBe(3);
+    expect(set.conceptReport).toMatchObject({ candidates: 5, chosen: 3, rejected: expect.arrayContaining([{ title: 'Studio pedestal in blue', reason: expect.stringMatching(/^too close/) }]) });
+    expect(set.conceptReport!.minDistance).toBeGreaterThanOrEqual(1.2);
+    // Each creative on the 4:5 canvas, its products where its own concept put them: three different layouts.
+    for (const v of set.variants) {
+      expect(v).toMatchObject({ status: 'done', image: { width: 1216, height: 1520 }, preservation: { method: 'exact-source-pixels', maxDifference: 0, outsideAlphaPixels: 0, scale: 1 }, layout: { scale: 1 } });
+      expect(v.prompt).toMatch(/products already placed in the attached image/);
+      expect(v.layers!.subjects!.map(l => l.subjectId)).toEqual(['smartphone_1', 'earbuds_1']);
+    }
+    expect(new Set(set.variants.map(v => `${v.layout!.box.x},${v.layout!.box.y}`)).size).toBe(3);
+    expect(t.imageEdits.mock.calls.every(([request]) => (request as { size: string }).size === '1216x1520')).toBe(true);
+    // Through the normal review to the editor: a flattened generated scene, a shadow per product, each product exact.
+    const e = t.smart.selectVariant(set.id, 'v1', { idempotencyKey: randomUUID() }).execution;
+    expect(e.variant).toMatchObject({ aspectRatio: '4:5', scale: 1 });
+    t.service.decompose(e.id, { plan: 'composed' });
+    const done = await t.settled(e.id), run = readRun(join(t.root, 'runs', done.runId!));
+    expect(run.canvas).toEqual({ width: 1216, height: 1520 });
+    expect(run.outputLayers!.map(l => l.name)).toEqual(['Generated scene (flattened)', 'Contact shadow · Smartphone', 'Contact shadow · Earbuds', 'Smartphone (exact source pixels)', 'Earbuds (exact source pixels)']);
+    const layer = await sharp(join(t.root, 'runs', run.id, 'layer-3-subject-1.png')).ensureAlpha().raw().toBuffer(), crop = await sharp(t.source).extract(px(PHONE)).ensureAlpha().raw().toBuffer();
+    expect(layer.equals(crop)).toBe(true);
+  });
+
+});
+
+describe('smart edits made by their strategy: local regions, a restyle around the kept products, never an unneeded call (Step 4)', { timeout: 60_000 }, () => {
+  const raw = async (bytes: Buffer, width = W, height = H) => sharp(bytes).resize(width, height, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+
+  it('a replaced phone is painted only in its own regions: the result is the source\'s size, and outside them the source\'s own pixels although the model painted everything', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi());
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    expect(execution.edit).toMatchObject({ strategy: { kind: 'local' }, image: { width: W, height: H }, generated: { width: 1216, height: 1520 }, preservation: { method: 'outside-regions', maxDifferenceOutside: 0 } });
+    expect(execution.edit!.strategy!.regions.map(r => r.targetId).sort()).toEqual(['mark_2', 'smartphone_1', 'text_1']);
+    expect(t.imageEdits.mock.calls[0][0]).toMatchObject({ size: '1216x1520', mask: expect.anything() });
+    const [out, src] = await Promise.all([raw(readFileSync(t.executions.path(execution.id, execution.edit!.image!.file))), raw(t.source)]);
+    // Outside: every pixel the regions (and their soft inner edge) do not reach, exactly as the composite defines them.
+    const alpha = regionAlpha(execution.edit!.strategy!.regions.map(r => r.box), W, H, Math.round(0.015 * W));
+    let outside = 0, differing = 0;
+    for (let i = 0; i < W * H; i++) if (alpha[i] === 0) { outside++; if ([0, 1, 2].some(c => out[i * 3 + c] !== src[i * 3 + c])) differing++; }
+    expect(outside).toBe(execution.edit!.preservation!.unchangedPixels);
+    expect(differing).toBe(0);
+    expect(outside).toBeGreaterThan(W * H * 0.5);
+    // The review reads the changes where the analysis found them.
+    expect(execution.edit!.review!.method).toBe('analysis-boxes');
+  });
+
+  it('a restyled background cuts out the products it keeps (one mask request each) and keeps them exact; an unreliable cutout edits the whole image and asks for a look', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setMask([PHONE, BUDS]);
+    const restyle = { edits: { background_1: { action: 'modify', value: 'warm sunset gradient' } }, corrections: {} };
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: restyle });
+    const { execution } = await t.generate(analysis.id, resolution.id, restyle);
+    expect(execution.edit).toMatchObject({ strategy: { kind: 'background', protectIds: ['earbuds_1', 'smartphone_1'] }, image: { width: W, height: H }, preservation: { method: 'protected-products', maxDifferenceOutside: 0, products: { ok: true, maxDifference: 0, outsideAlphaPixels: 0 } } });
+    expect(execution.usage).toMatchObject({ segmentationCalls: 2, imageGenerationCalls: 1 });
+    expect(t.segment).toHaveBeenCalledTimes(1);
+    const phone = px(PHONE), [out, src] = await Promise.all([raw(readFileSync(t.executions.path(execution.id, execution.edit!.image!.file))), raw(t.source)]);
+    let differing = 0;
+    for (let y = phone.top + 4; y < phone.top + phone.height - 4; y++) for (let x = phone.left + 4; x < phone.left + phone.width - 4; x++) { const i = y * W + x; if ([0, 1, 2].some(c => out[i * 3 + c] !== src[i * 3 + c])) differing++; }
+    expect(differing).toBe(0);
+    // No reliable cutout: the whole image is edited, said plainly, and a person must look before decomposition.
+    const u = await setup(), a2 = await u.analyzed();
+    u.setMask([]);
+    const r2 = (await u.smart.resolve(a2.id, { draft: restyle })).resolution, e2 = (await u.generate(a2.id, r2.id, restyle)).execution;
+    expect(e2.edit).toMatchObject({ strategy: { kind: 'global', fallback: expect.stringMatching(/products may have been redrawn/) }, image: { width: W, height: H } });
+    expect(e2.edit!.review).toMatchObject({ requiresAcknowledgement: true, checks: expect.arrayContaining([expect.objectContaining({ id: 'cutout-limitation', severity: 'warning' })]) });
+  });
+
+  it('all fields empty: the original image is reviewed with no image request; "regenerate anyway" is one explicit request at the source size', async () => {
+    const t = await setup(), analysis = await t.analyzed(), empty = { edits: {}, corrections: {} };
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: empty });
+    expect(resolution.plan!.status).toBe('unchanged');
+    const { execution } = await t.generate(analysis.id, resolution.id, empty);
+    expect(execution).toMatchObject({ state: 'generated', edit: { original: true, strategy: { kind: 'none' }, image: { sha256: sha(t.source), width: W, height: H } }, usage: { imageGenerationCalls: 0 } });
+    expect(t.imageEdits).not.toHaveBeenCalled();
+    t.service.decompose(execution.id);
+    expect(await t.settled(execution.id)).toMatchObject({ state: 'done', usage: { imageGenerationCalls: 0 } });
+    const again = await t.service.start({ mode: 'REUSE_TEMPLATE_WITH_EDIT', templateId: t.version.templateId, templateVersion: t.version.version, reviewBeforeDecompose: true, analysisId: analysis.id, resolutionId: resolution.id, draft: empty,
+      regenerateUnchanged: true, idempotencyKey: randomUUID(), upload: t.upload() });
+    await vi.waitFor(() => expect(t.executions.get(again.execution.id).state).toBe('generated'), { timeout: 20_000 });
+    expect(t.executions.get(again.execution.id).edit).toMatchObject({ regenerate: true, strategy: { kind: 'global' }, image: { width: W, height: H } });
+    expect(t.imageEdits).toHaveBeenCalledTimes(1);
+  });
+
+  it('the normal Generate\'s template fields go through the same engine: a filled product field is a local edit of its own item, at the source size', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi());
+    const scene = parseSceneDescription(phoneOfferAnalysis()), slots = describeTemplateSlots(t.version);
+    // The fields as the wizard sends them: the product changed, the supporting product kept, everything else empty.
+    const { draft, problems } = draftFromTemplateFields(scene, analysis.mapping, slots, { values: { main_product: 'Xiaomi phone' }, mainProduct: { keepSupporting: true } });
+    expect(problems).toEqual([]);
+    expect(draft.edits).toEqual({ smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, earbuds_1: { action: 'keep' } });
+    const { resolution } = await t.smart.resolve(analysis.id, { draft });
+    expect(resolution.plan).toMatchObject({ status: 'clear' });
+    const { execution } = await t.generate(analysis.id, resolution.id, draft);
+    expect(execution.edit).toMatchObject({ strategy: { kind: 'local' }, image: { width: W, height: H }, preservation: { method: 'outside-regions', maxDifferenceOutside: 0 } });
+    expect(execution.edit!.prompt).toContain('Show the Xiaomi brand only as this product would plainly carry it.');
+  });
+
+  it('template fields without an image analysis: a replaced product with text fields left as they are waits for the user\'s decision; decided, it is generated at the source size', async () => {
+    const t = await setup();
+    await expect(t.service.start({ mode: 'REUSE_TEMPLATE_WITH_EDIT', templateId: t.version.templateId, templateVersion: t.version.version, reviewBeforeDecompose: true, values: { main_product: 'portable speaker' }, idempotencyKey: randomUUID(), upload: t.upload() }))
+      .rejects.toMatchObject({ code: 'DECISION_REQUIRED', details: { questions: [expect.objectContaining({ slotId: 'headline' })] } });
+    expect(t.imageEdits).not.toHaveBeenCalled();
+    const { execution } = await t.service.start({ mode: 'REUSE_TEMPLATE_WITH_EDIT', templateId: t.version.templateId, templateVersion: t.version.version, reviewBeforeDecompose: true, values: { main_product: 'portable speaker' },
+      options: { textDecisions: { headline: 'remove' } }, idempotencyKey: randomUUID(), upload: t.upload() });
+    await vi.waitFor(() => expect(t.executions.get(execution.id).state).toBe('generated'), { timeout: 20_000 });
+    const done = t.executions.get(execution.id);
+    expect(done.edit!.prompt).toContain('Remove the headline text at the top completely');
+    expect(done.edit!.prompt).toContain('Show no brand name or logo on it');
+    expect(done.edit).toMatchObject({ strategy: { kind: 'global' }, image: { width: W, height: H } });
+  });
+
+  it('a resolution saved before these rules is rebuilt from its own saved resolver answer, with no new call, and then generates', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi());
+    const first = (await t.smart.resolve(analysis.id, { draft: replacePhone })).resolution;
+    expect(t.resolve).toHaveBeenCalledTimes(1);
+    // As saved by the earlier compiler: no rules version, and the prompt that contradicted itself about the brand.
+    const old = t.scenes.updateResolution(analysis.id, first.id, r => { delete r.rules; r.prompt = r.prompt!.replace(/ The only exception is [^.]+, as described above\./, ''); });
+    await expect(t.generate(analysis.id, old.id, replacePhone)).rejects.toMatchObject({ code: 'STALE_RESOLUTION' });
+    const { resolution, created } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    expect(created).toBe(true);
+    expect(resolution).toMatchObject({ rules: PLAN_RULES, resolver: { called: true, reusedFrom: old.id } });
+    expect(resolution.id).not.toBe(old.id);
+    expect(resolution.prompt).toContain('The only exception is the Xiaomi brand marking');
+    expect(t.resolve).toHaveBeenCalledTimes(1); // the saved answer was merged again
+    expect((await t.smart.resolve(analysis.id, { draft: replacePhone })).resolution.id).toBe(resolution.id);
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    expect(execution).toMatchObject({ state: 'generated', usage: { resolutionCalls: 1 } });
   });
 });

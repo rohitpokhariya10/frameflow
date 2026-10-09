@@ -73,7 +73,18 @@ export async function sourceSlotMasks(runDir: string, version: Pick<TemplateVers
 }
 
 /** Review a generated image against the image that was edited, for these requested changes. */
-export async function reviewGeneration(input: { source: Buffer; generated: Buffer; version: Pick<TemplateVersion, 'structure'>; changes: EditChange[]; sourceRunDir?: string }): Promise<GenerationReview> {
+/** A box (fractions of the image) as a region on the review's grid. */
+function boxMask(box: { x: number; y: number; w: number; h: number }, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(w * h);
+  for (let y = Math.max(0, Math.floor(box.y * h)); y < Math.min(h, Math.ceil((box.y + box.h) * h)); y++) for (let x = Math.max(0, Math.floor(box.x * w)); x < Math.min(w, Math.ceil((box.x + box.w) * w)); x++) out[y * w + x] = 1;
+  return out;
+}
+/**
+ * regions: each change's box from the image's own analysis (a smart edit), used where the template has no exact layer for
+ * it. scope: the only areas a local edit could paint; "nothing changed" is measured there, not over the whole image.
+ */
+export async function reviewGeneration(input: { source: Buffer; generated: Buffer; version: Pick<TemplateVersion, 'structure'>; changes: EditChange[]; sourceRunDir?: string;
+  regions?: Record<string, { x: number; y: number; w: number; h: number }>; scope?: { x: number; y: number; w: number; h: number }[] }): Promise<GenerationReview> {
   const meta = await sharp(input.source).metadata(), scale = SIDE / Math.max(meta.width ?? SIDE, meta.height ?? SIDE);
   const w = Math.max(16, Math.round((meta.width ?? SIDE) * scale)), h = Math.max(16, Math.round((meta.height ?? SIDE) * scale)), n = w * h;
   const [src, gen] = await Promise.all([rgbOf(input.source, w, h), rgbOf(input.generated, w, h)]);
@@ -81,10 +92,12 @@ export async function reviewGeneration(input: { source: Buffer; generated: Buffe
   const gs = edges(src, w, h), gg = spread(edges(gen, w, h), w, h, SHIFT);
   const exact = input.sourceRunDir ? await sourceSlotMasks(input.sourceRunDir, input.version, w, h) : undefined;
   const slots = describeTemplateSlots(input.version), checks: GenerationReviewCheck[] = [];
-  const used = { exact: false, zones: false };
+  const used = { exact: false, zones: false, boxes: false };
   const regionOf = (slotId: string) => {
     const exactMask = exact?.get(slotId);
     if (exactMask) { used.exact = true; return exactMask; }
+    const box = input.regions?.[slotId];
+    if (box) { used.boxes = true; return boxMask(box, w, h); }
     const zone = slots.find(s => s.id === slotId)?.zone;
     if (zone && zone !== 'full-canvas') { used.zones = true; return zoneMask(zone, w, h); }
     return undefined;
@@ -118,12 +131,13 @@ export async function reviewGeneration(input: { source: Buffer; generated: Buffe
     const percent = Math.round(100 * moved / Math.max(1, outside));
     if (outside >= n * 0.1 && percent >= 35) checks.push({ id: 'unrequested-change', severity: used.exact ? 'warning' : 'info', evidence: { changedOutsidePercent: percent }, message: `Areas you did not ask to change look different (${percent}% of them).` });
   }
-  // 3. Nothing changed at all although something was asked.
+  // 3. Nothing changed at all although something was asked (inside what a local edit could paint, when it was one).
   if (input.changes.length) {
-    let sum = 0; for (let i = 0; i < n; i++) sum += maxDiff(src, gen, i);
-    const mean = sum / n;
+    const inScope = input.scope?.length ? input.scope.reduce((m, b) => { const r = boxMask(b, w, h); for (let i = 0; i < n; i++) if (r[i]) m[i] = 1; return m; }, new Uint8Array(n)) : undefined;
+    let sum = 0, count = 0; for (let i = 0; i < n; i++) if (!inScope || inScope[i]) { sum += maxDiff(src, gen, i); count++; }
+    const mean = sum / Math.max(1, count);
     if (mean < 4) checks.push({ id: 'image-unchanged', severity: 'warning', evidence: { meanDifference: Math.round(mean * 10) / 10 }, message: 'The generated image looks almost identical to the original.' });
   }
-  const method: GenerationReview['method'] = used.exact ? 'source-layer-masks' : used.zones ? 'template-zones' : 'whole-image';
+  const method: GenerationReview['method'] = used.exact ? 'source-layer-masks' : used.boxes ? 'analysis-boxes' : used.zones ? 'template-zones' : 'whole-image';
   return { method, checks, requiresAcknowledgement: checks.some(c => c.severity === 'warning'), note: NOTE };
 }

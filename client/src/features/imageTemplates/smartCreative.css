@@ -50,6 +50,9 @@
 .sm-entries li.is-inferred { background: #f4f1fb; }
 .sm-entries li.is-explicit { background: #edf5ef; }
 .sm-entries li.is-linked { border-color: var(--color-primary); }
+/* How a smart edit is made (and, after generating, what it kept): one quiet note, set off by its edge. */
+.sm-strategy { margin: 6px 0 0; padding: 6px 10px; border-left: 3px solid var(--color-primary); background: #f3f7f4; border-radius: 0 8px 8px 0; font-size: 12px; line-height: 1.45; }
+.sm-strategy small { display: block; margin-top: 2px; color: var(--color-muted); }
 .sm-entry-head { overflow-wrap: anywhere; }
 .sm-entry-head q { font-weight: 600; }
 .sm-source { margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--color-chrome); color: var(--color-muted); }
@@ -68,9 +71,16 @@
 .cv-head h3 { margin: 4px 0; font-size: 18px; }
 .cv-head p { margin: 0; max-width: 720px; }
 .cv-head .ws-btn { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.cv-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.cv-form > .sm-group { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--color-line); border-radius: 14px; }
-.cv-form > .cv-cost, .cv-form > .tw-actions { grid-column: 1 / -1; }
+.cv-form { display: flex; flex-direction: column; gap: 14px; }
+.cv-keeps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
+.cv-keeps b { font-weight: 600; }
+fieldset.cv-choice { border: 0; margin: 0; position: relative; padding: 3px; }
+fieldset.cv-choice legend { float: left; padding: 6px 8px 6px 4px; font-size: 12px; font-weight: 600; color: var(--color-muted, inherit); }
+.cv-advanced { border: 1px solid var(--color-line); border-radius: 12px; padding: 10px 14px; }
+.cv-advanced > summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.cv-advanced[open] { display: flex; flex-direction: column; gap: 12px; }
+.cv-advanced > .sm-group { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--color-line); border-radius: 12px; }
+.cv-concept { margin: 0; font-size: 12px; text-transform: capitalize; }
 .cv-protect { display: grid; gap: 8px; }
 .cv-protect .tw-check { padding: 8px 10px; border: 1px solid var(--color-line); border-radius: 10px; }
 .cv-protect .tw-check.is-on { border-color: #9cc2a6; background: #f4faf5; }

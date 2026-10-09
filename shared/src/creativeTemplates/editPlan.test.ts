@@ -26,9 +26,15 @@ describe('the canonical template edit compiler', () => {
     expect(edit.text).not.toMatch(/Do not add or remove elements|Make only this change|Keep its composition/);
     expect(edit.text).not.toMatch(/Keep the rest of the layout exactly:[^.]*supporting product/);
     expect(edit.text).toContain('Add or remove objects only as the changes above require; add nothing else.');
-    // Nothing is invented: no specs, prices, logos.
-    expect(edit.text).toContain('do not invent logos, model numbers or specifications');
-    expect(edit.text).toContain('Do not add any other new text, prices, discounts, product specifications, brand names or logos.');
+    // Nothing is invented: no specs or prices. The brand its words name (boAt) is the one exception to the no-brand rule,
+    // stated with it, so the prompt no longer asks for a brand and forbids every brand name at once.
+    expect(edit.text).toContain('Show the boAt brand only as this product would plainly carry it; do not invent model numbers or specifications.');
+    expect(edit.text).toContain('Do not add any other new text, prices, discounts, product specifications, brand names or logos, except the boAt brand marking the new product itself plainly carries.');
+    // With no brand in the words or the brand field, no brand is drawn, and the no-brand rule has no exception.
+    const plain = compileTemplateEdit(trio, { main_product_2: 'portable speaker' }, { mainProduct: { keepSupporting: true } });
+    expect(plain.text).toContain('Show no brand name or logo on it; do not invent model numbers or specifications.');
+    expect(plain.text).toContain('Do not add any other new text, prices, discounts, product specifications, brand names or logos.');
+    expect(plain.text).not.toMatch(/Show the [^.]* brand/);
     expect(edit.changes.map(c => [c.slotId, c.operation])).toEqual([['background', 'restyle'], ['prop', 'restyle'], ['supporting_product', 'remove'], ['supporting_product_2', 'remove'], ['main_product_2', 'replace']]);
   });
 
@@ -100,5 +106,23 @@ describe('the canonical template edit compiler', () => {
     const unplaced = describeTemplateSlots({ structure: { relationships: [], layers: [layer('a', 'supporting_product', 0), layer('b', 'supporting_product', 1)] } });
     expect(unplaced.map(s => s.label)).toEqual(['Supporting product · 1', 'Supporting product · 2']);
     expect(slots.every(s => s.placeholder && s.hint)).toBe(true);
+  });
+
+  it('without an image analysis, a replaced product never silently keeps text or logos that may name it: each one is the user\'s decision', () => {
+    const offer = { structure: { layers: [['background', 'background', 'full-canvas'], ['logo', 'logo', 'top-left'], ['headline', 'headline', 'top-center'], ['cta', 'cta', 'bottom-center'], ['main_product', 'main_product', 'center']]
+      .map(([id, role, zone], order) => ({ id, role, zone, order, independent: true, required: false })), relationships: [] } } as unknown as Pick<TemplateVersion, 'structure'>;
+    const open = compileTemplateEdit(offer, { main_product: 'Halvorsen kettle' });
+    // The logo and the headline may name the old product; a button's text rarely does and is not asked about.
+    expect(open.questions.map(q => q.slotId)).toEqual(['logo', 'headline']);
+    expect(open.questions[0].message).toMatch(/may name the old product\. Keep it, remove it, or type its new text/);
+    const decided = compileTemplateEdit(offer, { main_product: 'Halvorsen kettle' }, { textDecisions: { logo: 'remove', headline: 'keep' } });
+    expect(decided.questions).toEqual([]);
+    expect(decided.text).toContain('Remove the logo at the top left completely and continue the background design where it was.');
+    expect(decided.text).toMatch(/Keep the rest of the layout exactly: [^.]*the headline at the top/);
+    expect(decided.text).toContain('colors, style and the visible text that is kept.');
+    expect(decided.text).not.toContain('all visible text');
+    // No product change: no question, and the text is kept as before.
+    expect(compileTemplateEdit(offer, { background: 'mint gradient' }).questions).toEqual([]);
+    expect(() => compileTemplateEdit(offer, { main_product: 'x' }, { textDecisions: { nowhere: 'keep' } })).toThrow(/text decision/);
   });
 });

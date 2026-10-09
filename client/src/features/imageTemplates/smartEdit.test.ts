@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applySceneCorrections, basePlan, cleanDraft, compileResolvedEdit, emptyDraft, parseSceneDescription, type CostAmount, type SceneDraft, type TemplateExecution } from '@frameflow/shared';
 import { appliancesAnalysis, holdingBallAnalysis, phoneOfferAnalysis, sofaAnalysis, twoPhonesAnalysis } from '../../../../server/src/decomposition/creativeTemplates/scene.fixture';
-import { answerConflict, correctedScene, defaultProtected, draftChangeList, groupedControls, hasDraftChanges, resolutionKey, resolutionStatus, resolvedPreview, sceneControls, setCorrection, setEdit, smartCostRows, type Resolution, type SceneAnalysis } from './smartEdit';
+import { answerConflict, correctedScene, defaultProtected, draftChangeList, groupedControls, hasDraftChanges, resolutionKey, resolutionStatus, resolvedPreview, sceneControls, setCorrection, setEdit, smartCostRows, strategyPreview, strategyResult, type Resolution, type SceneAnalysis } from './smartEdit';
 import { costRows, readWizardDraft, VARIANT_PLAN_CHOICES, WIZARD_DRAFT_KEY, type ShownExecution } from './templateWizard';
 
 const analysisOf = (raw: unknown): SceneAnalysis => ({ id: '2026-10-08T00-00-00-000Z-abcdef', state: 'ready', createdAt: '', binding: { imageSha256: 'x', templateId: 'tpl-1', templateVersion: 1, config: 'scene-v1|m' }, model: 'm', calls: 1, scene: parseSceneDescription(raw) });
@@ -86,5 +86,24 @@ describe('the wizard counts smart and variant calls apart, and keeps legacy rows
     // An open variant set comes back after a refresh; a malformed id does not.
     expect(readWizardDraft(storage({ variantSetId: '2026-10-08T10-00-00-000Z-abc123', studio: true }))).toMatchObject({ variantSetId: '2026-10-08T10-00-00-000Z-abc123', studio: true });
     expect(readWizardDraft(storage({ variantSetId: '../../etc', studio: 'yes' }))).toEqual({});
+  });
+});
+
+describe('before and after generating, the wizard says how a smart edit is made and what it kept', () => {
+  const phone = parseSceneDescription(phoneOfferAnalysis()), plan = (edits: SceneDraft['edits']) => basePlan(phone, cleanDraft(phone, { edits }));
+  it('previews the strategy from the resolved plan, with the mask requests a restyle needs', () => {
+    expect(strategyPreview(phone, plan({ smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, earbuds_1: { action: 'keep' } }))).toMatchObject({ kind: 'local', text: expect.stringMatching(/^Edits only the changed areas\. Only the areas of Smartphone, .*every other pixel stays your image's own\. The result keeps your image's own size\.$/) });
+    const restyle = strategyPreview(phone, plan({ background_1: { action: 'modify', value: 'warm sunset' } }), 'sam3');
+    expect(restyle).toMatchObject({ kind: 'background', extra: expect.stringMatching(/^2 mask requests to cut the products out/) });
+    expect(strategyPreview(phone, plan({ background_1: { action: 'modify', value: 'warm sunset' } }), 'birefnet').extra).toMatch(/^1 mask request /);
+    expect(strategyPreview(phone, plan({}))).toMatchObject({ kind: 'none', text: expect.stringMatching(/^No image request\./) });
+  });
+  it('says what the result kept, a restyle\'s fallback included, and counts its mask requests', () => {
+    expect(strategyResult({ instruction: '', prompt: '', model: '', size: '', strategy: { kind: 'local', regions: [{ targetId: 'smartphone_1', label: 'Smartphone', box: { x: 0, y: 0, w: 0.3, h: 0.3 } }], areaPercent: 9, protectIds: [], reasons: [] },
+      preservation: { method: 'outside-regions', unchangedPixels: 1234567, unchangedPercent: 91, maxDifferenceOutside: 0 } })).toBe('Edited only Smartphone: 12,34,567 pixels (91% of the image) are your image\'s own, unchanged.');
+    expect(strategyResult({ instruction: '', prompt: '', model: '', size: '', strategy: { kind: 'global', regions: [], areaPercent: 100, protectIds: [], reasons: [], fallback: 'The cutout failed. The whole image was edited instead.' } })).toBe('The cutout failed. The whole image was edited instead.');
+    expect(strategyResult({ instruction: '', prompt: '', model: '', size: '' })).toBeUndefined();
+    const usage = { plannerCalled: false, promptGenerationCalled: false, imageGenerationCalled: true, plannerCalls: 0, imageGenerationCalls: 1, generationPromptSource: 'resolved-plan' as const, decompositionPlanSource: 'saved-template' as const, timings: {}, segmentationCalls: 2 };
+    expect(smartCostRows({ resolution: { id: 'r', analysisId: 'a', summary: '', changes: 1, inferred: 0 }, usage })).toContainEqual({ label: 'Product cutouts', value: '2 mask requests · the products a restyled background keeps' });
   });
 });

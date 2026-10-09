@@ -5,7 +5,7 @@
  *
  * The server owns analysis, resolution and generation; everything here is local and free.
  */
-import { allowedActions, applyConflictOption, applySceneCorrections, attachedTo, canonicalDraft, compileResolvedEdit, draftChanges, holderOf, isForeground, mainIsAmbiguous, mainObjects, SCENE_MARK_LABELS, SCENE_PROPERTY_LABELS,
+import { allowedActions, applyConflictOption, applySceneCorrections, attachedTo, canonicalDraft, compileResolvedEdit, draftChanges, editStrategy, holderOf, isForeground, mainIsAmbiguous, mainObjects, SCENE_MARK_LABELS, SCENE_PROPERTY_LABELS,
   type ChangePlan, type ConflictOption, type ObjectAction, type ObjectEdit, type SceneCorrection, type SceneDescription, type SceneDraft, type SceneSlotMapping, type ScenePropertyKey, type SemanticVerification,
   type TemplateExecution, type VariantSet } from '@frameflow/shared';
 
@@ -18,13 +18,19 @@ export interface SceneAnalysis {
   id: string; state: 'analyzing' | 'ready' | 'failed'; createdAt: string;
   binding: { imageSha256: string; templateId: string; templateVersion: number; config: string };
   model: string; calls: number; durationMs?: number;
+  /** The analyzed image's size (the server sends it with every analysis). */
+  upload?: { width: number; height: number };
   scene?: SceneDescription; mapping?: SceneSlotMapping; error?: { code: string; message: string };
 }
 export interface Resolution {
   id: string; analysisId: string; state: 'resolving' | 'ready' | 'failed';
   binding: { draft: string; referenceSha256?: string };
+  /** The draft it resolved (what a reopened smart edit restores). */
+  draft?: SceneDraft;
   plan?: ChangePlan; rejected?: string[]; prompt?: string; summary?: string;
-  resolver: { called: boolean; model?: string };
+  resolver: { called: boolean; model?: string; reusedFrom?: string };
+  /** The plan rules it was made with: an older one is resolved again (rebuilt on the server, no call) before generating. */
+  rules?: string;
   error?: { code: string; message: string };
 }
 export type ShownVariantSet = VariantSet;
@@ -116,8 +122,25 @@ export function smartCostRows(execution: Pick<TemplateExecution, 'resolution' | 
   if (!execution?.resolution && !execution?.variant) return undefined;
   const n = (count: number | undefined, word: string) => `${count ?? 0} ${word}${count === 1 ? '' : 's'}`;
   return execution.resolution
-    ? [{ label: 'Image analysis', value: `${n(execution.usage.analysisCalls, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: n(execution.usage.resolutionCalls, 'call') }]
+    ? [{ label: 'Image analysis', value: `${n(execution.usage.analysisCalls, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: n(execution.usage.resolutionCalls, 'call') },
+      ...(execution.usage.segmentationCalls ? [{ label: 'Product cutouts', value: `${n(execution.usage.segmentationCalls, 'mask request')} · the products a restyled background keeps` }] : [])]
     : [{ label: 'Creative variant', value: 'subject cutout and scene concepts made in its set' }];
+}
+/** How a resolved smart edit will be made (the server decides the same way from the same plan), and its extra paid calls. */
+export function strategyPreview(scene: SceneDescription, plan: ChangePlan, cutout?: string): { kind: string; text: string; extra?: string } {
+  const s = editStrategy(scene, plan), title = { none: 'No image request', local: 'Edits only the changed areas', background: 'Restyles around your products', global: 'Edits the whole image' }[s.kind];
+  const masks = s.kind === 'background' ? cutout === 'birefnet' ? 1 : s.protectIds.length : 0;
+  return { kind: s.kind, text: `${title}. ${s.reasons.join(' ')}${s.kind === 'none' ? '' : ' The result keeps your image\'s own size.'}`,
+    ...(masks ? { extra: `${masks} mask request${masks === 1 ? '' : 's'} to cut the products out before the image request (if the cutout is not reliable, the whole image is edited and you are asked to check it).` } : {}) };
+}
+/** What a generated smart edit kept of the original, as recorded with it. */
+export function strategyResult(edit: TemplateExecution['edit']): string | undefined {
+  const s = edit?.strategy, p = edit?.preservation;
+  if (!s) return undefined;
+  const pixels = (count: number, percent: number) => `${count.toLocaleString('en-IN')} pixels (${percent}% of the image)`;
+  if (s.kind === 'local') return `Edited only ${[...new Set(s.regions.map(r => r.label))].join(', ')}${p ? `: ${pixels(p.unchangedPixels, p.unchangedPercent)} are your image's own, unchanged` : ''}.`;
+  if (s.kind === 'background') return `Background restyled around ${s.protectIds.length} kept product${s.protectIds.length === 1 ? '' : 's'}${p?.products ? `: their own pixels, ${p.products.checkedPixels.toLocaleString('en-IN')} identical${p.products.edgePixels ? `, ${p.products.edgePixels.toLocaleString('en-IN')} soft edge pixels blended` : ''}` : ''}.`;
+  return s.fallback ?? 'The whole image was edited (its size and aspect kept).';
 }
 export const semanticLabel = (v: SemanticVerification | undefined) => !v ? undefined : ({ passed: 'AI check passed', contradiction: 'AI check found a problem', uncertain: 'AI check is unsure', unchecked: 'Not checked by AI' } as const)[v.status];
 export const VARIANT_STATUS: Record<string, string> = { pending: 'Waiting', generating: 'Generating…', done: 'Ready', failed: 'Failed' };

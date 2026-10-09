@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import sharp from 'sharp';
 
 /** Shared steps of the Template → Customize → Generate → Decompose wizard, against the offline fixture server. */
 export const API = '/api/layerize-experiment';
@@ -53,3 +55,16 @@ export async function runDetails(panel: Locator) {
   await panel.getByRole('button', { name: 'Run details', exact: true }).click();
   await expect(panel.getByRole('status')).toHaveText(/READY FOR EDITOR|PARTIAL/, { timeout: 30_000 });
 }
+
+type RunLayer = { file: string; name: string; zIndex: number; placement: { kind: string } };
+/** The editor's layer list (front to back) shows exactly the run's kept layers, in its stacking order, under their names. */
+export async function expectEditorLayers(page: Page, run: { outputLayers: RunLayer[]; editorLayerFiles?: string[] }) {
+  const kept = (run.editorLayerFiles ?? run.outputLayers.map(l => l.file)).map(f => run.outputLayers.find(l => l.file === f)!).sort((a, b) => b.zIndex - a.zIndex);
+  const names = page.getByRole('list', { name: 'Design layers' }).locator('.layer-name');
+  await expect(names).toHaveCount(kept.length);
+  const shown = await names.allTextContents();
+  expect(shown.map(n => n.match(/\(z(\d+)\)$/)?.[1])).toEqual(kept.map(l => String(l.zIndex)));
+  kept.forEach((l, i) => { if (l.placement.kind !== 'base') expect(shown[i]).toContain(l.name.slice(0, 40)); });
+}
+/** The image with a small random patch in its corner: this test's own upload, never one an earlier test already made into a template or analysed. */
+export const ownImage = async (bytes: Buffer) => sharp(bytes).composite([{ input: { create: { width: 6, height: 6, channels: 3, background: `#${createHash('sha256').update(crypto.randomUUID()).digest('hex').slice(0, 6)}` } }, left: 0, top: 0 }]).png().toBuffer();

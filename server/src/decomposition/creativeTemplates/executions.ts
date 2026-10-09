@@ -33,6 +33,8 @@ export type NewExecution = {
   productReference?: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number }; reviewBeforeDecompose?: boolean; slotValues?: Record<string, string>; mode: ExecutionMode; plannerReason?: 'new-structure' | 'plan-fresh'; updatesTemplate?: TemplateExecution['updatesTemplate']; idempotencyKey: string; template?: TemplateExecution['template']; upload: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number; originalName?: string }; editInstruction?: string;
   /** A smart edit: the resolution its prompt was compiled from (checked by the service before this is called). */
   resolution?: TemplateExecution['resolution']; editPrompt?: string; generationPromptSource?: ExecutionUsage['generationPromptSource'];
+  /** Nothing to change: review the original as it is (original), or the user's explicit new image anyway (regenerate). */
+  editIntent?: 'original' | 'regenerate';
   /**
    * A creative variant chosen for review: its image already exists (no new call). It is stored as the execution's
    * generated image, waiting for the user's approval like any other.
@@ -89,7 +91,7 @@ export function fileExecutionStore(root = DEFAULT_EXECUTIONS_DIR): ExecutionStor
         ...(input.resolution ? { resolution: input.resolution } : {}), ...(prepared ? { variant: prepared.variant } : {}),
         ...(input.reviewBeforeDecompose ? { reviewBeforeDecompose: true } : {}), ...(input.slotValues ? { slotValues: input.slotValues } : {}),
         ...(input.editOptions ? { editOptions: input.editOptions } : {}), ...(input.compatibility ? { compatibility: input.compatibility } : {}),
-        ...(input.editInstruction ? { edit: { instruction: input.editInstruction, prompt: prepared?.prompt ?? input.editPrompt ?? '', model: prepared?.model ?? '', size: prepared?.size ?? '',
+        ...(input.editInstruction ? { edit: { instruction: input.editInstruction, prompt: prepared?.prompt ?? input.editPrompt ?? '', model: prepared?.model ?? '', size: prepared?.size ?? '', ...(input.editIntent ? { [input.editIntent]: true } : {}),
           ...(prepared ? { image: preparedImage, review: prepared.review, ...(prepared.requestFile ? { requestFile: prepared.requestFile } : {}), ...(prepared.responseFile ? { responseFile: prepared.responseFile } : {}), ...(prepared.durationMs ? { durationMs: prepared.durationMs } : {}) } : {}),
           ...(input.productReference ? { reference: {
           file: `product-reference.${input.productReference.ext}`, mimeType: input.productReference.mimeType, width: input.productReference.width, height: input.productReference.height,

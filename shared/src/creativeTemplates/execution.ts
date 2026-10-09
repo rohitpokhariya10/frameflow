@@ -1,7 +1,7 @@
 import type { TemplateStructure } from './types.js';
 import type { BlueprintCompatibility, TemplateEditOptions } from './editPlan.js';
 import type { SemanticVerification } from './verification.js';
-import type { VariantLayer } from './variants.js';
+import type { VariantLayer, VariantSubjectLayer } from './variants.js';
 /**
  * Automatic inspection resolves a saved-template or fresh-planner execution mode. The backend enforces that mode's
  * planner/image policy; the UI shows it. The optional preceding structure-analysis call is counted in `inspection`.
@@ -62,6 +62,27 @@ export interface ExecutionUsage {
   /** Smart edits and creative variants: the paid calls that came before generation, and the check after it, counted apart. */
   analysisCalls?: number; resolutionCalls?: number; verificationCalls?: number;
   verifierModel?: string;
+  /** A smart edit that restyles the background: the mask requests that cut out the products it keeps. */
+  segmentationCalls?: number; segmentationProvider?: string;
+}
+/** How a smart edit's image was made (editStrategy), and what the result kept of the source. */
+export interface SmartEditStrategyRecord {
+  kind: 'none' | 'local' | 'background' | 'global';
+  /** The regions the model could paint (local), as fractions of the image. */
+  regions: { targetId: string; label: string; box: { x: number; y: number; w: number; h: number } }[];
+  areaPercent: number; protectIds: string[]; reasons: string[];
+  /** Why the planned strategy was not used (a background restyle whose products could not be cut out is edited whole). */
+  fallback?: string;
+}
+export interface SmartEditPreservation {
+  /** outside-regions: every pixel outside the painted regions is the source's own. protected-products: the kept products are. none: the whole image is new. */
+  method: 'outside-regions' | 'protected-products' | 'none';
+  /** Pixels that are exactly the source's own, and their share of the image. */
+  unchangedPixels: number; unchangedPercent: number;
+  /** The largest difference from the source where nothing was to change (0 when kept exactly). */
+  maxDifferenceOutside: number;
+  /** protected-products: the kept products' own measurement (opaque pixels exact, soft edges blended). */
+  products?: { checkedPixels: number; maxDifference: number; edgePixels: number; edgeMaxError: number; outsideAlphaPixels: number; ok: boolean };
 }
 export interface ExecutionImage { file: string; mimeType: string; width: number; height: number; bytes: number; sha256: string }
 /**
@@ -128,7 +149,13 @@ export interface TemplateExecution {
     /** An optional image of the new product, sent as the edit's second input image. */
     reference?: ExecutionImage;
     /** The local review of the generated image (heuristics); decomposition waits on its warnings. */
-    review?: GenerationReview };
+    review?: GenerationReview;
+    /** A smart edit: how its image was made, the model's own output before it was mapped back, and what was kept exactly. */
+    strategy?: SmartEditStrategyRecord; generated?: ExecutionImage; preservation?: SmartEditPreservation;
+    /** Nothing was asked to change: the image to review is the original upload, exactly (no image request). */
+    original?: boolean;
+    /** Nothing was asked to change, and the user explicitly asked for a new image anyway. */
+    regenerate?: boolean };
   runId?: string;
   usage: ExecutionUsage;
   warnings: string[];
@@ -138,7 +165,9 @@ export interface TemplateExecution {
   /** A smart edit: the persisted resolution it was generated from, verified against its exact inputs before the call. */
   resolution?: { id: string; analysisId: string; summary: string; changes: number; inferred: number };
   /** A chosen creative variant: its set, and its exact layers (the subject is source pixels; the scenery is new). */
-  variant?: { setId: string; variantId: string; layers: { scenery: ExecutionImage; plate: ExecutionImage; shadow?: VariantLayer; subject: VariantLayer }; protectedLabels: string[] };
+  variant?: { setId: string; variantId: string; layers: { scenery: ExecutionImage; plate: ExecutionImage; shadow?: VariantLayer; subject: VariantLayer; subjects?: VariantSubjectLayer[]; shadows?: VariantSubjectLayer[] }; protectedLabels: string[];
+    /** A variant composed on its own aspect-ratio canvas, and the scale its products were placed at (≤ 1). */
+    aspectRatio?: string; scale?: number };
 }
 
 /** What a decomposition run records about the execution it belongs to (run.json `templateExecution`). */
