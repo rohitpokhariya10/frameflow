@@ -116,9 +116,18 @@ describe('template wizard: cards, progress and cost', () => {
     const rows = Object.fromEntries(costRows(execution({ state: 'done', runId: 'r1', usage: usage(0, 0) }), diagnostics, false).map(r => [r.label, r.value]));
     expect(rows).toMatchObject({ 'Image generation': '0 calls', 'Decomposition planner': '0 calls · ₹0', 'Layer extraction (Seedream)': '2 calls', 'Background cleanup': '1 call', 'Total recorded cost': 'estimated ₹20.00' });
   });
-  it('shows the one planner call of a new template before and after the run records it', () => {
+  it('does not mark an allocated run or failed planning attempt as a completed plan', () => {
+    const e = execution({ mode: 'CREATE_TEMPLATE', state: 'failed', runId: 'r1', usage: usage(0, 1) });
+    for (const run of [undefined, { stage: 'uploaded' }, { stage: 'planning' }, { stage: 'failed', error: { stage: 'planning' } }])
+      expect(decompositionProgress(e, run, true).every(p => !p.complete)).toBe(true);
+    expect(decompositionProgress(e, { stage: 'failed', error: { stage: 'uploading' } }, true)[0].complete).toBe(true);
+    expect(decompositionProgress(e, { stage: 'failed', planner: { prompt: 'valid plan' } }, true)[0].complete).toBe(true);
+    expect(costRows(e, undefined, true).find(r => r.label === 'Decomposition planner')?.value).toBe('1 attempt');
+  });
+  it('shows planning in progress, recorded attempts and successful calls separately', () => {
     const planner = (e: ShownExecution) => costRows(e, undefined, true).find(r => r.label === 'Decomposition planner')!.value;
-    expect(planner(execution({ mode: 'CREATE_TEMPLATE', state: 'planning', usage: usage(0, 0) }))).toBe('1 call');
+    expect(planner(execution({ mode: 'CREATE_TEMPLATE', state: 'planning', usage: usage(0, 0) }))).toBe('planning in progress');
+    expect(planner(execution({ mode: 'CREATE_TEMPLATE', state: 'failed', usage: usage(0, 0) }))).toBe('0 calls · ₹0');
     expect(planner(execution({ mode: 'CREATE_TEMPLATE', state: 'done', usage: usage(0, 1) }))).toBe('1 call');
   });
 });

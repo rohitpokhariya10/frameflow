@@ -251,6 +251,11 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
       writeFileSync(join(dir, 'prompt.txt'), result.plan.prompt);
       run.stage = 'planned'; save(dir, run, deps);
     } catch (error) {
+      if (error instanceof PlannerError && error.diagnostics) {
+        json(dir, 'openai-error.json', error.diagnostics);
+        run.timings.plannerMs = error.diagnostics.elapsedMs;
+        console.error('OpenAI planner request failed', { runId: run.id, ...error.diagnostics });
+      }
       if (error instanceof PlannerError && error.raw !== undefined) json(dir, 'openai-response.json', error.raw);
       return fail(dir, run, error instanceof PlannerError || error instanceof RunError ? error.code : 'PLANNER_FAILED', error instanceof Error ? error.message : String(error), deps);
     }

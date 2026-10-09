@@ -8,6 +8,7 @@
 import OpenAI from 'openai';
 import { SEMANTIC_INSTRUCTION, SEMANTIC_SCHEMA, semanticPlan, splitTemplateCapture, TEMPLATE_CAPTURE_INSTRUCTION, TEMPLATE_CAPTURE_SCHEMA, type SemanticAnalysis, type SemanticProtection, type TemplateCapture } from './semanticPlanner.js';
 import { DEFAULT_DECOMPOSITION_PLANNER_MODEL } from './aiModels.js';
+import { openAIFailureSummary, openAIRequestDiagnostics, type OpenAIRequestDiagnostics } from '../services/openAIRequestDiagnostics.js';
 
 /** Seedream's prompt limit as this app enforces it locally. */
 export const MAX_LAYERIZE_PROMPT = 2000;
@@ -21,7 +22,7 @@ export type PlannerContext = { templateCapture?: boolean };
 export type Planner = (image: Buffer, mime: string, context?: PlannerContext) => Promise<PlannerResult>;
 
 export class PlannerError extends Error {
-  constructor(public readonly code: string, message: string, public readonly raw?: unknown) { super(message); this.name = 'PlannerError'; }
+  constructor(public readonly code: string, message: string, public readonly raw?: unknown, public readonly diagnostics?: OpenAIRequestDiagnostics) { super(message); this.name = 'PlannerError'; }
 }
 
 /** Validates a plan and the local prompt limit. Never truncates. */
@@ -36,14 +37,15 @@ export function validatePlan(value: unknown): LayerizePlan {
   return { prompt, planned_layers: v.planned_layers, warnings: v.warnings as string[] };
 }
 
-type ResponsesClient = Pick<OpenAI, 'responses'>;
+type ResponsesClient = Pick<OpenAI, 'responses'> & Partial<Pick<OpenAI, 'baseURL'>>;
+const PLANNER_TIMEOUT_MS = 180_000;
 
 /** Responses API with image input and strict json_schema output; reasoning effort medium. */
 export function createOpenAIPlanner(options: { apiKey?: string; model?: string; client?: ResponsesClient } = {}): Planner {
   const model = options.model?.trim() || DEFAULT_DECOMPOSITION_PLANNER_MODEL;
   return async (image, mime, context) => {
     if (!options.client && !options.apiKey?.trim()) throw new PlannerError('PLANNER_NOT_CONFIGURED', 'Set OPENAI_API_KEY in server/.env.');
-    const client = options.client ?? new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: 180_000 });
+    const client = options.client ?? new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: PLANNER_TIMEOUT_MS });
     const capture = context?.templateCapture === true;
     const request = {
       model, reasoning: { effort: 'medium' as const }, store: false,
@@ -56,11 +58,13 @@ export function createOpenAIPlanner(options: { apiKey?: string; model?: string; 
     };
     const shown = { ...request, input: [{ ...request.input[0], content: [request.input[0].content[0], { ...request.input[0].content[1], image_url: `<${mime}, ${image.length} bytes>` }] }] };
     let response: Awaited<ReturnType<ResponsesClient['responses']['create']>>;
+    const started = Date.now();
     try { response = await client.responses.create(request) as typeof response; }
     catch (error) {
-      // Access or availability errors are reported as-is; no other model is tried.
-      const status = (error as { status?: number }).status;
-      throw new PlannerError('PLANNER_API_ERROR', `OpenAI ${model} request failed${status ? ` (HTTP ${status})` : ''}: ${error instanceof Error ? error.message : String(error)}`);
+      const diagnostics = openAIRequestDiagnostics(error, { baseURL: client.baseURL, elapsedMs: Date.now() - started, timeoutMs: PLANNER_TIMEOUT_MS,
+        imageBytes: image.length, requestBytes: Buffer.byteLength(JSON.stringify(request)) });
+      // The SDK's raw message may echo credentials or image data. Keep only safe transport facts; never retry.
+      throw new PlannerError('PLANNER_API_ERROR', `OpenAI ${model} request failed: ${openAIFailureSummary(diagnostics.error)}.`, undefined, diagnostics);
     }
     const r = response as unknown as { id?: string; status?: string; incomplete_details?: { reason?: string } | null; output?: { type: string; content?: { type: string; refusal?: string; text?: string }[] }[]; output_text?: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; output_tokens_details?: { reasoning_tokens?: number } } };
     const usage: PlannerUsage | undefined = r.usage && { input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens, reasoning_tokens: r.usage.output_tokens_details?.reasoning_tokens, total_tokens: r.usage.total_tokens };

@@ -101,10 +101,13 @@ export const templateSlotBadges = (template: Pick<CreativeTemplate, 'layerRoles'
 };
 
 /** User-facing progress, in order; each is complete once the run shows it. */
-export function decompositionProgress(execution: ShownExecution | undefined, run: { stage: string; refinement?: { stopReason?: unknown; background?: unknown } } | undefined, creating: boolean) {
+export function decompositionProgress(execution: ShownExecution | undefined, run: { stage: string; planner?: unknown; error?: { stage?: string }; refinement?: { stopReason?: unknown; background?: unknown } } | undefined, creating: boolean) {
   const ready = execution?.state === 'done';
+  // Creating a run only records an attempt. A validated plan or a later stage proves planning succeeded.
+  const planned = ready || !!run && (!!run.planner || ['planned', 'uploading', 'submitting', 'queued', 'in_progress', 'downloading', 'refining', 'done'].includes(run.stage)
+    || run.stage === 'failed' && !!run.error?.stage && !['uploaded', 'planning'].includes(run.error.stage));
   return [
-    { label: creating ? 'Learning template and plan' : 'Preparing saved plan', complete: !!execution?.runId },
+    { label: creating ? 'Learning template and plan' : 'Preparing saved plan', complete: planned },
     { label: 'Extracting layers', complete: ready || !!run && ['refining', 'done'].includes(run.stage) },
     { label: 'Checking missing objects', complete: ready || !!run?.refinement?.stopReason },
     { label: 'Cleaning background', complete: ready || !!run?.refinement?.background },
@@ -115,12 +118,13 @@ export function decompositionProgress(execution: ShownExecution | undefined, run
 /** A recorded amount in rupees; estimates say so. */
 export const money = (cost?: CostAmount) => !cost || cost.inr === null ? 'awaiting provider usage' : `${cost.confidence === 'Calculated' ? '' : `${cost.confidence.toLowerCase()} `}₹${cost.inr.toFixed(2)}`;
 /**
- * The calls this execution made, as recorded. Creation shows its one planner call before the run reports it; reuse
- * shows the planner calls the run actually recorded (0).
+ * Attempts and completed planning are separate: a sent request need not return a valid plan or recorded usage.
  */
 export function costRows(execution: ShownExecution | undefined, diagnostics: RunDiagnostics | undefined, creating: boolean): { label: string; value: string }[] {
   const stage = (id: string) => diagnostics?.stages.find(s => s.id === id);
-  const images = execution?.usage.imageGenerationCalls ?? 0, planner = execution?.state === 'done' || !creating ? execution?.usage.plannerCalls ?? 0 : 1;
+  const images = execution?.usage.imageGenerationCalls ?? 0, planner = stage('planner')?.calls.length ?? execution?.usage.plannerCalls ?? 0;
+  const plannerPending = creating && execution?.state === 'planning' && !planner;
+  const plannerComplete = stage('planner')?.status === 'Complete' || execution?.state === 'done';
   const extraction = [stage('seedream'), stage('residual')].flatMap(s => s?.calls ?? []).filter(call => call.kind === 'seedream').length, cleanup = stage('background')?.calls.length ?? 0;
   // A smart edit's analysis and resolution, or a creative variant's set, replace the saved template's free prompt planning.
   const smart = execution?.resolution ? [{ label: 'Image analysis', value: `${plural(execution.usage.analysisCalls ?? 0, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: plural(execution.usage.resolutionCalls ?? 0, 'call') }]
@@ -130,7 +134,7 @@ export function costRows(execution: ShownExecution | undefined, diagnostics: Run
     ...smart,
     { label: 'Image generation', value: `${plural(images, 'call')}${images ? ` · ${money(execution?.generationCost)}` : ''}` },
     ...(execution?.usage.verificationCalls ? [{ label: 'AI check of the result', value: plural(execution.usage.verificationCalls, 'call') }] : []),
-    { label: 'Decomposition planner', value: `${plural(planner, 'call')}${planner ? '' : ' · ₹0'}` },
+    { label: 'Decomposition planner', value: plannerPending ? 'planning in progress' : `${plural(planner, plannerComplete || !planner ? 'call' : 'attempt')}${planner ? '' : ' · ₹0'}` },
   ];
   if (diagnostics) {
     rows.push({ label: 'Layer extraction (Seedream)', value: plural(extraction, 'call') });

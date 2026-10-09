@@ -448,7 +448,7 @@ describe('creative templates: dynamic, learned once, reused without the planner'
     const t = await setup();
     // The planner has no answer for this image: it fails, nothing is decomposed, nothing saved.
     const plannerFailed = await t.settled((await t.start('CREATE_TEMPLATE', await t.creative('#111111'))).execution.id);
-    expect(plannerFailed).toMatchObject({ state: 'failed', error: { code: 'PLANNER_API_ERROR' } });
+    expect(plannerFailed).toMatchObject({ state: 'failed', error: { code: 'PLANNER_API_ERROR', state: 'planning' }, usage: { plannerCalls: 1 } });
     // A capture without roles for every element.
     const partial = await t.creative('#222222', babyPhone, { ...babyCapture, roles: { blue_backdrop: 'background', baby_girl: 'primary_subject' } } as unknown as typeof babyCapture);
     expect(await t.settled((await t.start('CREATE_TEMPLATE', partial)).execution.id)).toMatchObject({ state: 'failed', error: { code: 'PLANNER_INVALID_JSON' } });

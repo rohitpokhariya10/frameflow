@@ -178,7 +178,7 @@ export function createTemplateExecutions(services: TemplateServices) {
       Object.assign(x.usage, { plannerCalls, plannerCalled: plannerCalls > 0, ...(run.planner ? { plannerModel: run.planner.model } : {}) });
       x.usage.timings.decompositionMs = Date.now() - decompositionStarted;
     });
-    if (run.stage !== 'done') return failed(id, run.error?.code ?? 'DECOMPOSITION_FAILED', run.error?.message ?? 'The decomposition did not finish.', 'decomposing', started);
+    if (run.stage !== 'done') return failed(id, run.error?.code ?? 'DECOMPOSITION_FAILED', run.error?.message ?? 'The decomposition did not finish.', run.error?.stage === 'planning' ? 'planning' : 'decomposing', started);
     // A layer the plan asked for that the editor does not get is a quality issue the user sees, never a silent success.
     const lostLayers = run.warnings.filter(w => w.startsWith('PLANNED_LAYER_'));
     if (execution.variant) {

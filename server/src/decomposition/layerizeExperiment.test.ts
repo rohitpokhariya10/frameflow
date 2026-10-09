@@ -4,6 +4,7 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import sharp from 'sharp';
+import OpenAI from 'openai';
 import { describe, expect, it, vi } from 'vitest';
 import type { FalTransport } from './providers/falClient.js';
 import { ProviderError } from './providers/adapters.js';
@@ -71,6 +72,27 @@ describe('OpenAI → Seedream decomposition runs', () => {
     }
     expect(codes).toEqual(['PLANNER_REFUSED', 'PLANNER_INCOMPLETE', 'PLANNER_INVALID_JSON', 'PLANNER_PROMPT_TOO_LONG']);
     await expect(createOpenAIPlanner({})(Buffer.from(''), 'image/png')).rejects.toBeInstanceOf(PlannerError);
+  });
+
+  it('persists a sanitized planner failure once, keeps the source image, and never reaches fal', async () => {
+    const create = vi.fn(async () => { throw new OpenAI.APIConnectionError({ cause: Object.assign(new Error('private credential and image body'), { code: 'ECONNRESET' }) }); });
+    const planner = createOpenAIPlanner({ client: { baseURL: 'https://user:password@api.openai.com/v1?secret=private', responses: { create } } as never });
+    const image = await png(800, 600), { dir } = await createRun(mkdtempSync(join(tmpdir(), 'layerize-')), image, undefined, { refinement: true });
+    const transport = fakeTransport({}, {}), log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const run = await executeRun(dir, { planner, transport: () => transport });
+      expect(run).toMatchObject({ stage: 'failed', error: { code: 'PLANNER_API_ERROR', stage: 'planning', message: expect.stringContaining('ECONNRESET') }, calls: { planner: 1, seedreamInitial: 0 } });
+      expect(run.timings.plannerMs).toBeGreaterThanOrEqual(0);
+      const recorded = readFileSync(join(dir, 'openai-error.json'), 'utf8');
+      expect(JSON.parse(recorded)).toMatchObject({ endpointHost: 'api.openai.com', timeoutMs: 180000, maxRetries: 0, imageBytes: image.length, error: { type: 'APIConnectionError', cause: { code: 'ECONNRESET' } } });
+      expect(recorded + JSON.stringify(log.mock.calls) + JSON.stringify(run.error)).not.toMatch(/private|password|base64|credential/i);
+      expect(readFileSync(join(dir, run.input.file))).toEqual(image);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(transport.upload).not.toHaveBeenCalled();
+      expect(transport.submit).not.toHaveBeenCalled();
+      expect(existsSync(join(dir, 'plan.json'))).toBe(false);
+      expect(existsSync(join(dir, 'openai-response.json'))).toBe(false);
+    } finally { log.mockRestore(); }
   });
 
   it('plans with GPT-5.6 Sol unless OPENAI_DECOMPOSITION_MODEL names another model; only the model changes', async () => {
