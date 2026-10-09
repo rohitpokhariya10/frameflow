@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, ImagePlus, Layers, LoaderCircle, Lock, Plus, ScanSearch, Sparkles, Wand2 } from 'lucide-react';
-import { baseTemplatePrompt, BRAND_LIMIT, compileTemplateEdit, describeTemplateSlots, emptyDraft, FIELD_LIMIT, SEMANTIC_NOTE, ZONE_PHRASES, type CompiledTemplateEdit, type ConflictOption, type CreativeTemplate, type EditOperation, type ExecutionMode, type ExtractionPlan, type PlanConflict, type PlanEntry, type RunDiagnostics, type SceneDraft, type TemplateSlot, type TemplateVersion } from '@frameflow/shared';
+import { baseTemplatePrompt, BRAND_LIMIT, compileTemplateEdit, describeTemplateSlots, draftFromTemplateFields, emptyDraft, FIELD_LIMIT, PLAN_RULES, SEMANTIC_NOTE, ZONE_PHRASES, type FieldsDraft, type CompiledTemplateEdit, type ConflictOption, type CreativeTemplate, type EditOperation, type ExecutionMode, type ExtractionPlan, type ObjectEdit, type PlanConflict, type PlanEntry, type RunDiagnostics, type SceneDraft, type TemplateSlot, type TemplateVersion } from '@frameflow/shared';
 import { LayerPreview } from '../decomposition/LayerPreview';
 import { TemplateDetails } from './TemplateDetails';
 import { SlotPrompt } from './SlotPrompt';
 import { SmartEditPanel, smartFieldId } from './SmartEditPanel';
 import { SmartPromptPanel } from './SmartPromptPanel';
 import { CreativeVariants } from './CreativeVariants';
-import { answerConflict, correctedScene, hasDraftChanges, resolutionKey, resolutionStatus, resolvedPreview, semanticLabel, setEdit, type Resolution, type SceneAnalysis, type SmartFeatures } from './smartEdit';
+import { answerConflict, correctedScene, hasDraftChanges, resolutionKey, resolutionStatus, resolvedPreview, semanticLabel, setEdit, strategyResult, type Resolution, type SceneAnalysis, type SmartFeatures } from './smartEdit';
 import { experimentApi, type ExperimentRun } from '../decomposition/layerizeExperiment';
 import { costRows, decompositionProgress, draftStep, extractionEstimate, extractionRecovery, fieldGroups, hasContentChanges, inGenerationPhase, isResting, mainProductOptions, money, needsPlanDecision, needsReviewAcknowledgement, PLAN_CHOICES, plural, readWizardDraft, reopenStep, templateSlotBadges, VARIANT_PLAN_CHOICES, wizardPrimary, WIZARD_STEPS, writeWizardDraft, type MainProductOptions, type ShownExecution, type WizardStep } from './templateWizard';
 import './templateWizard.css';
@@ -47,18 +47,20 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const [missingUpload, setMissingUpload] = useState(draft.uploadName ?? '');
   const [fitWarning, setFitWarning] = useState<string[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [run, setRun] = useState<ExperimentRun>(), [diagnostics, setDiagnostics] = useState<RunDiagnostics>();
-  const pending = useRef(false), submission = useRef<string | undefined>(undefined), warningIntent = useRef<'generate' | 'decompose' | 'fresh' | 'smart'>('decompose'), mismatchAccepted = useRef(false);
+  const pending = useRef(false), submission = useRef<string | undefined>(undefined), warningIntent = useRef<'generate' | 'decompose' | 'fresh' | 'smart' | 'fields'>('decompose'), mismatchAccepted = useRef(false);
   // Smart edits and "Generate creative template": the server says what is available; every paid call is an explicit click.
   const [features, setFeatures] = useState<SmartFeatures>(), [analysis, setAnalysisState] = useState<SceneAnalysis>(), analysisRef = useRef<SceneAnalysis | undefined>(undefined);
   const [smartDraft, setSmartDraft] = useState<SceneDraft>(() => draft.smart?.draft ?? emptyDraft()), draftFor = useRef<string | undefined>(draft.smart?.analysisId);
   const [resolution, setResolution] = useState<Resolution & { key: string }>(), resolving = useRef(''), lookupKey = useRef('');
   // The user's "rules only" choice holds for this analysis until they resolve with AI again; template fields they typed are never swapped away.
-  const [rulesOnly, setRulesOnly] = useState(!!draft.smart?.rulesOnly), classicTouched = useRef(false);
-  const [useFields, setUseFields] = useState(false), [studio, setStudio] = useState(!!draft.studio), [variantSetId, setVariantSetId] = useState<string | undefined>(draft.variantSetId);
+  const [rulesOnly, setRulesOnly] = useState(!!draft.smart?.rulesOnly), [restoreNote, setRestoreNote] = useState('');
+  // Normal Generate from the template fields: the user's answers to the engine's questions, and (without an analysis) their text decisions.
+  const [fieldAnswers, setFieldAnswers] = useState<SceneDraft['edits']>({}), [textDecisions, setTextDecisions] = useState<Record<string, 'keep' | 'remove'>>({});
+  const [useFields, setUseFields] = useState(true), [studio, setStudio] = useState(!!draft.studio), [variantSetId, setVariantSetId] = useState<string | undefined>(draft.variantSetId);
   /** A new analysis id starts a new draft (a draft names the items of one analysis); the same id keeps it, and its resolution. */
   const setAnalysis = useCallback((next?: SceneAnalysis) => {
     analysisRef.current = next; setAnalysisState(next);
-    if (next && next.id !== draftFor.current) { draftFor.current = next.id; setSmartDraft(emptyDraft()); setResolution(undefined); setRulesOnly(false); }
+    if (next && next.id !== draftFor.current) { draftFor.current = next.id; setSmartDraft(emptyDraft()); setResolution(undefined); setRulesOnly(false); setFieldAnswers({}); }
   }, []);
   // A session picked in Saved Runs replaces the one shown only once it has loaded: until then nothing acts on the old one.
   const [loadedRequest, setLoadedRequest] = useState<{ id: string }>(), switching = !!requestedExecution && loadedRequest !== requestedExecution;
@@ -73,11 +75,28 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const setPrevious = useCallback((next?: ShownExecution) => { previousRef.current = next; setPreviousState(next); }, []);
   const setReferenceFile = useCallback((next?: File) => { setFile(next); setFileUrl(next ? URL.createObjectURL(next) : ''); }, []);
   const refreshLibrary = async () => { const data = await templateRequest<{ templates: CreativeTemplate[] }>('/templates'); setTemplates(data.templates); setLibraryLoaded(true); };
-  const loadExecution = useCallback((e: ShownExecution, preferred?: WizardStep) => {
+  /**
+   * A reopened smart edit gets its own changes back from its resolution on the server (a read), whatever this browser
+   * remembers: Regenerate then sends those changes, never an empty draft. A product photo cannot come back from the
+   * server as a file: the user attaches it again, and is told so.
+   */
+  const restoreSmartDraft = useCallback((r: NonNullable<ShownExecution['resolution']>) => {
+    void templateRequest<Resolution>(`/scene-analyses/${r.analysisId}/resolutions/${r.id}`).then(res => {
+      if (!res.draft) return;
+      const { referenceFor, ...rest } = res.draft;
+      draftFor.current = r.analysisId; setSmartDraft(rest); setRulesOnly(!res.resolver.called); setUseFields(false);
+      setRestoreNote(referenceFor ? 'This edit used a product photo. Attach it again (on the replaced item) to regenerate the same change.' : '');
+      // A resolution made under the current rules shows its plan at once; an older one is resolved again (no call).
+      setResolution(!referenceFor && res.rules === PLAN_RULES ? { ...res, key: resolutionKey(r.analysisId, rest) } : undefined);
+    }).catch(() => undefined);
+  }, []);
+  /** restore: the smart edit's own changes come back from the server (a session reload keeps the draft it saved instead). */
+  const loadExecution = useCallback((e: ShownExecution, preferred?: WizardStep, restore = true) => {
     setExecution(e); setPrevious(undefined); setSelected(e.template?.id ?? ''); setCreating(e.mode === 'CREATE_TEMPLATE'); setValues(e.slotValues ?? {}); setMainOptions(e.editOptions?.mainProduct ?? {});
     setReferenceExecution(e.id); setMissingUpload(''); setReferenceFile(undefined); setFitWarning([]); setError('');
     setStep(Math.min(preferred ?? 3, reopenStep(e)) as WizardStep);
-  }, [setReferenceFile, setPrevious]);
+    if (e.resolution && restore) restoreSmartDraft(e.resolution);
+  }, [setReferenceFile, setPrevious, restoreSmartDraft]);
   useEffect(() => {
     let live = true;
     const id = requestedExecution?.id ?? draft.executionId;
@@ -87,15 +106,14 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       // A restored draft whose template was removed starts again from the library.
       if (!id && draft.selected && !data.templates.some(t => t.id === draft.selected)) { setSelected(''); setValues({}); setStep(0); }
     }).catch((e: Error) => { if (live) setError(e.message); });
-    if (id) void templateRequest<ShownExecution>(`/template-executions/${id}`).then(e => { if (live) { loadExecution(e, requestedExecution ? undefined : draft.step); setLoadedRequest(requestedExecution); } })
+    if (id) void templateRequest<ShownExecution>(`/template-executions/${id}`).then(e => { if (live) { loadExecution(e, requestedExecution ? undefined : draft.step, !!requestedExecution || draft.smart?.analysisId !== e.resolution?.analysisId); setLoadedRequest(requestedExecution); } })
       .catch((e: Error) => { if (live) { setError(e.message); setLoadedRequest(requestedExecution); } });
     return () => { live = false; };
-  }, [requestedExecution, draft.executionId, draft.selected, draft.step, loadExecution]);
+  }, [requestedExecution, draft.executionId, draft.selected, draft.step, draft.smart?.analysisId, loadExecution]);
   useEffect(() => {
     writeWizardDraft(session(), { step, selected, creating, values, options: mainOptions, executionId: execution?.id, uploadName: file?.name ?? missingUpload, ...(analysis ? { smart: { analysisId: analysis.id, draft: smartDraft, ...(rulesOnly ? { rulesOnly } : {}) } } : {}),
       ...(variantSetId ? { variantSetId } : {}), ...(studio ? { studio } : {}) });
   }, [step, selected, creating, values, mainOptions, execution?.id, file, missingUpload, analysis, smartDraft, rulesOnly, variantSetId, studio]);
-  useEffect(() => { classicTouched.current = hasContentChanges(values) || !!mainOptions.brand?.trim(); }, [values, mainOptions]);
   useEffect(() => () => { if (fileUrl) URL.revokeObjectURL(fileUrl); }, [fileUrl]);
   useEffect(() => () => { if (productReferenceUrl) URL.revokeObjectURL(productReferenceUrl); }, [productReferenceUrl]);
   useEffect(() => {
@@ -151,8 +169,8 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   };
   const clearResult = () => { setExecution(undefined); setPrevious(undefined); setFitWarning([]); setError(''); submission.current = undefined; };
   const chooseProductReference = (next?: File) => { setProductReference(next); setProductReferenceUrl(next ? URL.createObjectURL(next) : ''); };
-  const resetSmart = () => { setAnalysis(undefined); lookupKey.current = ''; setResolution(undefined); setStudio(false); setVariantSetId(undefined); setUseFields(false); };
-  const choose = (id: string) => { clearResult(); setSelected(id); setCreating(!id); setValues({}); setMainOptions({}); chooseProductReference(undefined); setReferenceFile(undefined); setMissingUpload(''); setReferenceExecution(''); mismatchAccepted.current = false; resetSmart(); };
+  const resetSmart = () => { setAnalysis(undefined); lookupKey.current = ''; setResolution(undefined); setStudio(false); setVariantSetId(undefined); setUseFields(true); };
+  const choose = (id: string) => { clearResult(); setSelected(id); setCreating(!id); setValues({}); setMainOptions({}); setTextDecisions({}); chooseProductReference(undefined); setReferenceFile(undefined); setMissingUpload(''); setReferenceExecution(''); mismatchAccepted.current = false; resetSmart(); };
   const reference = file ? fileUrl : referenceExecution ? imageUrl(referenceExecution) : version ? imageUrl(version.source.executionId) : '';
   const hasReference = !!file || !missingUpload && !!reference;
   const groups = version ? fieldGroups(version) : undefined, slots = groups ? Object.values(groups).flat() : [];
@@ -164,8 +182,12 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const replacingMain = mainFilled && (options.mode ?? 'replace') === 'replace', sendReference = replacingMain && !!productReference;
   // The one compiler the server uses: the preview is the prompt that is sent.
   let compiled: CompiledTemplateEdit | undefined, previewError = '';
-  if (version) try { compiled = compileTemplateEdit(version, fields, { ...(Object.keys(options).length ? { mainProduct: options } : {}), productReference: sendReference }); } catch (e) { previewError = (e as Error).message; }
+  const editOptions = { ...(Object.keys(options).length ? { mainProduct: options } : {}), ...(Object.keys(textDecisions).length ? { textDecisions } : {}) };
+  if (version) try { compiled = compileTemplateEdit(version, fields, { ...editOptions, productReference: sendReference }); } catch (e) { previewError = (e as Error).message; }
   const preview = compiled?.text ?? '';
+  // Every text decision a product change needs (answered or not), so an answer can still be changed.
+  const allDecisions = () => { try { return compileTemplateEdit(version!, fields, { ...(Object.keys(options).length ? { mainProduct: options } : {}), productReference: sendReference }).questions; } catch { return []; } };
+  const decisionsNeeded: { slotId: string; label: string }[] = version && Object.keys(textDecisions).length ? allDecisions() : compiled?.questions ?? [];
   /** Leads from a prompt part or a listed change to its field (opening Advanced elements when it is there). */
   const pickField = (slotId: string) => {
     if (groups?.advanced.some(s => s.id === slotId)) setAdvancedOpen(true);
@@ -203,17 +225,28 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       // An analysis already on screen for exactly this image and version (one still running, say) is kept; any other is replaced.
       const current = analysisRef.current, same = !!current && current.binding.imageSha256 === sha && current.binding.templateId === version.templateId && current.binding.templateVersion === version.version;
       if (lookupKey.current !== key || same) return;
+      // The template fields stay on screen (the normal Generate plans them with this analysis); its item cards are one click away.
       setAnalysis(found.analysis ?? undefined);
-      // Template fields the user already started filling stay on screen; the saved analysis is one click away.
-      if (found.analysis && classicTouched.current) setUseFields(true);
     })().catch(() => { /* Optional: the user can still analyze explicitly. */ });
   }, [step, creating, version, imageIdentity, smartAvailable, smartKeyBase, upload, setAnalysis]);
   const scene = correctedScene(analysis?.state === 'ready' && analysis.binding.templateId === selected && analysis.binding.templateVersion === version?.version ? analysis : undefined, smartDraft);
   const smartActive = !creating && !useFields && !!scene && !!version && !!analysis;
-  const smartReference = smartDraft.referenceFor && productReference ? { name: productReference.name, size: productReference.size, lastModified: productReference.lastModified } : undefined;
-  const currentKey = resolutionKey(analysis?.id, smartDraft, smartReference), rStatus = resolutionStatus(resolution, currentKey);
+  // The normal Generate from the template fields runs the same engine: the fields become a draft of the image's own
+  // items (by the analysis' mapping), unless a text field is filled (the engine writes no text; the template's own
+  // prompt applies it) or no analysis can be had (then the template's prompt, with its safety questions).
+  const templateSlots = version ? describeTemplateSlots(version) : [];
+  const textFilled = templateSlots.some(s => s.kind === 'text' && !!fields[s.id]);
+  const fieldsSmart = !creating && !!version && smartAvailable && !smartActive && !textFilled && analysis?.state !== 'failed';
+  const fieldsScene = fieldsSmart && analysis?.state === 'ready' && analysis.binding.templateId === selected && analysis.binding.templateVersion === version?.version ? correctedScene(analysis, emptyDraft()) : undefined;
+  let fieldsDraft: FieldsDraft | undefined;
+  try { fieldsDraft = fieldsScene ? draftFromTemplateFields(fieldsScene, analysis!.mapping, templateSlots, { values: fields, ...(Object.keys(options).length ? { mainProduct: options } : {}), productPhoto: sendReference, answers: fieldAnswers }) : undefined; } catch { fieldsDraft = undefined; }
+  /** The engine's plan is on screen: for the item cards, or for the template fields once the image is analyzed. */
+  const planScene = smartActive ? scene : fieldsScene, activeDraft = smartActive ? smartDraft : fieldsDraft?.draft ?? emptyDraft();
+  const fileKey = (f?: File) => f ? { name: f.name, size: f.size, lastModified: f.lastModified } : undefined;
+  const smartReference = activeDraft.referenceFor ? fileKey(productReference) : undefined;
+  const currentKey = resolutionKey(analysis?.id, activeDraft, smartReference), rStatus = resolutionStatus(resolution, currentKey);
   let smartPreview: ReturnType<typeof resolvedPreview>, smartPreviewError = '';
-  try { smartPreview = smartActive && rStatus === 'ready' ? resolvedPreview(scene, resolution, !!smartReference) : undefined; } catch (e) { smartPreviewError = (e as Error).message; }
+  try { smartPreview = planScene && rStatus === 'ready' ? resolvedPreview(planScene, resolution, !!smartReference) : undefined; } catch (e) { smartPreviewError = (e as Error).message; }
   const onSmartDraft = (next: SceneDraft) => { setSmartDraft(next); clearResult(); };
   const pickSmart = (id: string) => window.requestAnimationFrame(() => { const input = document.getElementById(smartFieldId(id)); input?.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' }); input?.focus({ preventScroll: true }); });
   const analyze = (fresh = false) => void act(async () => {
@@ -223,49 +256,112 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
     lookupKey.current = smartKeyBase;
     setAnalysis(await templateRequest<SceneAnalysis>('/scene-analyses', { method: 'POST', body })); setUseFields(false);
   });
-  /** One resolution of the current draft. A response for an older draft is kept with its own key, so it shows as stale. */
-  const resolveNow = async (rulesOnly = false) => {
-    const key = currentKey; resolving.current = key;
-    const body = new FormData(); body.append('draft', JSON.stringify(smartDraft));
+  /** One resolution of a draft (the one on screen by default). A response for an older draft is kept with its own key, so it shows as stale. */
+  const resolveNow = async (rulesOnly = false, target: { analysisId: string; draft: SceneDraft } = { analysisId: analysis!.id, draft: activeDraft }) => {
+    const key = resolutionKey(target.analysisId, target.draft, target.draft.referenceFor ? fileKey(productReference) : undefined); resolving.current = key;
+    const body = new FormData(); body.append('draft', JSON.stringify(target.draft));
     if (rulesOnly) body.append('rulesOnly', 'true');
-    if (smartDraft.referenceFor && productReference) body.append('productReference', productReference);
-    const r = await templateRequest<Resolution>(`/scene-analyses/${analysis!.id}/resolutions`, { method: 'POST', body });
+    if (target.draft.referenceFor && productReference) body.append('productReference', productReference);
+    const r = await templateRequest<Resolution>(`/scene-analyses/${target.analysisId}/resolutions`, { method: 'POST', body });
     if (resolving.current !== key) return undefined; // a newer resolution was asked for meanwhile
     const withKey = { ...r, key }; setResolution(withKey); return withKey;
   };
   const resolve = (onlyRules?: boolean) => void act(async () => { setRulesOnly(!!onlyRules); await resolveNow(!!onlyRules); });
-  /** Generate from the resolved plan: resolve first when needed; stop for questions; the server checks the binding again. */
-  const generateSmart = (allowMismatch = mismatchAccepted.current) => {
-    warningIntent.current = 'smart';
+  /** Generate one resolved draft: resolve first when needed; stop for questions; the server checks the binding again. */
+  const submitResolved = async (analysisId: string, target: SceneDraft, allowMismatch: boolean) => {
+    const key = resolutionKey(analysisId, target, target.referenceFor ? fileKey(productReference) : undefined);
+    const r = resolution?.key === key && resolutionStatus(resolution, key) === 'ready' ? resolution : await resolveNow(rulesOnly, { analysisId, draft: target });
+    if (!r) return;
+    const status = resolutionStatus(r, key);
+    if (status !== 'ready') { setStep(1); setError(status === 'needs-input' ? 'Answer the questions about your changes first (Resolved plan, on the right).' : r.error?.message ?? 'The changes could not be resolved.'); return; }
+    const replacing = execution?.state === 'generated' ? execution : undefined;
+    if (replacing) submission.current = undefined;
+    const body = new FormData(); submission.current ??= crypto.randomUUID();
+    body.append('mode', 'REUSE_TEMPLATE_WITH_EDIT'); body.append('idempotencyKey', submission.current); body.append('image', await upload());
+    body.append('templateId', selected); body.append('templateVersion', String(versionNumber)); body.append('reviewBeforeDecompose', 'true');
+    body.append('analysisId', analysisId); body.append('resolutionId', r.id); body.append('draft', JSON.stringify(target));
+    if (target.referenceFor && productReference) body.append('productReference', productReference);
+    if (allowMismatch) body.append('allowMismatch', 'true');
+    const next = await templateRequest<ShownExecution>('/template-executions', { method: 'POST', body });
+    if (allowMismatch) mismatchAccepted.current = true;
+    setPrevious(replacing && next.id !== replacing.id ? replacing : undefined);
+    setExecution(next); setReferenceExecution(next.id); setFitWarning([]); submission.current = undefined; setStep(2);
+  };
+  const generateSmart = (allowMismatch = mismatchAccepted.current) => { warningIntent.current = 'smart'; void act(() => submitResolved(analysis!.id, smartDraft, allowMismatch)); };
+  /**
+   * The image's analysis for this image and template version: the one on screen, a saved one (a read by the image's
+   * sha256, no call), or one new analysis call made now (an explicit Generate or Plan click), waited for. The template
+   * fields stay on screen.
+   */
+  const ensureAnalysis = async (): Promise<SceneAnalysis> => {
+    if (!version) throw new Error('Choose a template first.');
+    const digest = await crypto.subtle.digest('SHA-256', await (await upload()).arrayBuffer()), sha = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const fits = (x?: SceneAnalysis | null): x is SceneAnalysis => !!x && x.state !== 'failed' && x.binding.imageSha256 === sha && x.binding.templateId === version.templateId && x.binding.templateVersion === version.version;
+    lookupKey.current = smartKeyBase; setUseFields(true);
+    let a: SceneAnalysis | undefined = fits(analysisRef.current) ? analysisRef.current : undefined;
+    if (!a) { const found = (await templateRequest<{ analysis: SceneAnalysis | null }>(`/scene-analyses/lookup?imageSha256=${sha}&templateId=${encodeURIComponent(version.templateId)}&templateVersion=${version.version}`)).analysis; if (fits(found)) a = found; }
+    if (!a) {
+      const body = new FormData(); body.append('image', await upload()); body.append('templateId', version.templateId); body.append('templateVersion', String(version.version)); body.append('idempotencyKey', crypto.randomUUID());
+      a = await templateRequest<SceneAnalysis>('/scene-analyses', { method: 'POST', body });
+    }
+    setAnalysis(a);
+    for (let waited = 0; a.state === 'analyzing' && waited < 180_000; waited += 900) { await new Promise(done => window.setTimeout(done, 900)); a = await templateRequest<SceneAnalysis>(`/scene-analyses/${a.id}`); setAnalysis(a); }
+    return a;
+  };
+  /** The template fields as a draft of an analysis' own items (the same function the screen's plan uses). */
+  const fieldsDraftOf = (a: SceneAnalysis) => draftFromTemplateFields(correctedScene(a, emptyDraft())!, a.mapping, templateSlots, { values: fields, ...(Object.keys(options).length ? { mainProduct: options } : {}), productPhoto: sendReference, answers: fieldAnswers });
+  /**
+   * The normal Generate with template fields: no change → the original is reviewed (no call at all); otherwise the image
+   * is analyzed (once, reused after), the fields become a plan of its own items, questions stop it, and the plan is generated.
+   */
+  const generateFromFields = (allowMismatch = mismatchAccepted.current) => {
+    warningIntent.current = 'fields';
+    if (!hasChanges) { start('generate', allowMismatch); return; }
     void act(async () => {
-      const r = rStatus === 'ready' ? resolution : await resolveNow(rulesOnly);
-      if (!r) return;
-      const status = resolutionStatus(r, currentKey);
-      if (status !== 'ready') { setStep(1); setError(status === 'needs-input' ? 'Answer the questions about your changes first (Resolved plan, on the right).' : r.error?.message ?? 'The changes could not be resolved.'); return; }
-      const replacing = execution?.state === 'generated' ? execution : undefined;
-      if (replacing) submission.current = undefined;
-      const body = new FormData(); submission.current ??= crypto.randomUUID();
-      body.append('mode', 'REUSE_TEMPLATE_WITH_EDIT'); body.append('idempotencyKey', submission.current); body.append('image', await upload());
-      body.append('templateId', selected); body.append('templateVersion', String(versionNumber)); body.append('reviewBeforeDecompose', 'true');
-      body.append('analysisId', analysis!.id); body.append('resolutionId', r.id); body.append('draft', JSON.stringify(smartDraft));
-      if (smartDraft.referenceFor && productReference) body.append('productReference', productReference);
-      if (allowMismatch) body.append('allowMismatch', 'true');
-      const next = await templateRequest<ShownExecution>('/template-executions', { method: 'POST', body });
-      if (allowMismatch) mismatchAccepted.current = true;
-      setPrevious(replacing && next.id !== replacing.id ? replacing : undefined);
-      setExecution(next); setReferenceExecution(next.id); setFitWarning([]); submission.current = undefined; setStep(2);
+      const a = await ensureAnalysis();
+      if (a.state !== 'ready' || !a.scene) { setStep(1); setError(`${a.error?.message ?? 'The image analysis failed.'} Without it, Generate uses the template's own prompt: check the decisions on the right, then generate again.`); return; }
+      const built = fieldsDraftOf(a);
+      if (built.problems.length) { setStep(1); setError(built.problems.join(' ')); return; }
+      await submitResolved(a.id, built.draft, allowMismatch);
     });
   };
-  const answer = (_conflict: PlanConflict, option: ConflictOption) => { const { draft: next, focus } = answerConflict(smartDraft, option); onSmartDraft(next); if (focus) pickSmart(focus); };
+  /** Plan the template fields' changes now (analysis if needed, then rules and at most one resolver call), without generating. */
+  const planFields = (onlyRules?: boolean) => void act(async () => {
+    if (onlyRules !== undefined) setRulesOnly(onlyRules);
+    const a = await ensureAnalysis();
+    if (a.state !== 'ready' || !a.scene) { setError(a.error?.message ?? 'The image analysis failed.'); return; }
+    const built = fieldsDraftOf(a);
+    if (built.problems.length) { setError(built.problems.join(' ')); return; }
+    await resolveNow(onlyRules ?? rulesOnly, { analysisId: a.id, draft: built.draft });
+  });
+  /** An answer to the engine's question: an edit of the item cards' draft, or (for the fields) an answer kept beside them. */
+  const answer = (_conflict: PlanConflict, option: ConflictOption) => {
+    if (smartActive) { const { draft: next, focus } = answerConflict(smartDraft, option); onSmartDraft(next); if (focus) pickSmart(focus); return; }
+    const next = { ...fieldAnswers };
+    for (const effect of option.effects) if (effect.kind === 'edit') next[effect.targetId] = effect.edit;
+    setFieldAnswers(next); clearResult();
+    const focus = option.effects.find(e => e.kind === 'focus');
+    if (focus?.kind === 'focus') pickPlanned(focus.targetId);
+  };
   /** An inferred change the user does not want: its item is kept explicitly (a kept mark or text is confirmed, not asked again). */
-  const undoInferred = (entry: PlanEntry) => onSmartDraft(setEdit(smartDraft, entry.targetId, { action: 'keep', ...(entry.targetType !== 'object' ? { confirmed: true } : {}) }));
+  const undoInferred = (entry: PlanEntry) => {
+    const keep: ObjectEdit = { action: 'keep', ...(entry.targetType !== 'object' ? { confirmed: true } : {}) };
+    if (smartActive) onSmartDraft(setEdit(smartDraft, entry.targetId, keep)); else { setFieldAnswers(a => ({ ...a, [entry.targetId]: keep })); clearResult(); }
+  };
+  /** A planned item leads to its control: its card, or the template field it came from (or the cards, when no field has it). */
+  const pickPlanned = (id: string) => {
+    if (smartActive) { pickSmart(id); return; }
+    const slotId = fieldsDraft?.fieldOf[id] ?? analysis?.mapping?.slots[id];
+    if (slotId) pickField(slotId); else { setUseFields(false); pickSmart(id); }
+  };
   const smartProductReference = (next: File | undefined, targetId?: string) => {
     chooseProductReference(next);
     if (next && targetId) onSmartDraft({ ...smartDraft, referenceFor: targetId });
     else { const { referenceFor: _drop, ...rest } = smartDraft; void _drop; onSmartDraft(rest); }
   };
   const openStudio = () => { setStudio(true); if (!analysis || analysis.state === 'failed') analyze(); };
-  const start = (intent: 'generate' | 'decompose' | 'fresh', allowMismatch = mismatchAccepted.current) => {
+  /** regenerate: nothing changes, and the user explicitly asks for a new image anyway (one paid request). */
+  const start = (intent: 'generate' | 'decompose' | 'fresh', allowMismatch = mismatchAccepted.current, regenerate = false) => {
     warningIntent.current = intent;
     const mode: ExecutionMode = creating || intent === 'fresh' ? 'CREATE_TEMPLATE' : intent === 'generate' ? 'REUSE_TEMPLATE_WITH_EDIT' : 'REUSE_TEMPLATE_ORIGINAL';
     const replacing = intent === 'generate' && execution?.state === 'generated' ? execution : undefined;
@@ -276,7 +372,8 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       if (mode !== 'CREATE_TEMPLATE') { body.append('templateId', selected); body.append('templateVersion', String(versionNumber)); }
       if (mode === 'REUSE_TEMPLATE_WITH_EDIT') {
         body.append('values', JSON.stringify(fields)); body.append('reviewBeforeDecompose', 'true');
-        if (Object.keys(options).length) body.append('options', JSON.stringify({ mainProduct: options }));
+        if (Object.keys(editOptions).length) body.append('options', JSON.stringify(editOptions));
+        if (regenerate) body.append('regenerateUnchanged', 'true');
         if (sendReference) body.append('productReference', productReference!);
       }
       if (intent === 'fresh') body.append('planFresh', 'true');
@@ -307,6 +404,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const ready = execution?.state === 'done';
   // The image the user reviews: this execution's, or the one a running regeneration may replace.
   const candidate = execution?.edit?.image ? execution : previous, regenerating = !!previous && active;
+  const noChanges = smartActive ? !hasDraftChanges(smartDraft) : !hasChanges;
   const primary = wizardPrimary({ step, creating, templateReady: !!version, hasReference, hasChanges: smartActive ? hasDraftChanges(smartDraft) : hasChanges, promptError: smartActive ? !!smartPreviewError : !!previewError, busy: busy || switching, execution, reviewAcknowledged: acknowledged, planChosen: !!planChoice });
   // The image waiting for approval (a running regeneration is not reviewable yet), with what its local review found.
   const reviewing = execution?.state === 'generated' && execution.edit?.image ? execution : undefined, review = reviewing?.edit?.review;
@@ -332,7 +430,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
         {step === 0 && <button className="ws-btn ws-btn-primary" disabled={locked} onClick={() => { choose(''); setStep(1); }}><Plus size={16} /> Create New Template</button>}
       </header>
       {error && <p role="alert" className="tw-alert">{error}</p>}
-      {fitWarning.length > 0 && <div role="alert" className="tw-alert"><strong>Selected template may not fit this image.</strong>{fitWarning.map(w => <p key={w}>{readable(w)}</p>)}<p>Your template has not changed. No planner or structure analysis was started.</p><div className="tw-actions"><button className="ws-btn" onClick={() => warningIntent.current === 'smart' ? generateSmart(true) : start(warningIntent.current as 'generate' | 'decompose' | 'fresh', true)} disabled={locked}>Continue with selected template</button><button className="ws-btn" onClick={() => { setFitWarning([]); setStep(0); }}>Choose another template</button><button className="ws-btn" onClick={() => { clearResult(); setCreating(true); setStep(1); }}>Create New Template</button></div></div>}
+      {fitWarning.length > 0 && <div role="alert" className="tw-alert"><strong>Selected template may not fit this image.</strong>{fitWarning.map(w => <p key={w}>{readable(w)}</p>)}<p>Your template has not changed. No planner or structure analysis was started.</p><div className="tw-actions"><button className="ws-btn" onClick={() => warningIntent.current === 'smart' ? generateSmart(true) : warningIntent.current === 'fields' ? generateFromFields(true) : start(warningIntent.current as 'generate' | 'decompose' | 'fresh', true)} disabled={locked}>Continue with selected template</button><button className="ws-btn" onClick={() => { setFitWarning([]); setStep(0); }}>Choose another template</button><button className="ws-btn" onClick={() => { clearResult(); setCreating(true); setStep(1); }}>Create New Template</button></div></div>}
 
       {step === 0 && libraryNote && <p role="status" className="tw-saved">{libraryNote}</p>}
       {step === 0 && detailsOf && <TemplateDetails id={detailsOf} request={templateRequest} onBack={() => setDetailsOf(undefined)} onChanged={() => void refreshLibrary().catch((e: Error) => setError(e.message))}
@@ -385,7 +483,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
                 {productReference && <span className="tw-reference-chip">{productReferenceUrl && <img src={productReferenceUrl} alt="" />}{productReference.name}<button type="button" className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => { chooseProductReference(undefined); clearResult(); }}>Remove</button></span>}
                 <small>Sent as a second image so the new product matches it. Without one, nothing about the product is invented beyond your words.</small></div>
               {supporting.length > 0 && <label className="tw-check"><input type="checkbox" checked={!!mainOptions.keepSupporting} disabled={locked || !mainFilled} onChange={e => { setMainOptions(o => ({ ...o, keepSupporting: e.target.checked })); clearResult(); }} />
-                Keep the original supporting products ({supporting.map(s => s.label.replace('Supporting product · ', '')).join(', ')})<small>Otherwise they are removed with the original product, unless you describe their replacement under Advanced elements.</small></label>}
+                Keep the original supporting products ({supporting.map(s => s.label.replace('Supporting product · ', '')).join(', ')})<small>{fieldsSmart ? 'Otherwise your image decides: other copies or accessories of the product are asked about, unrelated products stay.' : 'Otherwise they are removed with the original product, unless you describe their replacement under Advanced elements.'}</small></label>}
             </div>}
           </fieldset>}
           {groups.style.length > 0 && <fieldset className="tw-group"><legend>Background &amp; style</legend><div className="tw-fields">{groups.style.map(field)}</div></fieldset>}
@@ -396,36 +494,55 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
           {!slots.length && <p className="tw-muted">This template has no editable content fields. Use the original image or generate a fresh version.</p>}</>
           : !creating ? <p role="status">Loading template…</p>
           : <div className="tw-note"><h3>One image, a reusable starting point</h3><p>We learn its composition, save its content fields and base prompt, and prepare editable layers. The new template appears in your library.</p><span className="tw-badge">1 planner call · no image generation</span></div>}
-      </section><aside className="tw-pane tw-prompt-pane" aria-label="Generation prompts">{smartActive && analysis && scene && version ? <SmartPromptPanel version={version} scene={scene} mapping={analysis.mapping} draft={smartDraft}
-          resolution={resolution} status={rStatus} preview={smartPreview} busy={busy} locked={locked} linked={linked} onLink={setLinked} onPick={pickSmart} onResolve={resolve} onAnswer={answer} onUndoInferred={undoInferred}
-          analysisCalls={analysis.calls} verifyAvailable={!!features?.verification.available} />
+      </section><aside className="tw-pane tw-prompt-pane" aria-label="Generation prompts">{planScene && analysis && version ? <>{fieldsDraft && fieldsDraft.problems.map(p => <p key={p} className="tw-alert" role="alert">{p}</p>)}
+        {!smartActive && <details className="tw-prompt" open><summary>Base template prompt</summary>
+          <p className="tw-legend"><span className="tw-slot-chip is-sample">{'{Field}'}</span> comes from your fields · <Lock size={11} aria-hidden="true" /> the rest are locked layout rules</p>
+          <SlotPrompt label="Base template prompt" segments={baseTemplatePrompt(version)} linked={linked} onLink={setLinked} onPick={pickField} controlsId={fieldId} /></details>}
+        <SmartPromptPanel showBase={smartActive} version={version} scene={planScene} mapping={analysis.mapping} draft={activeDraft}
+          resolution={resolution} status={rStatus} preview={smartPreview} busy={busy} locked={locked} linked={linked} onLink={setLinked} onPick={pickPlanned} onResolve={smartActive ? resolve : planFields} onAnswer={answer} onUndoInferred={undoInferred}
+          analysisCalls={analysis.calls} verifyAvailable={!!features?.verification.available} cutout={features?.variants.cutout} /></>
         : !creating && version ? <>
-        <section className="tw-changes" aria-label="What will change"><h3>What will change</h3>
+        {fieldsSmart && <section className="sm-resolution is-none" aria-label="Resolved changes"><h3>How your changes are planned</h3>
+          <p className="tw-muted">{hasChanges ? 'Generate first reads your image once (1 AI call, reused for every later edit of it), finds what each filled field changes and what depends on it (its brand marks, offers about it, other copies of it, a hand holding it), and asks only what is unclear. Nothing else is touched.' : 'No field changes anything: Generate shows your original image for review, with no image request.'}</p>
+          {hasChanges && <button type="button" className="ws-btn" disabled={locked || busy || !hasReference} onClick={() => planFields()}><Sparkles size={15} /> Plan changes · 1 AI call</button>}</section>}
+        {!fieldsSmart && decisionsNeeded.length > 0 && <fieldset className="sm-conflicts tw-decisions-text" aria-label="Text and logos to decide"><legend>Without an image analysis, decide what happens to text and logos that may name the old product</legend>
+          {decisionsNeeded.map(q => <div key={q.slotId} className="tw-modes" role="radiogroup" aria-label={q.label}><span>{q.label}</span>{(['keep', 'remove'] as const).map(choice => <label key={choice} className={textDecisions[q.slotId] === choice ? 'is-on' : ''}>
+            <input type="radio" name={`tw-text-${q.slotId}`} checked={textDecisions[q.slotId] === choice} disabled={locked} onChange={() => { setTextDecisions(d => ({ ...d, [q.slotId]: choice })); clearResult(); }} />{choice === 'keep' ? 'Keep' : 'Remove'}</label>)}</div>)}</fieldset>}
+        {fieldsSmart ? <section className="tw-changes" aria-label="What will change"><h3>Your changes</h3>
+          {Object.keys(fields).length ? <ul>{templateSlots.filter(s => fields[s.id]).map(s => <li key={s.id}><button type="button" className={`tw-change${linked === s.id ? ' is-linked' : ''}`} onClick={() => pickField(s.id)} onMouseEnter={() => setLinked(s.id)} onMouseLeave={() => setLinked('')}>
+            <b className="tw-op tw-op-details">{s.label}</b> <q>{s.id === mainSlot?.id && options.brand && !fields[s.id].toLowerCase().includes(options.brand.toLowerCase()) ? `${options.brand} ${fields[s.id]}` : fields[s.id]}</q></button></li>)}</ul> : <p className="tw-muted">Nothing yet. Empty fields keep your image as it is.</p>}</section>
+        : <section className="tw-changes" aria-label="What will change"><h3>What will change</h3>
           {compiled?.changes.length ? <ul>{compiled.changes.map(c => <li key={c.slotId}><button type="button" className={`tw-change${linked === c.slotId ? ' is-linked' : ''}`} onClick={() => pickField(c.slotId)} onMouseEnter={() => setLinked(c.slotId)} onMouseLeave={() => setLinked('')}>
             <b className={`tw-op tw-op-${c.operation}`}>{OPERATION[c.operation]}</b> {c.label}{c.value ? <>: <q>{c.value}</q></> : c.operation === 'remove' ? ' (part of the original product set)' : ''}</button></li>)}</ul>
             : <p className="tw-muted">Nothing yet. Generating with no changes recreates the reference as it is.</p>}
           {compiled?.compatibility.status === 'structural-change' && <p className="tw-note-warn" role="note">This changes the objects your saved decomposition plan was learned from. After you review the image, you choose: the saved plan (₹0), a simpler grouping (₹0), or a refreshed plan (one planner call, about ₹{estimate.plannerInr.toFixed(2)}).</p>}
           {previewError && <p className="tw-alert" role="alert">{previewError}</p>}
-        </section>
+        </section>}
         <details className="tw-prompt" open><summary>Base template prompt</summary>
           <p className="tw-legend"><span className="tw-slot-chip is-sample">{'{Field}'}</span> comes from your fields · <Lock size={11} aria-hidden="true" /> the rest are locked layout rules</p>
           <SlotPrompt label="Base template prompt" segments={baseTemplatePrompt(version)} linked={linked} onLink={setLinked} onPick={pickField} controlsId={fieldId} /></details>
-        <details className="tw-prompt"><summary>Final prompt · exactly what is sent</summary>
+        {!fieldsSmart && <details className="tw-prompt"><summary>Final prompt · exactly what is sent</summary>
           {compiled && <SlotPrompt label="Final prompt with your changes" segments={compiled.segments} linked={linked} onLink={setLinked} onPick={pickField} sentences controlsId={fieldId} />}
-          <textarea aria-label="Final prompt preview" readOnly value={preview || previewError} rows={6} spellCheck={false} /></details>
-        <span className="tw-badge">Compiled locally · 0 LLM calls · ₹0</span></> : <div className="tw-empty"><Sparkles size={30} /><h3>Your prompt will be saved here</h3><p>The first planner call also learns your reusable prompt and fields. Future generations reuse them locally.</p></div>}
+          <textarea aria-label="Final prompt preview" readOnly value={preview || previewError} rows={6} spellCheck={false} /></details>}
+        <span className="tw-badge">{fieldsSmart ? 'Planned from your image when you generate · use Plan changes first to read the exact prompt' : 'Compiled locally · 0 LLM calls · ₹0'}</span></> : <div className="tw-empty"><Sparkles size={30} /><h3>Your prompt will be saved here</h3><p>The first planner call also learns your reusable prompt and fields. Future generations reuse them locally.</p></div>}
         <details className="tw-advanced"><summary>Advanced · planning experiments</summary><p>Optional and never automatic. Normal template reuse needs neither.</p><button className="ws-btn" disabled={locked || !hasReference} onClick={detect}>Detect reusable layout</button><button className="ws-btn" disabled={locked || !hasReference} onClick={() => { if (window.confirm('Plan fresh? This makes one paid planner call, plus extraction and cleanup.')) start('fresh'); }}>Plan fresh &amp; decompose</button></details>
         {smartPreviewError && <p className="tw-alert" role="alert">{smartPreviewError}</p>}
       </aside></div>}
 
       {step === 2 && <div className="tw-generation"><div className={`tw-previews${creating ? ' is-single' : ''}`}><figure><figcaption>{creating ? 'Your reference creative' : 'Original / reference'}</figcaption>{reference && hasReference ? <img src={reference} alt="Original reference creative" /> : <div className="tw-empty"><ImagePlus size={30} /><p>Go back and choose an image.</p></div>}</figure>
         {!creating && <figure className={!candidate ? 'tw-generated-placeholder' : ''}><figcaption>Generated creative</figcaption>{candidate ? <div className="tw-candidate"><img src={imageUrl(candidate.id, 'edited')} alt="Generated creative" />{regenerating && <div className="tw-candidate-overlay" role="status"><LoaderCircle size={18} className="ws-spin" aria-hidden="true" />Generating a new version…</div>}</div> : <div className="tw-empty"><Sparkles size={34} /><h3>{active ? 'Creating your image…' : 'Ready to generate'}</h3><p>{active ? 'One image request is in progress. Decomposition waits for your approval.' : 'Your saved prompt and content changes become a new image.'}</p></div>}</figure>}</div>
-        <div className="tw-generation-bar"><div><strong>{creating ? 'New template' : `Template · ${templateName} v${templateVersion}`}</strong>{creating ? <><p>Decomposition planner: <b>1 call</b> · learns the reusable template</p><p>Image generation: <b>0 calls</b> · uses your upload</p></> : <>{candidate?.variant || execution?.variant ? <p>Scene: <b>creative variant</b> · the subject is your image's own pixels</p> : smartActive || candidate?.resolution ? <p>Image analysis: <b>{plural(analysis?.calls ?? candidate?.usage.analysisCalls ?? 0, 'call')}</b> · Change resolution: <b>{plural((resolution?.resolver.called ? 1 : 0) || (candidate?.usage.resolutionCalls ?? 0), 'call')}</b></p> : <p>Prompt planning: <b>0 calls · ₹0</b></p>}<p>Image generation: <b>{plural(candidate?.usage.imageGenerationCalls ?? 0, 'call')}</b>{candidate?.usage.imageGenerationCalls ? ` · ${money(candidate.generationCost)}` : ' · no charge yet'}</p><small>{smartActive ? 'Your image analyzed + changes resolved before generation' : 'Saved template + local edits'}</small></>}</div>
-          {!creating && execution?.resolution && !smartActive && !execution.variant ? <div className="tw-actions"><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button><small className="tw-muted">{analysis?.state === 'ready' ? 'Regenerate this smart edit from Customize.' : 'Loading this smart edit\'s analysis…'}</small></div>
-          : !creating && (execution?.variant ? <div className="tw-actions"><button className="ws-btn" disabled={locked} onClick={() => { setStep(1); setStudio(true); }}>Back to creative variants</button></div> : <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled={locked || (smartActive ? !!smartPreviewError : !!previewError) || !hasReference || !version} onClick={() => smartActive ? generateSmart() : start('generate')}>{active ? <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /> : <Sparkles size={16} />}{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button></div>)}</div>
-        {!creating && <p className="tw-muted" role="note">{candidate ? 'Regenerate makes one more paid image request. Decomposition starts only when you choose Use this image.' : hasChanges ? 'Your changes need a generated image before decomposition. Choose Generate Creative.' : 'No changes: use the original image for no generation charge, or Generate Creative for one paid image request.'}</p>}
+        <div className="tw-generation-bar"><div><strong>{creating ? 'New template' : `Template · ${templateName} v${templateVersion}`}</strong>{creating ? <><p>Decomposition planner: <b>1 call</b> · learns the reusable template</p><p>Image generation: <b>0 calls</b> · uses your upload</p></> : <>{candidate?.variant || execution?.variant ? <p>Scene: <b>creative variant</b> · the subject is your image's own pixels</p> : smartActive || candidate?.resolution ? <p>Image analysis: <b>{plural(analysis?.calls ?? candidate?.usage.analysisCalls ?? 0, 'call')}</b> · Change resolution: <b>{plural((resolution?.resolver.called ? 1 : 0) || (candidate?.usage.resolutionCalls ?? 0), 'call')}</b></p> : <p>Prompt planning: <b>0 calls · ₹0</b></p>}<p>Image generation: <b>{plural(candidate?.usage.imageGenerationCalls ?? 0, 'call')}</b>{candidate?.usage.imageGenerationCalls ? ` · ${money(candidate.generationCost)}` : ' · no charge yet'}</p><small>{smartActive || candidate?.resolution ? 'Your image analyzed + changes resolved before generation' : 'Saved template + local edits'}</small></>}</div>
+          {/* The same buttons in the same places while a reopened smart edit loads: a paid Regenerate never appears under a click meant for Edit changes. */}
+          {!creating && execution?.resolution && !smartActive && !fieldsSmart && !execution.variant ? <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled><Sparkles size={16} />{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button><small className="tw-muted">{analysis?.state === 'ready' ? 'Regenerate this smart edit from Customize.' : 'Loading this smart edit\'s analysis…'}</small></div>
+          : !creating && (execution?.variant ? <div className="tw-actions"><button className="ws-btn" disabled={locked} onClick={() => { setStep(1); setStudio(true); }}>Back to creative variants</button></div> : <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled={locked || !hasReference || !version || (smartActive ? !!smartPreviewError : fieldsSmart ? !!previewError || !!fieldsDraft?.problems.length : !!previewError || !!compiled?.questions.length)}
+            onClick={() => smartActive ? generateSmart() : fieldsSmart ? generateFromFields() : start('generate')}>{active ? <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /> : <Sparkles size={16} />}{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button>
+            {noChanges && <button className="ws-btn ws-btn-quiet" disabled={locked || !hasReference || !version} onClick={() => start('generate', mismatchAccepted.current, true)}>Regenerate anyway · 1 image request</button>}</div>)}</div>
+        {!creating && <p className="tw-muted" role="note">{candidate ? 'Regenerate makes one more paid image request. Decomposition starts only when you choose Use this image.' : !noChanges ? 'Your changes need a generated image before decomposition. Choose Generate Creative.'
+          : 'No changes: Generate Creative shows your original image for review, with no image request (the image model could only redraw it). Regenerate anyway makes one paid image request.'}</p>}
+        {restoreNote && smartActive && <p className="tw-note-warn" role="note">{restoreNote}</p>}
         {reviewing && (review || needsPlanDecision(reviewing)) && <div className="tw-decisions">
           {review && <section className={`tw-review${warnings.length ? ' has-warnings' : ''}`} aria-label="Image review"><h3>{warnings.length ? 'Check the generated image' : 'Review the generated image'}</h3>
+            {strategyResult(reviewing.edit) && <p className="sm-strategy" role="note">{strategyResult(reviewing.edit)}</p>}
             {warnings.length > 0 && <ul role="alert">{warnings.map(c => <li key={`${c.id}-${c.slotId ?? ''}`}>{c.message}</li>)}</ul>}
             {hints.map(c => <p className="tw-muted" key={`${c.id}-${c.slotId ?? ''}`}>{c.message}</p>)}
             {review.semantic && <p className={`cv-check is-${review.semantic.status}`}>{semanticLabel(review.semantic)}{review.semantic.reason ? `: ${review.semantic.reason}` : ''}. <small>{SEMANTIC_NOTE}</small></p>}

@@ -57,7 +57,9 @@ test('a person holding a phone stays one intact layer on creation and reuse; its
   const held = panel.getByLabel('Held object content', { exact: true });
   await expect(panel.locator('.tw-fields label').filter({ hasText: /^Held object/ })).toContainText('Stays grouped with the primary subject');
   await held.fill('red smartphone');
-  await expect(panel.getByLabel('Final prompt preview', { exact: true })).toHaveValue(/Replace the held object[^.]* with "red smartphone"\. Remove the original completely; keep the grip natural\./);
+  // The change is listed beside the fields; Generate plans it against the image's own analysis (the grip-aware wording
+  // of a held-object replacement is checked by the change-plan tests: this fixture's analyzer knows no person).
+  await expect(panel.getByRole('complementary', { name: 'Generation prompts' }).getByRole('listitem')).toHaveText([/^Held object\s*red smartphone$/]);
   await panel.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(panel.getByRole('button', { name: 'Use original image', exact: true })).toBeDisabled();
   await panel.getByRole('button', { name: 'Edit changes', exact: true }).click();

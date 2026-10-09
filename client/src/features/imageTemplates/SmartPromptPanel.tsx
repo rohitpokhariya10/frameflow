@@ -1,7 +1,7 @@
 import { LoaderCircle, Lock, Sparkles, Undo2 } from 'lucide-react';
 import { baseResolvedPrompt, describeTemplateSlots, type CompiledResolvedEdit, type ConflictOption, type PlanConflict, type PlanEntry, type SceneDescription, type SceneDraft, type SceneSlotMapping, type TemplateVersion } from '@frameflow/shared';
 import { SlotPrompt } from './SlotPrompt';
-import { draftChangeList, type Resolution, type ResolutionStatus } from './smartEdit';
+import { draftChangeList, strategyPreview, type Resolution, type ResolutionStatus } from './smartEdit';
 import { smartFieldId } from './SmartEditPanel';
 
 const OPERATION: Record<PlanEntry['operation'], string> = { keep: 'Keep', modify: 'Change', replace: 'Replace', remove: 'Remove', adjust: 'Adjust' };
@@ -12,23 +12,27 @@ const SOURCE: Record<PlanEntry['source'], string> = { explicit: 'you asked', inh
  * and the fields a change can touch), the draft (what the user asked, not resolved yet), and the resolved plan with the
  * final prompt exactly as it is sent. Inferred changes say why, and each can be undone; questions block generation.
  */
-export function SmartPromptPanel({ version, scene, mapping, draft, resolution, status, preview, busy, locked, linked, onLink, onPick, onResolve, onAnswer, onUndoInferred, analysisCalls, verifyAvailable }: {
+export function SmartPromptPanel({ version, scene, mapping, draft, resolution, status, preview, busy, locked, linked, onLink, onPick, onResolve, onAnswer, onUndoInferred, analysisCalls, verifyAvailable, cutout, showBase = true }: {
   version: TemplateVersion; scene: SceneDescription; mapping?: SceneSlotMapping; draft: SceneDraft; resolution?: Resolution; status: ResolutionStatus; preview?: CompiledResolvedEdit; busy: boolean; locked: boolean;
   linked: string; onLink: (id: string) => void; onPick: (id: string) => void; onResolve: (rulesOnly?: boolean) => void; onAnswer: (conflict: PlanConflict, option: ConflictOption) => void; onUndoInferred: (entry: PlanEntry) => void;
-  analysisCalls: number; verifyAvailable: boolean;
+  analysisCalls: number; verifyAvailable: boolean; cutout?: string;
+  /** The item cards' base prompt (the template fields show the template's own, linked to them, instead). */
+  showBase?: boolean;
 }) {
   const slots = describeTemplateSlots(version), changes = draftChangeList(scene, draft), plan = status !== 'stale' && status !== 'none' ? resolution?.plan : undefined;
   const shown = plan?.entries.filter(e => e.operation !== 'keep') ?? [], kept = plan?.entries.filter(e => e.operation === 'keep') ?? [];
+  // How the image will be made, decided from the plan exactly as the server decides it.
+  const how = plan && plan.status !== 'needs-input' ? strategyPreview(scene, plan, cutout) : undefined;
   // A template field chip leads to the detected item that fills it.
   const pickSlot = (slotId: string) => { const id = Object.entries(mapping?.slots ?? {}).find(([, s]) => s === slotId)?.[0]; if (id) onPick(id); };
   return <>
-    <details className="tw-prompt"><summary>Base reusable prompt</summary>
+    {showBase && <details className="tw-prompt"><summary>Base reusable prompt</summary>
       <p className="tw-legend"><span className="tw-slot-chip is-sample">{'{Field}'}</span> a saved template field · <Lock size={11} aria-hidden="true" /> locked rules, for every image of this template</p>
-      <SlotPrompt label="Base reusable prompt" segments={baseResolvedPrompt(slots)} linked="" onLink={() => undefined} onPick={pickSlot} controlsId={smartFieldId} /></details>
+      <SlotPrompt label="Base reusable prompt" segments={baseResolvedPrompt(slots)} linked="" onLink={() => undefined} onPick={pickSlot} controlsId={smartFieldId} /></details>}
     <section className="tw-changes" aria-label="Draft changes"><h3>Draft changes <small className="tw-muted">not resolved yet</small></h3>
       {changes.length ? <ul>{changes.map(c => <li key={c.id}><button type="button" className={`tw-change${linked === c.id ? ' is-linked' : ''}`} onClick={() => onPick(c.id)} onMouseEnter={() => onLink(c.id)} onMouseLeave={() => onLink('')}>
         <b className={`tw-op tw-op-${c.action === 'modify' ? 'details' : c.action}`}>{OPERATION[c.action]}</b> {c.label}: {c.text}</button></li>)}</ul>
-        : <p className="tw-muted">Nothing yet. Everything is inherited as detected; generating now recreates the reference.</p>}
+        : <p className="tw-muted">Nothing yet. Everything is kept as detected: with no changes, use the original image (no image request).</p>}
     </section>
     <section className={`sm-resolution is-${status}`} aria-label="Resolved changes" aria-live="polite"><h3>Resolved plan</h3>
       {status === 'none' && <p className="tw-muted">Resolve your changes to see what else they affect. Rules run first; an AI call is made only when your words or a photo name a product or brand.</p>}
@@ -45,6 +49,7 @@ export function SmartPromptPanel({ version, scene, mapping, draft, resolution, s
           : <button type="button" className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => onUndoInferred(e)}><Undo2 size={13} /> Keep it instead</button>}</span>}</li>)}</ul>}
       {plan && <p className="tw-muted">{kept.length} detected item{kept.length === 1 ? '' : 's'} inherited unchanged{kept.some(e => e.source === 'explicit') ? ` (${kept.filter(e => e.source === 'explicit').length} kept by you)` : ''}.</p>}
       {plan && plan.notes.map(n => <p key={n} className="tw-muted">{n}</p>)}
+      {how && <p className={`sm-strategy is-${how.kind}`} role="note"><b>How it is made:</b> {how.text}{how.extra ? <small> {how.extra}</small> : null}</p>}
       {plan && !!resolution?.rejected?.length && <details><summary>Suggestions not used ({resolution.rejected.length})</summary><ul>{resolution.rejected.map(r => <li key={r}>{r}</li>)}</ul></details>}
       {(status === 'none' || status === 'stale') && <button type="button" className="ws-btn" disabled={locked || busy} onClick={() => onResolve()}>{busy ? <LoaderCircle size={15} className="ws-spin" aria-hidden="true" /> : <Sparkles size={15} />} Resolve changes</button>}
     </section>

@@ -9,3 +9,7 @@ export * from './scene.js';
 export * from './changePlan.js';
 export * from './verification.js';
 export * from './variants.js';
+export * from './advertised.js';
+export * from './brands.js';
+export * from './editStrategy.js';
+export * from './fieldsDraft.js';

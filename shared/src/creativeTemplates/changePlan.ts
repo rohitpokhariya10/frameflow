@@ -16,8 +16,16 @@
 import { BRAND_LIMIT, FIELD_LIMIT, type BlueprintCompatibility, type EditChange, type EditOperation, type PromptSegment } from './editPlan.js';
 import { GENERATE_UNCHANGED_INSTRUCTION, sanitizeEditInstruction } from './editPrompt.js';
 import { TEMPLATE_ROLE_LABELS, type TemplateRole } from './roles.js';
+import { brandInWords, namesName, namesWord, PRODUCT_LINES, sameBrand, seedBrandOf, seedNamesOf } from './brands.js';
 import { attachedTo, cleanSceneText, holderOf, isForeground, positionPhrase, SCENE_MARK_LABELS, SCENE_PROPERTY_KEYS, SCENE_PROPERTY_LABELS, sceneTarget, type SceneCorrection, type SceneDescription, type SceneMark, type SceneObject, type SceneOverlay, type ScenePropertyKey } from './scene.js';
 
+/**
+ * The version of the plan rules and prompt compiler: a resolution made under another one is rebuilt before it is used
+ * (plan-rules-2: brands read from the user's words, stale brand marks and text, one sentence per item, no contradictions;
+ * plan-rules-3: brands the image itself shows, other copies of a replaced product; plan-rules-4: the old brand's other
+ * names on the artwork, its short forms and product lines).
+ */
+export const PLAN_RULES = 'plan-rules-4';
 export const OBJECT_ACTIONS = ['keep', 'modify', 'replace', 'remove'] as const;
 export type ObjectAction = typeof OBJECT_ACTIONS[number];
 export interface ObjectEdit {
@@ -150,6 +158,38 @@ const productish = (o: SceneObject) => ['product', 'object', 'furniture'].includ
 /** "Xiaomi phone" from value "phone" and brand "Xiaomi"; a value that already names the brand is used as typed. */
 export const brandedValue = (value: string | undefined, brand: string | undefined) => !brand ? value ?? '' : !value ? brand : lower(value).includes(lower(brand)) ? value : `${brand} ${value}`;
 
+/** The brands the image itself shows (product identities read with some confidence, and printed or placed brand marks). */
+export const sceneBrands = (scene: SceneDescription) => [...new Set([...scene.objects.filter(o => o.identity?.brand && o.identity.confidence >= 0.5).map(o => o.identity!.brand),
+  ...scene.marks.filter(m => m.kind === 'product_brand' && m.text.trim()).map(m => m.text.trim())])];
+/** Words that qualify a model ("Pro", "Max", "Note") rather than name its line: never a line name on their own. */
+const MODEL_QUALIFIERS = new Set(['pro', 'max', 'plus', 'ultra', 'mini', 'air', 'lite', 'note', 'neo', 'edge', 'series', 'smart', 'new', 'classic', 'one', 'prime', 'active', 'sport', 'go', 'gen', 'edition', 'limited', 'special', 'original', 'standard', 'model', 'the']);
+/**
+ * A name the artwork may advertise a product under: its brand (the brand, a short form of it, the text of a brand mark
+ * printed on it), its own product line, or another product line of its brand. `asWritten` names match only as written.
+ */
+export interface ProductName { name: string; kind: 'brand' | 'line' | 'brand-line'; asWritten?: boolean }
+/**
+ * The names a product is advertised under, for any category: from the image first (its brand, the brand marks it carries,
+ * its model's leading name: "Kestrel" of "Kestrel 2", never a qualifier like "Pro" or its own category word), then the
+ * seed's short forms and product lines of that brand ("Mi" and "Redmi" are Xiaomi's). A brand the analysis read as a
+ * product line ("Redmi") counts with the brand it belongs to.
+ */
+export function productNames(scene: SceneDescription, o: SceneObject): ProductName[] {
+  const read = o.identity?.brand?.trim() || undefined, model = o.identity?.model?.trim() ?? '';
+  const seedLine = Object.keys(PRODUCT_LINES).find(l => sameBrand(l, read) || (namesWord(model, l) && (!read || sameBrand(PRODUCT_LINES[l], read))));
+  const brand = seedBrandOf(read) ?? read ?? (seedLine ? PRODUCT_LINES[seedLine] : undefined);
+  const lead = model.split(/\s+/).find(w => !sameBrand(w, brand) && !sameBrand(w, read));
+  const line = seedLine ?? (lead && /^\p{L}[\p{L}'’-]{2,}$/u.test(lead) && /\p{Lu}/u.test(lead) && !MODEL_QUALIFIERS.has(lower(lead)) && !namesWord(o.category, lead) ? lead : undefined);
+  const names: ProductName[] = [];
+  const add = (n: ProductName) => { if (n.name.trim().length >= 2 && !names.some(x => sameBrand(x.name, n.name))) names.push(n); };
+  if (brand) add({ name: brand, kind: 'brand' });
+  if (line) add({ name: line, kind: 'line', asWritten: !seedLine });
+  for (const m of scene.marks.filter(m => m.ownerId === o.id && m.kind === 'product_brand' && m.text.trim())) add({ name: m.text.trim(), kind: 'brand', asWritten: m.text.trim().length <= 3 });
+  const seed = seedNamesOf(brand);
+  for (const name of seed.aliases) add({ name, kind: 'brand' });
+  for (const name of seed.lines) add({ name, kind: 'brand-line' });
+  return names;
+}
 export interface PlanContext {
   /** Detected objects → the template fields they fill (mapSceneToSlots). */
   slots?: Record<string, string>;
@@ -183,9 +223,26 @@ export function basePlan(scene: SceneDescription, draft: SceneDraft, context: Pl
           { id: 'describe', label: 'I will describe the exact product', effects: [{ kind: 'focus', targetId: id }] }] });
       continue;
     }
-    const to = edit.action === 'replace' ? photo && !edit.value ? `the ${edit.brand ? `${edit.brand} ` : ''}product shown in the attached product photo` : brandedValue(edit.value, edit.brand) : edit.value;
+    // The brand the user's own words name, read locally (written out, or a product line of one brand): never a guess.
+    const read = object && productish(object) && (edit.action === 'replace' || edit.action === 'modify') ? brandInWords(edit.value, sceneBrands(scene)) : undefined;
+    if (read && 'ambiguous' in read) {
+      conflicts.push({ id: `rule:product-brand:${id}`, kind: 'product-brand', targetIds: [id], source: 'rule', question: `Your words for ${object!.label} name more than one brand (${joinAnd(read.ambiguous)}). Which brand should it carry?`,
+        options: [...read.ambiguous.slice(0, 3).map((b, n): ConflictOption => ({ id: `brand-${n + 1}`, label: `${b}`, effects: [{ kind: 'edit', targetId: id, edit: { ...edit, brand: b } }] })),
+          { id: 'describe', label: 'I will describe it again', effects: [{ kind: 'focus', targetId: id }] }] });
+      continue;
+    }
+    if (read && edit.brand && !sameBrand(read.brand, edit.brand)) {
+      conflicts.push({ id: `rule:product-brand:${id}`, kind: 'product-brand', targetIds: [id], source: 'rule',
+        question: `Your description of ${object!.label} names ${read.via === 'line' ? `${read.line} (a ${read.brand} product line)` : read.brand}, but the brand field says ${edit.brand}. Which brand is it?`,
+        options: [{ id: 'words', label: `${read.brand}, as described`, effects: [{ kind: 'edit', targetId: id, edit: { ...edit, brand: read.brand } }] }, { id: 'describe', label: `${edit.brand}: I will fix the description`, effects: [{ kind: 'focus', targetId: id }] }] });
+      continue;
+    }
+    const brand = edit.brand ?? (read && !('ambiguous' in read) ? read.brand : undefined);
+    const to = edit.action === 'replace' ? photo && !edit.value ? `the ${brand ? `${brand} ` : ''}product shown in the attached product photo` : brandedValue(edit.value, brand) : edit.value;
     entry({ targetId: id, operation: edit.action, source: 'explicit', reason: edit.action === 'keep' ? 'You chose to keep it.' : 'You asked for this change.',
-      ...(edit.property ? { property: edit.property } : {}), from: currentOf(scene, id), ...(to ? { to } : {}), ...(edit.brand ? { brand: edit.brand } : {}), ...(photo ? { reference: true } : {}) });
+      ...(edit.property ? { property: edit.property } : {}), from: currentOf(scene, id), ...(to ? { to } : {}), ...(brand ? { brand } : {}), ...(photo ? { reference: true } : {}) });
+    if (read && !('ambiguous' in read) && !edit.brand) entry({ targetId: id, operation: 'modify', property: 'brand', to: read.brand, source: 'inferred',
+      reason: read.via === 'line' ? `${read.line} is a ${read.brand} product line.` : 'Your description names this brand.' });
   }
   const explicit = (id: string) => edits[id];
   const conflictOnce = (c: PlanConflict) => { if (!conflicts.some(x => x.id === c.id)) conflicts.push(c); };
@@ -205,6 +262,46 @@ export function basePlan(scene: SceneDescription, draft: SceneDraft, context: Pl
       }
       for (const t of scene.overlays.filter(t => t.refersTo.includes(o.id))) if (!explicit(t.id)) entry({ targetId: t.id, operation: 'remove', source: 'inferred', from: 'overlaid text', reason: `It refers to ${phrase} under its old brand; claims never transfer to another brand.` });
     }
+    // The old brand advertised on the artwork, and text naming the old product, once that product is gone, replaced or
+    // rebranded: under any of its names (productNames: its brand, a short form, a brand mark it carries, its line, its
+    // model). A replacement of the same brand keeps the brand's logos and lines, and loses only its old line and model.
+    // A logo or line that may as well be about another kept product is asked about, not removed; merchant, bank and
+    // partner logos are other entities and never change here.
+    const oldBrand = o.identity?.brand, brandGoes = e.operation === 'remove' || rebranded || (e.operation === 'replace' && !sameBrand(e.brand, oldBrand));
+    if ((brandGoes || e.operation === 'replace') && productish(o)) {
+      const gone = e.operation === 'remove' ? 'removed' : e.operation === 'replace' ? 'replaced' : `now ${e.brand}`;
+      const names = productNames(scene, o), now = e.operation === 'remove' ? '' : e.to ?? '';
+      const brandOf = names.find(n => n.kind === 'brand')?.name;
+      const kept = scene.objects.filter(x => x.id !== o.id && !x.ignored && explicit(x.id)?.action !== 'remove' && explicit(x.id)?.action !== 'replace');
+      const sameBrandKept = kept.filter(x => !!x.identity?.brand && x.identity.confidence >= 0.6 && names.some(n => n.kind === 'brand' && (sameBrand(x.identity!.brand, n.name) || sameBrand(seedBrandOf(x.identity!.brand), n.name))));
+      /** The kept products a name may as well be about: the same brand; the same line; for another line of the brand, also an unidentified product. */
+      const sharedBy = (n: ProductName) => n.kind === 'brand' ? sameBrandKept : n.kind === 'line' ? kept.filter(x => namesWord(x.identity?.model ?? '', n.name) || sameBrand(x.identity?.brand, n.name))
+        : [...sameBrandKept, ...kept.filter(x => productish(x) && !x.identity?.brand && !sameBrandKept.includes(x))];
+      /** The first of the product's names a text uses (a logo's whole text, in any case) that no longer applies: its brand goes, or its line is not the new one's. */
+      const goneName = (text: string, logo = false) => names.find(n => (n.kind === 'line' ? !namesName(now, n.name, n.asWritten) : brandGoes) && (namesName(text, n.name, n.asWritten) || (logo && sameBrand(text.trim(), n.name))));
+      const what = (n: ProductName) => n.kind === 'line' ? `${n.name}, the product line of ${phrase}` : n.kind === 'brand-line' ? `${n.name}, a ${brandOf} product line`
+        : sameBrand(n.name, oldBrand) || (!oldBrand && sameBrand(n.name, brandOf)) ? `the ${n.name} brand` : `${n.name}, the ${brandOf && !sameBrand(brandOf, n.name) ? `${brandOf} ` : ''}brand of ${phrase}`;
+      const stale = (id: string, label: string, why: string, shared: SceneObject[]) => {
+        if (entries.some(x => x.targetId === id && x.source === 'inferred')) return;
+        const own = explicit(id);
+        if (own) { if (own.action === 'keep' && !own.confirmed) keepOrRemove(id, `${label} ${why}, but you kept it. Keep it on the new creative?`, `Remove ${label}`); return; }
+        if (shared.length) keepOrRemove(id, `${label} ${why}. It may also be about ${joinAnd(shared.map(x => x.label))}, which stays. Keep it?`, `Remove ${label}`);
+        else entry({ targetId: id, operation: 'remove', source: 'inferred', from: sceneTarget(scene, id)!.type === 'overlay' ? 'overlaid text' : SCENE_MARK_LABELS[(sceneTarget(scene, id)!.item as SceneMark).kind], reason: `It ${why}; ${phrase} is ${gone}, and claims or brands never transfer to something else.` });
+      };
+      for (const m of scene.marks.filter(m => m.overlay && (m.kind === 'product_brand' || m.kind === 'other_logo'))) {
+        const n = goneName(m.text, true);
+        if (m.ownerId === o.id && brandGoes) stale(m.id, m.label, `shows the ${oldBrand ?? 'old'} brand of ${phrase} on the artwork`, []);
+        else if (n && (!m.ownerId || m.ownerId === o.id)) stale(m.id, m.label, n.kind === 'brand' && sameBrand(n.name, oldBrand) ? `shows the ${oldBrand} brand of ${phrase} on the artwork` : `shows ${what(n)}, on the artwork`, m.ownerId === o.id ? [] : sharedBy(n));
+      }
+      const model = o.identity?.model?.trim(), shortModel = model?.split(/\s+/).slice(0, 2).join(' ');
+      const modelGoes = !!model && !namesWord(now, model);
+      for (const t of scene.overlays.filter(t => !t.refersTo.includes(o.id))) {
+        const namesModel = modelGoes && (namesWord(t.text, model!) || (!!shortModel && shortModel !== model && /\d/.test(shortModel) && namesWord(t.text, shortModel)));
+        const n = namesModel ? undefined : goneName(t.text);
+        if (namesModel) stale(t.id, t.label, `names ${phrase}'s model (${model})`, []);
+        else if (n) stale(t.id, t.label, `names ${what(n)}`, sharedBy(n));
+      }
+    }
     if (e.operation === 'replace' || e.operation === 'remove') {
       const gone = e.operation === 'remove' ? 'removed' : 'replaced';
       // a. Marks printed on it belong to it: a new product carries only its own.
@@ -219,15 +316,31 @@ export function basePlan(scene: SceneDescription, draft: SceneDraft, context: Pl
         if (!own) entry({ targetId: t.id, operation: 'remove', source: 'inferred', from: 'overlaid text', reason: `It refers to ${phrase}, which is ${gone}; offers and claims never transfer to another product.` });
         else if (own.action === 'keep' && !own.confirmed) keepOrRemove(t.id, `${t.label} refers to ${phrase}, which you ${gone}. Its offer or claim would not be true of the new creative. Keep it?`, 'Remove the text');
       }
-      // c. Accessories: asked only on evidence; unrelated or uncertain companions stay.
+      // c. Accessories: asked only on evidence; unrelated or uncertain companions stay. A product of the same brand is
+      // its own product: it stays, with a note (asking would be a question nobody needs to answer).
       for (const r of scene.relations.filter(r => (r.relation === 'accessory_of' && r.target === o.id) || (r.relation === 'same_brand_as' && (r.source === o.id || r.target === o.id)))) {
         const other = r.source === o.id ? r.target : r.source, a = scene.objects.find(x => x.id === other);
         if (!a || a.ignored || explicit(other)) continue;
+        if (r.relation === 'same_brand_as') { if (!notes.some(n => n.startsWith(`${a.label} shows the same brand`))) notes.push(`${a.label} shows the same brand as ${phrase}; it stays as it is unless you change it.`); continue; }
         if (r.confidence >= 0.7) conflictOnce({ id: `rule:accessory:${other}`, kind: 'accessory', targetIds: [other, o.id], source: 'rule',
-          question: `${a.label} looks like ${r.relation === 'accessory_of' ? 'an accessory of' : 'the same brand as'} ${phrase}${r.evidence ? ` (${r.evidence})` : ''}, which you ${gone}. What should happen to it?`,
+          question: `${a.label} looks like an accessory of ${phrase}${r.evidence ? ` (${r.evidence})` : ''}, which you ${gone}. What should happen to it?`,
           options: [{ id: 'keep', label: `Keep ${a.label}`, effects: [{ kind: 'edit', targetId: other, edit: { action: 'keep' } }] }, { id: 'remove', label: `Remove ${a.label}`, effects: [{ kind: 'edit', targetId: other, edit: { action: 'remove' } }] },
             { id: 'replace', label: `Replace ${a.label} too`, effects: [{ kind: 'focus', targetId: other }] }] });
         else notes.push(`${a.label} may belong with ${phrase} (uncertain); it is kept unless you change it.`);
+      }
+      // c2. Other copies of the same product (the same kind, by the same brand, or both unbranded: other colours of it, say)
+      // are part of what was advertised: changing one is a real choice for the rest, so it is asked once, never assumed.
+      if (e.operation === 'replace' && productish(o)) {
+        const sameKind = scene.objects.filter(x => x.id !== o.id && !x.ignored && productish(x) && !explicit(x.id) && lower(x.category) === lower(o.category) && !holderOf(scene, x.id)
+          && (sameBrand(x.identity?.brand, o.identity?.brand) || (!x.identity?.brand && !o.identity?.brand) || scene.relations.some(r => r.relation === 'same_brand_as' && [r.source, r.target].includes(x.id) && [r.source, r.target].includes(o.id))));
+        if (sameKind.length) {
+          const them = sameKind.length === 1 ? sameKind[0].label : `the other ${sameKind.length} ${lower(o.category)}s`, edit = draft.edits[o.id];
+          conflictOnce({ id: `rule:set:${o.id}`, kind: 'dependency', targetIds: [...sameKind.map(x => x.id), o.id], source: 'rule',
+            question: `${sameKind.length === 1 ? `${sameKind[0].label} looks like` : `${them[0].toLocaleUpperCase()}${them.slice(1)} look like`} the same product as ${phrase}${o.identity?.brand ? ` (${o.identity.brand})` : ''}, perhaps in other colours. You replaced ${phrase}: what should happen to ${sameKind.length === 1 ? 'it' : 'them'}?`,
+            options: [{ id: 'replace', label: `Replace ${sameKind.length === 1 ? 'it' : 'them'} with ${e.to ? `"${e.to}"` : 'the new product'} too`, effects: sameKind.map(x => ({ kind: 'edit' as const, targetId: x.id, edit: { action: 'replace' as const, ...(edit?.value ? { value: edit.value } : {}), ...(e.brand ? { brand: e.brand } : {}) } })) },
+              { id: 'remove', label: `Remove ${sameKind.length === 1 ? 'it' : 'them'}`, effects: sameKind.map(x => ({ kind: 'edit' as const, targetId: x.id, edit: { action: 'remove' as const } })) },
+              { id: 'keep', label: `Keep ${sameKind.length === 1 ? 'it' : 'them'} as ${sameKind.length === 1 ? 'it is' : 'they are'}`, effects: sameKind.map(x => ({ kind: 'edit' as const, targetId: x.id, edit: { action: 'keep' as const } })) }] });
+        }
       }
       // d. What it holds, wears or has as parts. A replaced object's own parts go with it (a new person may hold the same things).
       const parts = new Set(scene.relations.filter(r => (r.relation === 'part_of' || r.relation === 'attached_to') && r.target === o.id).map(r => r.source));
@@ -255,7 +368,7 @@ export function basePlan(scene: SceneDescription, draft: SceneDraft, context: Pl
           to: e.operation === 'replace' ? 'the hand holds the new object naturally' : 'the empty hand rests naturally',
           reason: `${h.label} ${scene.relations.some(r => r.relation === 'wears' && r.target === o.id) ? 'wears' : 'holds'} ${phrase}, which is ${gone}.` });
       }
-      if (e.operation === 'replace' && productish(o) && !e.brand && !e.reference) notes.push(`No brand was given for the new ${lower(o.category)}: no brand name or logo is drawn on it unless your words name one.`);
+      if (e.operation === 'replace' && productish(o) && !e.brand && !e.reference) notes.push(`No brand was given for the new ${lower(o.category)}, and your words name none: it is drawn with no brand name or logo.`);
     }
   }
   // 3. Everything else stays: inherited, not "an empty field".
@@ -346,9 +459,11 @@ export function mergeResolution(scene: SceneDescription, draft: SceneDraft, base
     const e = entries.find(x => x.targetId === u.targetId && x.source === 'explicit' && (x.operation === 'replace' || x.operation === 'modify'));
     if (!e) { rejected.push(`Understanding of an item you did not change (${cleanSceneText(u.targetId, 40)}).`); continue; }
     const brand = cleanSceneText(u.brand, BRAND_LIMIT);
-    if (!brand || e.brand) continue;
+    if (!brand) continue;
+    if (e.brand) { if (!sameBrand(brand, e.brand)) rejected.push(`A brand (${brand}) other than the one you gave or your words name (${e.brand}).`); continue; }
     const fromWords = names(e.targetId, brand), fromPhoto = draft.referenceFor === e.targetId && proposal.productPhoto.present && lower(proposal.productPhoto.brand) === lower(brand) && !!proposal.productPhoto.evidence.trim();
-    if ((u.brandSource === 'inferred' && fromWords) || (u.brandSource === 'photo' && fromPhoto)) {
+    // Accepted on evidence, whatever the resolver called it: the user's own words name it, or the photo it saw shows it.
+    if (fromWords || (u.brandSource === 'photo' && fromPhoto)) {
       e.brand = brand;
       const object = scene.objects.find(o => o.id === e.targetId), category = object?.category;
       if (category) { const stale = notes.findIndex(n => n.startsWith(`No brand was given for the new ${lower(category)}`)); if (stale >= 0) notes.splice(stale, 1); }
@@ -367,7 +482,7 @@ export function mergeResolution(scene: SceneDescription, draft: SceneDraft, base
         }
       }
       entries.push({ id: `inferred:${e.targetId}:modify:brand`, targetId: e.targetId, targetType: e.targetType, label: e.label, ...(e.slotId ? { slotId: e.slotId } : {}), ...(e.slotRole ? { slotRole: e.slotRole } : {}), operation: 'modify', property: 'brand', to: brand, source: 'inferred',
-        reason: u.brandSource === 'photo' ? 'The product photo shows this brand.' : 'Your description names this brand.', evidence: u.brandSource === 'photo' ? cleanSceneText(proposal.productPhoto.evidence) : undefined });
+        reason: !fromWords ? 'The product photo shows this brand.' : 'Your description names this brand.', evidence: !fromWords ? cleanSceneText(proposal.productPhoto.evidence) : undefined });
     } else rejected.push(`A brand (${brand}) that neither your words nor the product photo show.`);
     if (u.specificity === 'exact_model' && !/\d/.test(userWords) && !fromPhoto) notes.push(`${e.label}: no exact model was given, so none is drawn.`);
   }
@@ -416,6 +531,8 @@ export function mergeResolution(scene: SceneDescription, draft: SceneDraft, base
     }
     if (options.length < 2) { rejected.push('A question without two usable answers.'); continue; }
     const id = `resolver:${c.kind}:${[...c.targetIds].sort().join('+')}`;
+    // A question the rules already ask about the same item is asked once.
+    if (conflicts.some(x => x.kind === c.kind && x.targetIds.some(t => c.targetIds.includes(t)))) continue;
     if (!conflicts.some(x => x.id === id)) conflicts.push({ id, kind: c.kind, targetIds: c.targetIds, question: cleanSceneText(c.question, 240) || 'Choose how to continue.', options, source: 'resolver' });
   }
   // 4. A product photo that shows something other than what was asked: never silently picked over the words.
@@ -456,33 +573,66 @@ export const TEXT_FREE_RULE = 'Do not add any new text, letters, numbers, prices
 export const PROMPT_LIMIT = 6000;
 const joinAnd = (parts: string[]) => parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 const quote = (text: string) => `"${text}"`;
-/** One change as a sentence, in plain words about the scene's own objects. */
-function sentence(scene: SceneDescription, e: PlanEntry, productReference: boolean): string {
-  const phrase = targetPhrase(scene, e.targetId), o = scene.objects.find(x => x.id === e.targetId);
+const living = (o: SceneObject) => o.kind === 'person' || o.kind === 'character' || o.kind === 'animal';
+const propertyWord = (p: string) => lower(SCENE_PROPERTY_LABELS[p as keyof typeof SCENE_PROPERTY_LABELS] ?? p);
+/** What a sentence keeps of its object: never a part the plan changes ("keep the same clothing" next to a new outfit). */
+const kept = (parts: string[], changed: Set<string>) => joinAnd(parts.filter(p => !changed.has(p)));
+/** The brand a target's sentence shows (said once, inside its own sentence), if any. */
+function shownBrand(group: PlanEntry[]): string | undefined {
+  const main = group.find(e => e.operation === 'replace') ?? group.find(e => e.operation === 'modify' && e.property !== 'brand');
+  return main?.brand ?? group.find(e => e.property === 'brand')?.to;
+}
+/**
+ * One target's changes as one sentence, in plain words about the scene's own objects. Every change of one object is said
+ * together, so nothing it keeps contradicts what changes (a new outfit and a new grip are one instruction).
+ */
+function sentence(scene: SceneDescription, group: PlanEntry[], productReference: boolean, changedTargets: ReadonlySet<string> = new Set()): string {
+  const e = group[0], phrase = targetPhrase(scene, e.targetId), o = scene.objects.find(x => x.id === e.targetId);
   if (e.targetType === 'overlay') return `Remove ${phrase} completely and continue the background design where it was.`;
   if (e.targetType === 'mark') return `Remove ${phrase} completely${e.source === 'inferred' ? '; do not carry the old brand over to anything else' : ''}.`;
   if (!o) return '';
-  const holds = attachedTo(scene, o.id).filter(id => scene.objects.find(x => x.id === id && !x.ignored));
-  switch (e.operation) {
-    case 'remove': return `Remove ${phrase} completely and continue the surrounding scene where it was.`;
-    case 'adjust': return `Adjust ${phrase}: ${e.to}; keep the same ${o.kind === 'person' ? 'person, face, clothing and pose' : 'object, shape and place'} otherwise.`;
-    case 'modify': {
-      if (e.property === 'brand') return `The new ${lower(o.category)} is a ${e.to} product; show the brand only as such a product would plainly carry it.`;
-      if (o.kind === 'scenery' && o.importance === 'background') return `Restyle ${phrase}: ${quote(e.to ?? '')}. Keep it behind everything else and keep every other element in place.`;
-      if (o.kind === 'person' || o.kind === 'character' || o.kind === 'animal') return `Change ${phrase}: ${e.property ? `${lower(SCENE_PROPERTY_LABELS[e.property as keyof typeof SCENE_PROPERTY_LABELS] ?? e.property)} → ` : ''}${quote(e.to ?? '')}. Keep the same ${o.kind === 'animal' ? 'animal' : 'person'}, face, pose and expression${holds.length ? ', and everything held or worn that is not changed above' : ''}.`;
-      const brand = e.brand ? ` It carries the ${e.brand} brand only as such a product plainly would; remove any marking of another brand from it.` : '';
-      return `Change ${phrase}: ${e.property ? `${lower(SCENE_PROPERTY_LABELS[e.property as keyof typeof SCENE_PROPERTY_LABELS] ?? e.property)} → ` : ''}${quote(e.to ?? '')}. It stays the same ${lower(o.category)} in the same place, shape and pose.${brand}`;
-    }
-    case 'replace': {
-      const holder = holderOf(scene, o.id), h = holder ? scene.objects.find(x => x.id === holder) : undefined;
-      if (o.kind === 'person' || o.kind === 'character' || o.kind === 'animal') return `Replace ${phrase} with ${quote(e.to ?? '')}, in the same place, scale, pose and facing direction${holds.length ? ', holding or wearing the same objects' : ''}.`;
-      const reference = e.reference && productReference ? ' Match it to the second attached image (the product photo), ignoring that photo\'s background.' : '';
-      const brand = e.brand ? ` Show the ${e.brand} brand only as this product would plainly carry it.` : ' Show no brand name or logo on it.';
-      if (h) return `Replace ${phrase}, held by ${objectPhrase(scene, h)}, with ${quote(e.to ?? '')}. Remove the original completely.${brand} Do not invent model numbers or specifications.${reference}`;
-      return `Replace ${phrase} with ${quote(e.to ?? '')}. Remove the original completely: no part of it may remain. The new one may have a different shape and size; place it where the original stood, at a similar scale and visual weight, with matching lighting, reflections and shadow.${brand} Do not invent model numbers, specifications or logos.${reference}`;
-    }
-    default: return '';
+  // What it holds or wears that stays as it is (a held object that changes is described in its own sentence).
+  const holds = attachedTo(scene, o.id).filter(id => scene.objects.find(x => x.id === id && !x.ignored)), keptHolds = holds.filter(id => !changedTargets.has(id));
+  const remove = group.find(x => x.operation === 'remove'), replace = group.find(x => x.operation === 'replace'), adjust = group.find(x => x.operation === 'adjust');
+  const modifies = group.filter(x => x.operation === 'modify' && x.property !== 'brand'), brand = shownBrand(group);
+  if (remove) return `Remove ${phrase} completely and continue the surrounding scene where it was.`;
+  if (replace) {
+    const holder = holderOf(scene, o.id), h = holder ? scene.objects.find(x => x.id === holder) : undefined;
+    if (living(o)) return `Replace ${phrase} with ${quote(replace.to ?? '')}, in the same place, scale, pose and facing direction${keptHolds.length ? `, holding or wearing ${keptHolds.length === holds.length ? 'the same objects' : `the same ${keptHolds.map(id => lower(scene.objects.find(x => x.id === id)!.category)).join(' and ')}`}` : ''}${keptHolds.length < holds.length ? `${keptHolds.length ? ',' : ','} holding the new object described below` : ''}.`;
+    const reference = replace.reference && productReference ? ' Match it to the second attached image (the product photo), ignoring that photo\'s background.' : '';
+    const branding = brand ? ` Show the ${brand} brand only as this product would plainly carry it.` : ' Show no brand name or logo on it.';
+    if (h) return `Replace ${phrase}, held by ${objectPhrase(scene, h)}, with ${quote(replace.to ?? '')}. Remove the original completely.${branding} Do not invent model numbers or specifications.${reference}`;
+    return `Replace ${phrase} with ${quote(replace.to ?? '')}. Remove the original completely: no part of it may remain. The new one may have a different shape and size; place it where the original stood, at a similar scale and visual weight, with matching lighting, reflections and shadow.${branding} Do not invent model numbers, specifications or logos.${reference}`;
   }
+  const changed = new Set(modifies.map(m => m.property ? propertyWord(m.property) : '').filter(Boolean));
+  const asked = modifies.map(m => `${m.property ? `${propertyWord(m.property)} → ` : ''}${quote(m.to ?? '')}`).join('; ');
+  const adjustment = adjust ? ` Also adjust ${living(o) ? 'the hands' : 'it'}: ${adjust.to}.` : '';
+  if (modifies.length) {
+    if (o.kind === 'scenery' && o.importance === 'background') return `Restyle ${phrase}: ${asked.replace(/^[^"]*→ /, '')}. Keep it behind everything else and keep every other element in place.`;
+    if (living(o)) return `Change ${phrase}: ${asked}.${adjustment} Keep the same ${kept([o.kind === 'animal' ? 'animal' : 'person', 'face', 'pose', 'expression'], changed)}${holds.length ? ', and everything held or worn that is not changed above' : ''}.`;
+    const branding = brand ? ` It carries the ${brand} brand only as such a product plainly would; remove any marking of another brand from it.` : '';
+    return `Change ${phrase}: ${asked}. It stays the same ${lower(o.category)} in the same ${kept(['place', 'shape', 'pose'], changed)}.${adjustment}${branding}`;
+  }
+  if (adjust) return `Adjust ${phrase}: ${adjust.to}; keep the same ${living(o) ? 'person, face, clothing and pose' : 'object, shape and place'} otherwise.`;
+  if (brand) return `${phrase[0].toLocaleUpperCase()}${phrase.slice(1)} is a ${brand} product; show the brand only as such a product would plainly carry it.`;
+  return '';
+}
+/** Each changed target once, explicit changes first, then in scene order; its entries together. */
+function changeGroups(scene: SceneDescription, plan: ChangePlan): PlanEntry[][] {
+  const order = new Map([...scene.objects.map(o => o.id), ...scene.marks.map(m => m.id), ...scene.overlays.map(t => t.id)].map((id, i) => [id, i]));
+  const changes = plan.entries.filter(e => e.operation !== 'keep').sort((a, b) => (a.source === 'explicit' ? 0 : 1) - (b.source === 'explicit' ? 0 : 1) || (order.get(a.targetId)! - order.get(b.targetId)!));
+  const groups = new Map<string, PlanEntry[]>();
+  for (const e of changes) groups.set(e.targetId, [...(groups.get(e.targetId) ?? []), e]);
+  // The target's own change leads its group (an explicit one before what was inferred for it).
+  return [...groups.values()].map(g => [...g].sort((a, b) => (a.source === 'explicit' ? 0 : 1) - (b.source === 'explicit' ? 0 : 1)));
+}
+/** The exception to the text-free rule: only the brand a changed product itself carries, as its own sentence says. */
+export function brandException(scene: SceneDescription, plan: ChangePlan): string | undefined {
+  const marks = changeGroups(scene, plan).flatMap(g => {
+    const o = scene.objects.find(x => x.id === g[0].targetId), brand = o && g[0].targetType === 'object' && !g.some(x => x.operation === 'remove') ? shownBrand(g) : undefined;
+    return brand && o && !living(o) ? [`the ${brand} brand marking on ${g.some(x => x.operation === 'replace') ? 'the new' : 'the'} ${lower(o.category)}`] : [];
+  });
+  return marks.length ? `The only exception is ${joinAnd([...new Set(marks)])}, shown only as that product plainly carries it, as described above.` : undefined;
 }
 export interface CompiledResolvedEdit {
   text: string; segments: PromptSegment[];
@@ -500,14 +650,14 @@ const OPERATION_OF: Record<Exclude<PlanOperation, 'keep'>, EditOperation> = { mo
  */
 export function compileResolvedEdit(scene: SceneDescription, plan: ChangePlan, options: { productReference?: boolean } = {}): CompiledResolvedEdit {
   if (plan.status === 'needs-input') throw new DraftError('Answer the open questions before generating.');
-  const order = new Map([...scene.objects.map(o => o.id), ...scene.marks.map(m => m.id), ...scene.overlays.map(t => t.id)].map((id, i) => [id, i]));
-  const changes = plan.entries.filter(e => e.operation !== 'keep').sort((a, b) => (a.source === 'explicit' ? 0 : 1) - (b.source === 'explicit' ? 0 : 1) || (order.get(a.targetId)! - order.get(b.targetId)!));
-  // A brand the resolver inferred is said once, inside the replacement sentence.
-  const shown = changes.filter(e => !(e.property === 'brand' && e.source === 'inferred' && changes.some(x => x.targetId === e.targetId && x.operation === 'replace')));
+  const groups = changeGroups(scene, plan), changes = groups.flat();
+  // A brand the plan inferred is said once, inside its product's sentence (the summary lists it with that change).
+  const shown = changes.filter(e => !(e.property === 'brand' && e.source === 'inferred' && changes.some(x => x.targetId === e.targetId && x.operation !== 'keep' && x !== e)));
   const segments: PromptSegment[] = [{ kind: 'fixed', text: 'Edit the attached advertising creative.' }];
-  if (shown.length) {
+  if (groups.length) {
     segments.push({ kind: 'fixed', text: 'Make these changes:' });
-    shown.forEach((e, i) => segments.push({ kind: 'slot', slotId: e.targetId, label: e.label, text: `(${i + 1}) ${sentence(scene, e, !!options.productReference)}` }));
+    const changedIds = new Set(changes.map(e => e.targetId));
+    groups.forEach((g, i) => segments.push({ kind: 'slot', slotId: g[0].targetId, label: g[0].label, text: `(${i + 1}) ${sentence(scene, g, !!options.productReference, changedIds)}` }));
   } else segments.push({ kind: 'fixed', text: GENERATE_UNCHANGED_INSTRUCTION });
   const changed = new Set(changes.map(e => e.targetId));
   const keptObjects = scene.objects.filter(o => !o.ignored && !changed.has(o.id) && !(o.kind === 'scenery' && o.importance === 'background'));
@@ -519,13 +669,52 @@ export function compileResolvedEdit(scene: SceneDescription, plan: ChangePlan, o
   if (keptOverlays.length) segments.push({ kind: 'fixed', text: `Keep the overlaid text not changed above exactly as it is (${joinAnd(keptOverlays.map(overlayPhrase))}); do not rewrite it.` });
   segments.push({ kind: 'fixed', text: changes.some(e => e.operation === 'replace' || e.operation === 'remove') ? 'Add or remove objects only as the changes above require; add nothing else.' : 'Do not add or remove elements.' });
   segments.push({ kind: 'fixed', text: TEXT_FREE_RULE });
+  const exception = brandException(scene, plan);
+  if (exception) segments.push({ kind: 'fixed', text: exception });
   const text = segments.map(s => s.text).join(' ');
   if (text.length > PROMPT_LIMIT) throw new DraftError(`The prompt would be ${text.length} characters; at most ${PROMPT_LIMIT}. Change fewer things at once.`);
-  const reviewChanges: EditChange[] = changes.filter(e => e.slotId && e.operation !== 'adjust' && e.property !== 'brand').map(e => ({ slotId: e.slotId!, label: e.label, role: e.slotRole ?? 'prop',
+  // Fail closed: a prompt that contradicts itself is never sent (the checks below say which instruction).
+  const problems = promptContradictions(scene, plan, text);
+  if (problems.length) throw new DraftError(`The prompt would contradict itself: ${problems[0]} Nothing was sent.`);
+  // Every changed item is reviewed: by its template field where it fills one, otherwise by itself (its analysis box).
+  const roleOf = (e: PlanEntry): TemplateRole => e.slotRole ?? (e.targetType === 'mark' ? 'logo' : e.targetType === 'overlay' ? 'body_text' : sceneTarget(scene, e.targetId)?.type === 'object' && (sceneTarget(scene, e.targetId)!.item as SceneObject).kind === 'scenery' && (sceneTarget(scene, e.targetId)!.item as SceneObject).importance === 'background' ? 'background' : 'prop');
+  // A mark printed on a product that is itself replaced or removed is not reviewed on its own: its box lies inside that
+  // product's, where the new product's own edges would read as the mark "still there" (the product's check covers it).
+  const goneWithProduct = (e: PlanEntry) => e.targetType === 'mark' && changes.some(x => x.targetType === 'object' && (x.operation === 'replace' || x.operation === 'remove') && x.targetId === scene.marks.find(m => m.id === e.targetId)?.ownerId);
+  const reviewChanges: EditChange[] = changes.filter(e => e.operation !== 'adjust' && e.property !== 'brand' && !goneWithProduct(e)).map(e => ({ slotId: e.slotId ?? e.targetId, label: e.label, role: roleOf(e),
     operation: e.operation === 'modify' && sceneTarget(scene, e.targetId)?.type === 'object' && (sceneTarget(scene, e.targetId)!.item as SceneObject).kind === 'scenery' ? 'restyle' : OPERATION_OF[e.operation as Exclude<PlanOperation, 'keep'>],
     ...(e.to ? { value: e.to } : {}), sentence: '', structural: e.operation === 'replace' || e.operation === 'remove' }));
   const summary = shown.length ? `resolved: ${shown.map(e => `${e.label}: ${e.operation}${e.to ? ` ${e.to}` : ''}${e.source === 'inferred' ? ' (inferred)' : ''}`).join('; ')}` : 'resolved: no changes';
   return { text, segments, changes: reviewChanges, summary: summary.slice(0, 480), compatibility: planCompatibility(plan) };
+}
+/**
+ * Self-contradictions a compiled prompt must never have (the bugs this compiler once had, kept as checks): a brand to show
+ * against the text-free rule with no exception for it, "show no brand" for a product the words name a brand for, a kept
+ * list naming something that changes, "keep the same clothing" (or pose, expression, hair) next to a change of it, and
+ * "do not add or remove elements" with a replacement or removal.
+ */
+export function promptContradictions(scene: SceneDescription, plan: ChangePlan, text: string): string[] {
+  const problems: string[] = [], groups = changeGroups(scene, plan), changes = groups.flat();
+  const asksBrand = /Show the [^.]{1,80}? brand only|carries the [^.]{1,80}? brand only|is a [^.]{1,80}? product; show the brand/.test(text);
+  if (asksBrand && text.includes(TEXT_FREE_RULE) && !/The only exception is the [^.]+ brand marking/.test(text)) problems.push('a brand is asked for, but the text-free rule forbids every brand name with no exception for it.');
+  for (const e of changes.filter(x => x.operation === 'replace' && x.targetType === 'object')) {
+    const read = brandInWords(e.to);
+    if (read && !('ambiguous' in read) && new RegExp(`Replace ${targetPhrase(scene, e.targetId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^(]*?Show no brand name or logo`).test(text)) problems.push(`"${e.to}" names ${read.brand}, but the prompt says to show no brand on it.`);
+  }
+  const segment = (start: string) => { const at = text.indexOf(start); return at < 0 ? '' : text.slice(at, text.indexOf('.', at + start.length) + 1 || undefined); };
+  const keptText = [segment('Keep everything else exactly as it is:'), segment('Keep every logo and printed marking not changed above'), segment('Keep the overlaid text not changed above')].join(' ');
+  for (const id of new Set(changes.map(e => e.targetId))) { const phrase = targetPhrase(scene, id); if (new RegExp(`(?:[(:,] ?| and )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[,;)]| and )`).test(keptText)) problems.push(`${phrase} is changed but also listed as kept.`); }
+  const changedIds = new Set(changes.map(e => e.targetId));
+  for (const g of groups) {
+    const o = scene.objects.find(x => x.id === g[0].targetId);
+    if (!o) continue;
+    const own = sentence(scene, g, true, changedIds);
+    if (/holding or wearing the same objects/.test(own) && attachedTo(scene, o.id).some(id => changedIds.has(id))) problems.push(`${o.label}: "the same objects" are promised while one of them is replaced or removed.`);
+    for (const m of g.filter(x => x.operation === 'modify' && x.property)) if (new RegExp(`keep the same [^.]*\\b${propertyWord(m.property!)}\\b`, 'i').test(own)) problems.push(`${o.label}: its ${propertyWord(m.property!)} changes, yet its sentence keeps the same ${propertyWord(m.property!)}.`);
+    if (g.some(x => x.operation === 'adjust') && g.some(x => x.operation === 'modify' && x.property === 'clothing') && /clothing and pose otherwise/.test(text)) problems.push(`${o.label}: a new outfit and a kept outfit in one prompt.`);
+  }
+  if (changes.some(e => e.operation === 'replace' || e.operation === 'remove') && text.includes('Do not add or remove elements.')) problems.push('objects are replaced or removed, yet the prompt says not to add or remove elements.');
+  return problems;
 }
 /** The reusable base of the smart prompt: the template's saved fields (what a change could touch), the rest locked rules. */
 export function baseResolvedPrompt(slots: { id: string; label: string; role: TemplateRole }[]): PromptSegment[] {

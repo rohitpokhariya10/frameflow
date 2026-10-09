@@ -86,7 +86,9 @@ describe('change plans: explicit, inherited, inferred, conflicts', () => {
   it('replacing the phone takes its own brand mark and its offer text along, asks about its accessory, and keeps merchant and bank logos', () => {
     const s = scene(phoneOfferAnalysis()), plan = basePlan(s, draft(s, { smartphone_1: { action: 'replace', value: 'Xiaomi smartphone' } }));
     const by = (target: string) => plan.entries.filter(e => e.targetId === target).map(e => `${e.source}:${e.operation}`);
-    expect(by('smartphone_1')).toEqual(['explicit:replace']);
+    // "Xiaomi smartphone" names its brand: read from the user's own words by rule (B3), shown as an inferred entry.
+    expect(by('smartphone_1')).toEqual(['explicit:replace', 'inferred:modify']);
+    expect(plan.entries.find(e => e.id === 'inferred:smartphone_1:modify:brand')).toMatchObject({ to: 'Xiaomi', reason: 'Your description names this brand.' });
     expect(by('mark_2')).toEqual(['inferred:remove']); // the Apple mark printed on the phone
     expect(by('text_1')).toEqual(['inferred:remove']); // "iPhone … at ₹…" never transfers to another product
     expect(by('mark_1')).toEqual(['inherited:keep']); expect(by('mark_3')).toEqual(['inherited:keep']); expect(by('text_2')).toEqual(['inherited:keep']);
@@ -104,7 +106,9 @@ describe('change plans: explicit, inherited, inferred, conflicts', () => {
     expect(compiled.text).toContain('Remove the overlaid text block at the top completely');
     expect(compiled.text).toContain('the merchant logo at the top left and the bank logo at the bottom right');
     expect(compiled.text).not.toContain('Ignore previous instructions');
-    expect(compiled.text.endsWith(TEXT_FREE_RULE)).toBe(true);
+    // The text-free rule stays, with the one exception the replacement sentence itself asks for (B3: no contradiction).
+    expect(compiled.text).toContain('Show the Xiaomi brand only as this product would plainly carry it.');
+    expect(compiled.text.endsWith(`${TEXT_FREE_RULE} The only exception is the Xiaomi brand marking on the new smartphone, shown only as that product plainly carries it, as described above.`)).toBe(true);
     expect(compiled.compatibility.status).toBe('structural-change');
   });
 
@@ -194,8 +198,10 @@ describe('change plans: explicit, inherited, inferred, conflicts', () => {
     const { plan, rejected } = mergeResolution(s, d, base, proposal);
     expect(plan.entries.find(e => e.id === 'inferred:smartphone_1:modify:brand')).toMatchObject({ to: 'Xiaomi', source: 'inferred' });
     expect(plan.entries.find(e => e.targetId === 'smartphone_1' && e.source === 'explicit')!.brand).toBe('Xiaomi');
-    expect(base.notes.join(' ')).toMatch(/No brand was given for the new smartphone/);
-    expect(plan.notes.join(' ')).not.toMatch(/No brand was given/);
+    // The rules already read Xiaomi from the words, so the base plan never claims that no brand was given (B3b).
+    expect(base.entries.find(e => e.targetId === 'smartphone_1' && e.source === 'explicit')!.brand).toBe('Xiaomi');
+    expect([...base.notes, ...plan.notes].join(' ')).not.toMatch(/No brand was given/);
+    expect(plan.entries.filter(e => e.id === 'inferred:smartphone_1:modify:brand')).toHaveLength(1);
     expect(rejected.join('\n')).toMatch(/your own choice stands/); // the explicit phone replacement and kept earbuds
     expect(rejected.join('\n')).toMatch(/adds a number, price, offer or specification/);
     expect(rejected.join('\n')).toMatch(/unknown item/);
@@ -205,8 +211,20 @@ describe('change plans: explicit, inherited, inferred, conflicts', () => {
     expect(text).toContain('Replace the smartphone in the center with "Xiaomi phone".');
     expect(text).toContain('Show the Xiaomi brand only as this product would plainly carry it.');
     expect(text).not.toContain('14 Ultra');
-    // A brand nobody named is refused.
-    expect(mergeResolution(s, d, base, { ...noProposal(), understanding: [{ targetId: 'smartphone_1', brand: 'Oppo', brandSource: 'inferred', identity: '', specificity: 'unclear' }] }).rejected[0]).toMatch(/neither your words nor the product photo/);
+    // A brand nobody named is refused, with the true reason: here the words name another brand.
+    const oppo: ResolverProposal = { ...noProposal(), understanding: [{ targetId: 'smartphone_1', brand: 'Oppo', brandSource: 'inferred', identity: '', specificity: 'unclear' }] };
+    expect(mergeResolution(s, d, base, oppo).rejected[0]).toMatch(/A brand \(Oppo\) other than the one you gave or your words name \(Xiaomi\)/);
+    const plain = draft(s, { smartphone_1: { action: 'replace', value: 'slim phone' }, earbuds_1: { action: 'keep' } });
+    expect(mergeResolution(s, plain, basePlan(s, plain), oppo).rejected[0]).toMatch(/neither your words nor the product photo/);
+    // A brand the local list does not know comes only from the resolver: accepted when the user's words name it, even
+    // when the resolver calls it "explicit" (B3c: that answer was once refused with a false message).
+    const z = draft(s, { smartphone_1: { action: 'replace', value: 'Zentro phone' }, earbuds_1: { action: 'keep' } }), zBase = basePlan(s, z);
+    expect(zBase.notes.join(' ')).toMatch(/No brand was given for the new smartphone, and your words name none/);
+    const zMerged = mergeResolution(s, z, zBase, { ...noProposal(), understanding: [{ targetId: 'smartphone_1', brand: 'Zentro', brandSource: 'explicit', identity: 'a Zentro smartphone', specificity: 'brand_and_category' }] });
+    expect(zMerged.rejected).toEqual([]);
+    expect(zMerged.plan.entries.find(e => e.targetId === 'smartphone_1' && e.source === 'explicit')!.brand).toBe('Zentro');
+    expect(zMerged.plan.notes.join(' ')).not.toMatch(/No brand was given/);
+    expect(compileResolvedEdit(s, zMerged.plan).text).toContain('The only exception is the Zentro brand marking on the new smartphone');
   });
 
   it('flags a product/brand contradiction and a photo that shows another product, as questions with concrete answers', () => {

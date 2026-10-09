@@ -55,7 +55,11 @@ export interface ResolutionRecord {
   plan?: ChangePlan; rejected?: string[];
   /** The compiled prompt (compileResolvedEdit) when the plan is clear: what generation sends, and what the preview shows. */
   prompt?: string; summary?: string;
-  resolver: { called: boolean; model?: string; requestFile?: string; responseFile?: string; durationMs?: number; error?: string };
+  resolver: { called: boolean; model?: string; requestFile?: string; responseFile?: string; durationMs?: number; error?: string;
+    /** The plan was rebuilt under newer rules from this resolution's saved resolver answer (no new call). */
+    reusedFrom?: string };
+  /** The plan rules this resolution was made with (absent: before Step 4's rules); an older one is rebuilt, never sent. */
+  rules?: string;
   error?: { code: string; message: string };
 }
 
@@ -105,7 +109,8 @@ export function fileSceneStore(root = DEFAULT_ANALYSES_DIR) {
     /** A resolution of this analysis for exactly this binding that is ready (reused: no second resolver call). */
     findResolution(analysisId: string, binding: ResolutionRecord['binding']) {
       const dir = join(dirOf(analysisId), 'resolutions');
-      return (existsSync(dir) ? readdirSync(dir) : []).filter(f => f.endsWith('.json')).map(f => JSON.parse(readFileSync(join(dir, f), 'utf8')) as ResolutionRecord)
+      // The newest ready resolution for exactly these inputs (a rebuilt one follows the one it was rebuilt from).
+      return (existsSync(dir) ? readdirSync(dir) : []).filter(f => f.endsWith('.json')).sort().reverse().map(f => JSON.parse(readFileSync(join(dir, f), 'utf8')) as ResolutionRecord)
         .find(r => r.state === 'ready' && JSON.stringify(r.binding) === JSON.stringify(binding));
     },
     createResolution(analysisId: string, input: Omit<ResolutionRecord, 'id' | 'analysisId' | 'createdAt' | 'updatedAt' | 'state' | 'resolver'> & { referenceBytes?: Buffer; referenceExt?: string }): ResolutionRecord {

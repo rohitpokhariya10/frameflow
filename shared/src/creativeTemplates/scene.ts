@@ -74,6 +74,8 @@ export interface SceneDescription {
   lighting: SceneLighting;
   /** Objects that could each be "the main one" (more than one: the user chooses). */
   mainCandidates: string[];
+  /** The products the creative advertises, as the analysis named them (analyses made before this was asked lack it). */
+  advertised?: string[];
   uncertainties: string[];
 }
 /** A user's correction of one detected object. */
@@ -218,13 +220,17 @@ export function parseSceneDescription(value: unknown): SceneDescription {
   const candidates = Array.isArray(v.main_candidates) ? v.main_candidates : [];
   if (candidates.some(c => typeof c !== 'string' || !parsed.some(o => o.rawId === c))) throw new SceneValidationError('A main candidate is not one of the objects.');
   const mainCandidates = [...new Set((candidates as string[]).map(to))].filter(id => { const o = sceneObjects.find(x => x.id === id)!; return !['scenery', 'decoration', 'effect'].includes(o.kind); });
+  const advertisedRaw = Array.isArray(v.advertised_ids) ? v.advertised_ids : [];
+  if (advertisedRaw.some(c => typeof c !== 'string' || !parsed.some(o => o.rawId === c))) throw new SceneValidationError('An advertised product is not one of the objects.');
+  const advertised = [...new Set((advertisedRaw as string[]).map(to))].filter(id => isForeground(sceneObjects.find(x => x.id === id)!));
   const lighting = (v.lighting ?? {}) as Record<string, unknown>;
   const uncertainties = (Array.isArray(v.uncertainties) ? v.uncertainties : []).slice(0, SCENE_LIMITS.uncertainties).map(u => cleanSceneText(u)).filter(Boolean);
   return { schema: SCENE_SCHEMA_VERSION, summary: cleanSceneText(v.summary, 300), objects: sceneObjects, relations: relationList, marks: sceneMarks, overlays: sceneOverlays,
     lighting: { direction: (LIGHT_DIRECTIONS as readonly unknown[]).includes(lighting.direction) ? lighting.direction as SceneLighting['direction'] : 'unclear',
       quality: (LIGHT_QUALITIES as readonly unknown[]).includes(lighting.quality) ? lighting.quality as SceneLighting['quality'] : 'unclear',
       color: (LIGHT_COLORS as readonly unknown[]).includes(lighting.color) ? lighting.color as SceneLighting['color'] : 'unclear' },
-    mainCandidates: mainCandidates.length ? mainCandidates : sceneObjects.filter(o => o.importance === 'main' && !['scenery', 'decoration', 'effect'].includes(o.kind)).map(o => o.id), uncertainties };
+    mainCandidates: mainCandidates.length ? mainCandidates : sceneObjects.filter(o => o.importance === 'main' && !['scenery', 'decoration', 'effect'].includes(o.kind)).map(o => o.id),
+    ...(Array.isArray(v.advertised_ids) ? { advertised } : {}), uncertainties };
 }
 
 /** Any id of a scene: an object, a mark or a text overlay. */

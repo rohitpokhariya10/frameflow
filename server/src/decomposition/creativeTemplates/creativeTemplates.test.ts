@@ -115,7 +115,7 @@ async function setup(root = mkdtempSync(join(tmpdir(), 'creative-templates-'))) 
     }
     return bytes;
   };
-  const start = (mode: string, bytes: Buffer, extra: { values?: unknown; options?: unknown; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; templateId?: string; editInstruction?: string; idempotencyKey?: string; planFresh?: boolean } = {}) =>
+  const start = (mode: string, bytes: Buffer, extra: { values?: unknown; options?: unknown; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; templateId?: string; editInstruction?: string; idempotencyKey?: string; planFresh?: boolean; regenerateUnchanged?: boolean } = {}) =>
     service.start({ mode, idempotencyKey: extra.idempotencyKey ?? randomUUID(), upload: { bytes, fileName: 'creative.png', mimeType: 'image/png' }, ...extra });
   const settled = async (id: string): Promise<TemplateExecution> => {
     for (let i = 0; i < 500; i++) { const e = executions.get(id); if (e.state === 'done' || e.state === 'failed') return e; await new Promise(done => setTimeout(done, 10)); }
@@ -175,19 +175,32 @@ describe('creative templates: dynamic, learned once, reused without the planner'
     expect(restarted.service.decompose(execution.id).runId).toBe(done.runId);
     expect(restarted.seedreamPrompts).toHaveLength(1);
   });
-  it('explicit no-change generation still calls the image provider, regeneration is a new saved result, and stale approval makes no calls', async () => {
+  it('no-change Generate reviews the original image with no image request; "regenerate anyway" is an explicit, separate request; stale approval makes no calls', async () => {
+    // Changed deliberately (approved 2026-10-09): nothing to change used to mean one paid whole-image regeneration.
     const t = await setup(), bytes = await t.creative('#336699', babyPhone, babyCapture);
     const first = await t.settled((await t.start('CREATE_TEMPLATE', bytes)).execution.id);
     const options = { templateId: first.template!.id, values: {}, reviewBeforeDecompose: true };
     const a = (await t.start('REUSE_TEMPLATE_WITH_EDIT', bytes, options)).execution;
     await vi.waitFor(() => expect(t.executions.get(a.id).state).toBe('generated'));
-    expect(t.executions.get(a.id).edit!.prompt).toContain(GENERATE_UNCHANGED_INSTRUCTION);
-    const b = (await t.start('REUSE_TEMPLATE_WITH_EDIT', bytes, options)).execution;
+    const original = t.executions.get(a.id);
+    expect(t.imageEdits).not.toHaveBeenCalled();
+    // The image to review is the upload itself, at its own size; it goes on to decomposition like any other.
+    expect(original.edit).toMatchObject({ original: true, image: { sha256: original.upload.sha256, width: 640, height: 800 }, review: { requiresAcknowledgement: false, note: expect.stringMatching(/original image, exactly as uploaded/) } });
+    expect(original.usage).toMatchObject({ imageGenerationCalled: false, imageGenerationCalls: 0 });
+    // Regenerate anyway: one explicit image request, a new saved result, at the source's own size.
+    const b = (await t.start('REUSE_TEMPLATE_WITH_EDIT', bytes, { ...options, regenerateUnchanged: true })).execution;
     await vi.waitFor(() => expect(t.executions.get(b.id).state).toBe('generated'));
-    expect(b.id).not.toBe(a.id); expect(t.imageEdits).toHaveBeenCalledTimes(2);
+    const regenerated = t.executions.get(b.id);
+    expect(b.id).not.toBe(a.id); expect(t.imageEdits).toHaveBeenCalledTimes(1);
+    expect(regenerated.edit).toMatchObject({ regenerate: true, image: { width: 640, height: 800 } });
+    expect(regenerated.edit!.prompt).toContain(GENERATE_UNCHANGED_INSTRUCTION);
+    t.service.decompose(a.id);
+    const decomposed = await t.settled(a.id);
+    expect(decomposed).toMatchObject({ state: 'done', usage: { imageGenerationCalls: 0, plannerCalls: 0 } });
+    expect(t.seedreamPrompts).toHaveLength(2);
     t.templates.update(first.template!.id, template => { template.status = 'deleted'; });
-    expect(() => t.service.decompose(a.id)).toThrow(/unavailable/);
-    expect(t.seedreamPrompts).toHaveLength(1); expect(t.plannerCalls).toHaveBeenCalledTimes(1);
+    expect(() => t.service.decompose(b.id)).toThrow(/unavailable/);
+    expect(t.seedreamPrompts).toHaveLength(2); expect(t.plannerCalls).toHaveBeenCalledTimes(1);
   });
   it('primary manual flow creates once and reuses a chosen template for new content with zero analysis and planner calls', async () => {
     const t = await setup();
@@ -591,7 +604,9 @@ describe('product replacement, plan decisions and extraction recovery (offline f
     const created = await t.settled((await t.start('CREATE_TEMPLATE', source)).execution.id);
     const version = t.templates.current(created.template!.id)!;
     const generated = await t.creative('#204060', earbudsCta, earbudsCapture, 1000);
-    t.imageEdits.mockImplementation(async () => ({ data: [{ b64_json: generated.toString('base64') }], usage: { input_tokens: 1000, output_tokens: 200, input_tokens_details: { image_tokens: 800, text_tokens: 200, cached_tokens: 0 } } }));
+    // As a real model answers: at the requested canvas size (the result is mapped back to the source's own size).
+    t.imageEdits.mockImplementation(async (request: { size: string }) => { const [w, h] = request.size.split('x').map(Number);
+      return { data: [{ b64_json: (await sharp(generated).resize(w, h, { fit: 'fill' }).png().toBuffer()).toString('base64') }], usage: { input_tokens: 1000, output_tokens: 200, input_tokens_details: { image_tokens: 800, text_tokens: 200, cached_tokens: 0 } } }; });
     const generate = async (values: Record<string, string>, extra: Parameters<typeof t.start>[2] = {}) => {
       const { execution } = await t.start('REUSE_TEMPLATE_WITH_EDIT', source, { templateId: version.templateId, values, reviewBeforeDecompose: true, ...extra });
       await vi.waitFor(() => expect(['generated', 'failed']).toContain(t.executions.get(execution.id).state));

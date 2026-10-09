@@ -8,10 +8,11 @@
  *   GET    /scene-analyses/:id/image                            the analyzed image
  *   POST   /scene-analyses/:id/resolutions                      multipart draft (JSON), productReference?, rulesOnly? → a resolution
  *   GET    /scene-analyses/:id/resolutions/:resolutionId        a resolution
- *   POST   /creative-variant-sets                               { analysisId, templateId, templateVersion, protectedIds, corrections?, direction?, surprise?, count?, verify?, idempotencyKey }
+ *   POST   /creative-variant-sets                               { analysisId, templateId, templateVersion, count?, aspectRatio?, protectedIds? (automatic when absent), corrections?, direction?, surprise?, verify?, idempotencyKey }
  *   GET    /creative-variant-sets/:id                           a set: cutout, concepts, variants and their status
  *   GET    /creative-variant-sets/:id/files/:file               a set's image
  *   POST   /creative-variant-sets/:id/cutout                    multipart cutout (PNG exported from the same image)
+ *   POST   /creative-variant-sets/:id/concepts                  { idempotencyKey } — one more scene-concept call for variants without a scene (cutout kept)
  *   POST   /creative-variant-sets/:id/variants/:variantId/regenerate   { scene, idempotencyKey } — one more paid image request
  *   POST   /creative-variant-sets/:id/variants/:variantId/select       { idempotencyKey } → a reviewed execution (no new call)
  *
@@ -81,7 +82,7 @@ export function registerSmartCreativeRoutes(router: Router, ctx: { smart: SmartC
   router.post('/creative-variant-sets', express.json({ limit: '16kb' }), async (req, res, next) => {
     try {
       const b = body(req);
-      only(b, ['analysisId', 'templateId', 'templateVersion', 'protectedIds', 'corrections', 'direction', 'surprise', 'count', 'verify', 'idempotencyKey'], 'A variant set');
+      only(b, ['analysisId', 'templateId', 'templateVersion', 'protectedIds', 'aspectRatio', 'corrections', 'direction', 'surprise', 'count', 'verify', 'idempotencyKey'], 'A variant set');
       const { set, created } = await smart.startVariants(b as Parameters<SmartCreative['startVariants']>[0]);
       res.status(created ? 202 : 200).json(set);
     } catch (error) { next(error); }
@@ -99,6 +100,10 @@ export function registerSmartCreativeRoutes(router: Router, ctx: { smart: SmartC
       if (!form.files.cutout) throw new RunError('INVALID_UPLOAD', 'Choose a cutout PNG.');
       res.status(202).json(await smart.uploadCutout(req.params.id, form.files.cutout.bytes));
     } catch (error) { next(error); }
+  });
+  router.post('/creative-variant-sets/:id/concepts', express.json({ limit: '1kb' }), (req, res, next) => {
+    try { const b = body(req); only(b, ['idempotencyKey'], 'Writing scene ideas'); res.status(202).json(smart.rewriteConcepts(req.params.id, { idempotencyKey: b.idempotencyKey })); }
+    catch (error) { next(error); }
   });
   router.post('/creative-variant-sets/:id/variants/:variantId/regenerate', express.json({ limit: '4kb' }), (req, res, next) => {
     try { const b = body(req); only(b, ['scene', 'idempotencyKey'], 'A regeneration'); res.status(202).json(smart.regenerate(req.params.id, req.params.variantId, { scene: b.scene, idempotencyKey: b.idempotencyKey })); }

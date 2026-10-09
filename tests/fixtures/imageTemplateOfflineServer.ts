@@ -37,6 +37,13 @@ const events: { kind: string; source: string; prompt?: string; size?: string; in
 const failedPortrait = new Set<string>(), editAttempts = new Map<string, number>();
 /** Generated images whose first extraction fal rejects (422 invalid_request on body.image_url, 0 billable units), as seen live on 2026-10-08. */
 const rejectFirstExtraction = new Set<string>(), rejectedRequests = new Set<string>(), submitted: string[] = [];
+/**
+ * An "Extraction 422 test" creative is marked by a flat magenta block inside the new product: it survives a local edit's
+ * compositing (only the product's region comes from the model), so the first extraction of such an image is refused
+ * whatever the rest of it is. Each marked image is refused once.
+ */
+const MARKER = [255, 0, 255], markerRejected = new Set<string>();
+const hasMarker = async (bytes: Buffer) => { const { data } = await sharp(bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true }); let n = 0; for (let i = 0; i < data.length; i += 3) if (Math.abs(data[i] - MARKER[0]) <= 3 && data[i + 1] <= 3 && Math.abs(data[i + 2] - MARKER[2]) <= 3) n++; return n >= 400; };
 const pause = () => new Promise<void>(done => setTimeout(done, 350));
 const BACKDROP = '<rect width="1000" height="1000" fill="#ede4f7"/><circle cx="190" cy="230" r="75" fill="#ddd0ed"/><circle cx="800" cy="500" r="110" fill="#e1d7ed"/><ellipse cx="500" cy="820" rx="320" ry="65" fill="#c6b6dc"/><ellipse cx="500" cy="790" rx="320" ry="60" fill="#faf7ff"/>';
 const PHONE = '<rect x="345" y="190" width="310" height="570" rx="45" fill="#514661"/><rect x="357" y="202" width="286" height="546" rx="37" fill="#b294d2"/><rect x="375" y="222" width="105" height="130" rx="28" fill="#9a7aba"/><circle cx="405" cy="255" r="20" fill="#292431"/><circle cx="447" cy="305" r="20" fill="#292431"/><circle cx="505" cy="495" r="40" fill="#cbb4e2"/>';
@@ -65,7 +72,7 @@ const imageUsage = { input_tokens: 1867, input_tokens_details: { image_tokens: 1
 const plannerUsage = { input_tokens: 3376, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 3373 }, output_tokens: 4835, output_tokens_details: { reasoning_tokens: 1552 } };
 const referenceUsage = { input_tokens: 2616, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1937 };
 const callCounts = { openai: 0, fal: 0, seedream: 0 };
-const generate = async (request: { size: string; prompt: string; image?: File | File[] }) => {
+const generate = async (request: { size: string; prompt: string; image?: File | File[]; mask?: File }) => {
   callCounts.openai++;
   const images = request.image ? Array.isArray(request.image) ? request.image : [request.image] : [];
   const inputs = await Promise.all(images.map(async image => digest(Buffer.from(await image.arrayBuffer()))));
@@ -84,8 +91,26 @@ const generate = async (request: { size: string; prompt: string; image?: File | 
     if (request.prompt.includes('Regenerate failure test') && attempt === 2) throw new Error('Fixture regeneration failure.');
     const replaced = (request.prompt.includes('Replace the main product') || request.prompt.includes('Replace the smartphone')) && !request.prompt.includes('Kept product test');
     const mark = `<rect x="4" y="4" width="10" height="10" fill="#${createHash('sha256').update(request.prompt).digest('hex').slice(0, 6)}"/>`;
-    const bytes = await sharp(await svgPng(width, height, `${BACKDROP}${replaced ? SPEAKER : PHONE}${mark}`)).modulate({ hue: 25 }).png().toBuffer();
-    if (request.prompt.includes('Extraction 422 test')) rejectFirstExtraction.add(digest(bytes));
+    let bytes = await sharp(await svgPng(width, height, `${BACKDROP}${replaced ? SPEAKER : PHONE}${mark}`)).modulate({ hue: 25 }).png().toBuffer();
+    if (request.prompt.includes('Extraction 422 test')) {
+      const block = { left: Math.round(width * 0.46), top: Math.round(height * 0.52), width: Math.round(width * 0.08), height: Math.round(height * 0.08) };
+      bytes = await sharp(bytes).composite([{ input: { create: { width: block.width, height: block.height, channels: 3, background: { r: MARKER[0], g: MARKER[1], b: MARKER[2] } } }, left: block.left, top: block.top }]).png().toBuffer();
+      rejectFirstExtraction.add(digest(bytes));
+    }
+    return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
+  }
+  // A creative variant on its own ratio canvas: like a masked-edit model, new scenery everywhere the mask lets it paint,
+  // and the placed products redrawn a little brighter and a few pixels off (a drift); the app restores their own pixels.
+  if (request.prompt.startsWith('Create a premium advertising photograph around the products already placed')) {
+    if (request.prompt.includes('Variant failure test')) throw Object.assign(new Error('Fixture variant failure.'), { status: 500 });
+    const hue = parseInt(createHash('sha256').update(request.prompt).digest('hex').slice(0, 2), 16);
+    const scenery = await sharp(await svgPng(width, height, '<rect width="1000" height="1000" fill="#2a8c8c"/><circle cx="210" cy="210" r="120" fill="#f5d76e"/><rect x="0" y="780" width="1000" height="220" fill="#1d5f5f"/>')).modulate({ hue }).png().toBuffer();
+    // The kept products (the mask's opaque area), redrawn: built byte by byte, as sharp drops a joined alpha band here.
+    const rgb = await sharp(Buffer.from(await images[0].arrayBuffer())).removeAlpha().raw().toBuffer(), keep = await sharp(Buffer.from(await request.mask!.arrayBuffer())).ensureAlpha().raw().toBuffer();
+    const products = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < width * height; i++) { for (let c = 0; c < 3; c++) products[i * 4 + c] = Math.min(255, rgb[i * 3 + c] + 10); products[i * 4 + 3] = keep[i * 4 + 3]; }
+    const redrawn = await sharp(products, { raw: { width, height, channels: 4 } }).extract({ left: 0, top: 0, width: width - 9, height: height - 6 }).png().toBuffer();
+    const bytes = await sharp(scenery).composite([{ input: redrawn, left: 9, top: 6 }]).png().toBuffer();
     return { created: 1, quality: 'medium', usage: imageUsage, data: [{ b64_json: bytes.toString('base64') }] };
   }
   // A creative variant: new teal scenery around the (masked, kept) phone; the app restores the phone's own pixels on top.
@@ -131,6 +156,7 @@ const transport: FalTransport = {
     const { width = 1024, height = 1024 } = await sharp(bytes).metadata();
     const requestId = `offline-${results.size}`;
     if (!residual && rejectFirstExtraction.delete(digest(bytes))) rejectedRequests.add(requestId);
+    else if (!residual && !markerRejected.has(digest(bytes)) && await hasMarker(bytes)) { markerRejected.add(digest(bytes)); rejectedRequests.add(requestId); }
     if (!residual && curationImages.has(await pixelsDigest(bytes))) {
       providerCalls.push({ kind: 'seedream-initial' });
       const layers = await Promise.all((await curation).layers.map(async (layer, z_index) => {
@@ -278,8 +304,16 @@ const router = createLayerizeRouter({
     verifier: () => ({ model: 'gpt-5.6-sol', verify: async (input, save) => { callCounts.openai++; save('verification.openai-request.json', { model: 'gpt-5.6-sol' }); save('verification.openai-response.json', textUsage('gpt-5.6-sol'));
       return input.expectations.map((e): SemanticCheck => ({ id: e.id, status: 'pass', message: 'Consistent in the offline check.' })); } }),
     concepts: () => ({ model: 'gpt-5.6-sol', write: async (input, save) => { callCounts.openai++; save('concepts.openai-request.json', { model: 'gpt-5.6-sol' }); save('concepts.openai-response.json', textUsage('gpt-5.6-sol'));
-      const scenes = ['polished marble plinth under soft window light', 'rooftop at dusk with glossy puddles', 'floating pastel paper shapes in a calm studio', 'desert dunes at golden hour'], titles = ['Marble studio', 'Rooftop dusk', 'Paper shapes', 'Desert light'];
-      return Array.from({ length: input.count }, (_, i) => ({ title: titles[i], scene: `${scenes[i]}${input.direction ? `, after: ${input.direction}` : ''}${/failure drill/.test(input.direction ?? '') && i === 1 ? ', Variant failure test' : ''}` })); } }),
+      // Structured art directions, two of them recolours of another (the app must leave those out). "failure drill" in
+      // the direction makes the paper-shapes creative's image request fail.
+      const drill = /failure drill/.test(input.direction ?? ''), theme = input.direction ? `after: ${input.direction}` : '';
+      const marble = { title: 'Marble studio', family: 'studio', theme, environment: 'a seamless warm grey studio sweep', surface: 'a polished marble plinth', props: [], palette: ['warm grey', 'ivory'], lighting: 'soft window light from the left', mood: 'precise', camera: 'eye-level', composition: { x: 0.5, y: 0.6, scale: 0.6, copy_space: 'top' } };
+      const rooftop = { title: 'Rooftop dusk', family: 'architectural', theme, environment: 'a concrete rooftop at dusk with city lights far below', surface: 'a wet concrete ledge with glossy puddles', props: ['a potted olive tree'], palette: ['indigo', 'amber'], lighting: 'cool dusk light with warm city glow', mood: 'urban', camera: 'low-angle', composition: { x: 0.62, y: 0.62, scale: 0.55, copy_space: 'left' } };
+      const pool = [marble, { ...marble, title: 'Marble studio in rose', palette: ['rose', 'ivory'] }, rooftop, { ...rooftop, title: 'Rooftop dusk in teal', palette: ['teal', 'amber'] },
+        { title: 'Paper shapes', family: 'abstract', theme, environment: `floating pastel paper shapes in a calm set${drill ? ', Variant failure test' : ''}`, surface: 'a folded paper riser', props: ['paper arches'], palette: ['peach', 'lilac'], lighting: 'even diffused light', mood: 'playful', camera: 'high-angle', composition: { x: 0.4, y: 0.55, scale: 0.65, copy_space: 'right' } },
+        { title: 'Desert light', family: 'nature', theme, environment: 'sand dunes at golden hour', surface: 'a flat sandstone slab', props: ['dry grass'], palette: ['sand', 'burnt orange'], lighting: 'low golden sun from the right', mood: 'warm', camera: 'eye-level', composition: { x: 0.5, y: 0.66, scale: 0.5, copy_space: 'bottom' } },
+        { title: 'Festive table', family: 'festive', theme, environment: 'a dinner table with brass diyas and marigold garlands', surface: 'a carved wooden tray', props: ['marigolds', 'brass diyas'], palette: ['saffron', 'maroon', 'gold'], lighting: 'warm candle glow', mood: 'joyful', camera: 'high-angle', composition: { x: 0.56, y: 0.58, scale: 0.6, copy_space: 'none' } }];
+      return pool.slice(0, input.count); } }),
     segmenter: () => ({ provider: 'sam3', segment: async ({ width, height }) => { callCounts.fal++; await pause();
       return { mask: await svgPng(width, height, '<rect width="1000" height="1000" fill="#000"/><rect x="345" y="190" width="310" height="570" rx="45" fill="#fff"/>'), requestIds: ['offline-sam3'] }; } }),
   },

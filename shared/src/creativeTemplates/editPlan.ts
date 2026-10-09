@@ -11,6 +11,7 @@
 import { TEMPLATE_ROLE_LABELS, type TemplateRole, type TemplateZone } from './roles.js';
 import type { TemplateLayer, TemplateVersion } from './types.js';
 import { GENERATE_UNCHANGED_INSTRUCTION, sanitizeEditInstruction } from './editPrompt.js';
+import { brandInWords, namesWord } from './brands.js';
 
 export const ZONE_PHRASES: Record<TemplateZone, string> = { 'top-left': 'at the top left', 'top-center': 'at the top', 'top-right': 'at the top right', 'middle-left': 'on the left',
   center: 'in the center', 'middle-right': 'on the right', 'bottom-left': 'at the bottom left', 'bottom-center': 'at the bottom', 'bottom-right': 'at the bottom right', 'full-canvas': 'across the whole canvas' };
@@ -62,7 +63,16 @@ export interface TemplateEditOptions {
   mainProduct?: { mode?: 'replace' | 'details'; brand?: string; keepSupporting?: boolean };
   /** A product reference image is attached as the second input image. */
   productReference?: boolean;
+  /**
+   * Without an image analysis: what happens to a text or logo field left empty when the main product is replaced (it may
+   * name the old product). Every such field needs one before generating; nothing is kept or removed by guess.
+   */
+  textDecisions?: Record<string, 'keep' | 'remove'>;
 }
+/** A decision generating needs first (without an image analysis): one empty text or logo field when the product changes. */
+export interface TemplateEditQuestion { slotId: string; label: string; message: string }
+/** The text and logo roles that can name a product (a button's text rarely does). */
+const PRODUCT_TEXT_ROLES: readonly TemplateRole[] = ['logo', 'headline', 'price', 'body_text', 'badge'];
 export type EditOperation = 'replace' | 'details' | 'restyle' | 'text' | 'remove';
 export interface EditChange { slotId: string; label: string; role: TemplateRole; operation: EditOperation; value?: string; sentence: string; structural: boolean }
 /** A piece of the prompt: a locked rule, or text that comes from a field (slotId) — the parts the UI highlights. */
@@ -71,6 +81,8 @@ export interface PromptSegment { kind: 'fixed' | 'slot'; text: string; slotId?: 
 export interface BlueprintCompatibility { status: 'compatible' | 'structural-change'; reasons: string[]; changedSlots: string[] }
 export interface CompiledTemplateEdit {
   text: string; segments: PromptSegment[]; changes: EditChange[];
+  /** Decisions needed before generating (none: ready). The server refuses a request that leaves any open. */
+  questions: TemplateEditQuestion[];
   /** One deterministic line naming every change: the execution's instruction (history and duplicate detection). */
   summary: string;
   compatibility: BlueprintCompatibility;
@@ -94,13 +106,22 @@ function cleanInput(slots: TemplateSlot[], values: unknown, options: TemplateEdi
   }
   const brand = sanitizeEditInstruction(options.mainProduct?.brand ?? '');
   if (brand.length > BRAND_LIMIT) throw new Error(`A brand is at most ${BRAND_LIMIT} characters.`);
+  for (const [key, value] of Object.entries(options.textDecisions ?? {})) if (!slots.some(s => s.id === key) || (value !== 'keep' && value !== 'remove')) throw new Error('A text decision names a template text field and is keep or remove.');
   return { values: clean, brand };
 }
 
 /** The changes these values request, in back-to-front order, with the companions a replaced main product takes along. */
-function changesOf(slots: TemplateSlot[], values: Record<string, string>, brand: string, options: TemplateEditOptions): EditChange[] {
+/** The brand of the new main product: the brand field, else the one brand the user's own words name (never a guess). */
+export function mainProductBrand(value: string | undefined, brandField: string): { brand?: string; ambiguous?: string[] } {
+  if (brandField) return { brand: brandField };
+  const read = brandInWords(value);
+  return !read ? {} : 'ambiguous' in read ? { ambiguous: read.ambiguous } : { brand: read.brand };
+}
+function changesOf(slots: TemplateSlot[], values: Record<string, string>, brandField: string, options: TemplateEditOptions, questions: TemplateEditQuestion[]): EditChange[] {
   const main = slots.find(s => s.role === 'main_product' && s.group === 'product'), mode = options.mainProduct?.mode ?? 'replace';
   const replacingMain = !!main && !!values[main.id] && mode === 'replace';
+  const named = replacingMain ? mainProductBrand(values[main!.id], brandField) : {}, brand = named.brand ?? '';
+  if (named.ambiguous) questions.push({ slotId: main!.id, label: main!.label, message: `Your words name more than one brand (${named.ambiguous.join(' and ')}). Give one in the Brand field.` });
   const changes: EditChange[] = [];
   for (const slot of slots) {
     const value = values[slot.id], base = { slotId: slot.id, label: slot.label, role: slot.role };
@@ -108,6 +129,13 @@ function changesOf(slots: TemplateSlot[], values: Record<string, string>, brand:
       // The original product set goes with a replaced main product unless the user keeps or changes its companions.
       if (replacingMain && slot.role === 'supporting_product' && !options.mainProduct?.keepSupporting) changes.push({ ...base, operation: 'remove', structural: true,
         sentence: `Remove the ${phrase(slot)}: it belongs to the original product set. Continue the background design where it was.` });
+      // Text or a logo left as it is may name the old product: without an analysis that is the user's decision, never a guess.
+      if (replacingMain && PRODUCT_TEXT_ROLES.includes(slot.role)) {
+        const decided = options.textDecisions?.[slot.id];
+        if (decided === 'remove') changes.push({ ...base, operation: 'remove', structural: true,
+          sentence: `Remove the ${TEMPLATE_ROLE_LABELS[slot.role].toLowerCase()}${slot.role === 'logo' ? '' : ' text'}${where(slot)} completely and continue the background design where it was.` });
+        else if (decided !== 'keep') questions.push({ slotId: slot.id, label: slot.label, message: `${slot.label} may name the old product. Keep it, remove it, or type its new text.` });
+      }
       continue;
     }
     if (slot.kind === 'text') {
@@ -120,10 +148,12 @@ function changesOf(slots: TemplateSlot[], values: Record<string, string>, brand:
       changes.push({ ...base, operation: 'details', value, structural: false,
         sentence: `Change the main product${where(slot)}: ${value}. It stays the same product, in the same place, shape and pose.` });
     } else if (slot === main) {
-      const product = brand ? `${brand} ${value}` : value;
+      const product = brand && !namesWord(value, brand) ? `${brand} ${value}` : value;
+      // One brand rule: the named brand is shown as the product carries it (and excepted from the no-brand rule below);
+      // with none named, no brand is drawn at all.
       changes.push({ ...base, operation: 'replace', value: product, structural: true,
         sentence: `Replace the main product${where(slot)} with ${quote(product)}. Remove the original main product completely: no part of it may remain. The new product may have a different shape, size and silhouette; place it where the original stood, at a similar scale and visual weight, with matching lighting, reflections and shadow.${
-          options.productReference ? ' Match the new product to the second attached image (the product reference), ignoring that image\'s background.' : ' Show the brand only as the product would plainly carry it; do not invent logos, model numbers or specifications.'}` });
+          options.productReference ? ' Match the new product to the second attached image (the product reference), ignoring that image\'s background.' : brand ? ` Show the ${brand} brand only as this product would plainly carry it; do not invent model numbers or specifications.` : ' Show no brand name or logo on it; do not invent model numbers or specifications.'}` });
     } else if (slot.role === 'held_object') {
       changes.push({ ...base, operation: 'replace', value, structural: !slot.groupedWith,
         sentence: `Replace the held object${where(slot)} with ${quote(value)}. Remove the original completely; keep the grip natural.` });
@@ -140,26 +170,31 @@ function changesOf(slots: TemplateSlot[], values: Record<string, string>, brand:
 }
 
 /** The locked rules around the changes: what the edit keeps, and what it may never add. */
-function fixedRules(slots: TemplateSlot[], changes: EditChange[]) {
+function fixedRules(slots: TemplateSlot[], changes: EditChange[], brand = '') {
   const touched = new Set(changes.map(c => c.slotId));
   const kept = slots.filter(s => !touched.has(s.id) && s.role !== 'background');
   const keep = kept.length ? `Keep the rest of the layout exactly: ${kept.map(s => `the ${phrase(s)}`).join(', ')}.` : '';
   const objects = changes.some(c => c.operation === 'replace' || c.operation === 'remove');
+  // A replaced main product: the visible text kept is only what was chosen to keep (it never silently outlives the product).
+  const textKept = changes.some(c => c.role === 'main_product' && c.operation === 'replace') ? 'the visible text that is kept' : 'all visible text';
+  const protectedText = brand ? `${PROTECTED_TEXT.slice(0, -1)}, except the ${brand} brand marking the new product itself plainly carries.` : PROTECTED_TEXT;
   return [keep,
-    'Keep everything not changed above as it is: positions, sizes, poses, stacking order, lighting direction, colors, style and all visible text.',
+    `Keep everything not changed above as it is: positions, sizes, poses, stacking order, lighting direction, colors, style and ${textKept}.`,
     objects ? 'Add or remove objects only as the changes above require; add nothing else.' : 'Do not add or remove elements.',
-    changes.some(c => c.operation === 'text') ? `Use the new text exactly as given. ${PROTECTED_TEXT}` : PROTECTED_TEXT].filter(Boolean);
+    changes.some(c => c.operation === 'text') ? `Use the new text exactly as given. ${protectedText}` : protectedText].filter(Boolean);
 }
 
 /** The prompt for these field values and options: the same text in the preview and in the request. */
 export function compileTemplateEdit(version: Pick<TemplateVersion, 'structure'>, values: unknown, options: TemplateEditOptions = {}): CompiledTemplateEdit {
-  const slots = describeTemplateSlots(version), input = cleanInput(slots, values, options), changes = changesOf(slots, input.values, input.brand, options);
+  const slots = describeTemplateSlots(version), input = cleanInput(slots, values, options), questions: TemplateEditQuestion[] = [], changes = changesOf(slots, input.values, input.brand, options, questions);
+  const mainChange = changes.find(c => c.role === 'main_product' && c.operation === 'replace'), main = slots.find(s => s.role === 'main_product' && s.group === 'product');
+  const shownBrand = mainChange && !options.productReference && main ? mainProductBrand(input.values[main.id], input.brand).brand ?? '' : '';
   const segments: PromptSegment[] = [{ kind: 'fixed', text: 'Edit the attached advertising creative.' }];
   if (changes.length) {
     segments.push({ kind: 'fixed', text: 'Make these changes:' });
     changes.forEach((c, i) => segments.push({ kind: 'slot', slotId: c.slotId, label: c.label, text: `(${i + 1}) ${c.sentence}` }));
   } else segments.push({ kind: 'fixed', text: GENERATE_UNCHANGED_INSTRUCTION });
-  for (const rule of fixedRules(slots, changes)) segments.push({ kind: 'fixed', text: rule });
+  for (const rule of fixedRules(slots, changes, shownBrand)) segments.push({ kind: 'fixed', text: rule });
   const structural = changes.filter(c => c.structural);
   const compatibility: BlueprintCompatibility = structural.length
     ? { status: 'structural-change', changedSlots: structural.map(c => c.slotId), reasons: structural.map(c => c.operation === 'remove'
@@ -167,7 +202,7 @@ export function compileTemplateEdit(version: Pick<TemplateVersion, 'structure'>,
       : `${c.label} becomes ${quote(c.value!)}: a different object than the one the saved decomposition plan was learned from.`) }
     : { status: 'compatible', changedSlots: [], reasons: changes.length ? ['Only looks, text or subjects in their saved places change: the saved plan still describes this creative.'] : ['Nothing changes.'] };
   const summary = changes.length ? changes.map(c => `${c.label}: ${c.operation}${c.value ? ` ${c.value}` : ''}`).join('; ') : 'no changes';
-  return { text: segments.map(s => s.text).join(' '), segments, changes, summary, compatibility };
+  return { text: segments.map(s => s.text).join(' '), segments, changes, questions, summary, compatibility };
 }
 
 /** The template's base prompt: its locked rules, with every field shown where its change would go. */

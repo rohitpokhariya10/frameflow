@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Locator } from '@playwright/test';
 import sharp from 'sharp';
 import { describeTemplateSlots, type TemplateVersion } from '@frameflow/shared';
-import { API, executionOf as execution, imageCalls, openWizard, runOf, started, writesOf } from './wizard.helpers';
+import { API, executionOf as execution, expectEditorLayers, imageCalls, openWizard, ownImage, runOf, started, writesOf } from './wizard.helpers';
 // Every provider count here is this test's own (a unique prompt token, its page's requests, its executions' records):
 // other specs may use the shared fixture server at the same time.
 test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
@@ -18,6 +18,10 @@ const generatedState = (request: APIRequestContext, id: string) => expect.poll(a
 const session = (panel: Locator, id: string) => panel.getByRole('region', { name: 'Saved template executions' }).locator(`button:has(img[src*="${id}"])`);
 
 test('Journeys C + A: create a template card → customize its saved slots → one generated image → review, regenerate, reopen → approve → saved-plan decomposition → editor', async ({ page, request }, testInfo) => {
+  // Once per fixture server: its call counts need the first analysis of the template's example image. A later run is
+  // matched to the same template and rightly reuses that analysis (no call), so its counts differ. The layout checks of
+  // each viewport are in the next test.
+  test.skip(testInfo.project.name !== 'desktop', 'One journey per fixture server.');
   test.setTimeout(150000);
   const errors: string[] = [], detections: string[] = [], token = `${testInfo.project.name}-${Date.now().toString(36)}`;
   page.on('pageerror', e => errors.push(e.message));
@@ -60,7 +64,8 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   expect(thumb!.y + thumb!.height).toBeLessThanOrEqual(title!.y);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('wizard-library-desktop.png') });
 
-  // A: Customize shows one field per saved slot and the base prompt with those fields marked; the final prompt compiles locally.
+  // A: Customize shows one field per saved slot and the base prompt with those fields marked. The normal Generate plans the
+  // filled fields against the image's own analysis (changed 2026-10-09: it used to compile them locally into one prompt).
   const writes = writesOf(page), phone = `Green smartphone ${token}`;
   await next();
   const version: TemplateVersion = await (await request.get(`${API}/templates/${first.template.id}/versions/1`)).json();
@@ -78,12 +83,11 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   await panel.getByRole('radio', { name: 'Change details', exact: true }).check();
   await panel.getByLabel('Main product content', { exact: true }).fill(phone);
   await panel.getByLabel('Background content', { exact: true }).fill('Warm studio backdrop');
-  await expect(panel.getByRole('region', { name: 'What will change' }).getByRole('listitem')).toHaveText([/Restyle\s*Background: Warm studio backdrop$/, new RegExp(`Change details\\s*Main product: ${phone}$`)]);
-  await expect(panel.getByLabel('Final prompt preview', { exact: true })).toHaveValue(/Green smartphone.*Warm studio backdrop|Warm studio backdrop.*Green smartphone/);
-  const preview = await panel.getByLabel('Final prompt preview', { exact: true }).inputValue();
-  expect(preview).not.toContain('{{edit_instruction}}');
+  await expect(panel.getByRole('region', { name: 'What will change' }).getByRole('listitem')).toHaveText([/^Background\s*Warm studio backdrop$/, new RegExp(`^Main product\\s*${phone}$`)]);
+  await expect(panel.getByRole('region', { name: 'Resolved changes' })).toContainText('Generate first reads your image once');
+  // A prompt compiled from the fields alone is never shown as what is sent: the plan from the image is.
+  await expect(panel.getByLabel('Final prompt preview', { exact: true })).toHaveCount(0);
   expect(writes).toEqual([]);
-  await panel.getByText('Final prompt · exactly what is sent', { exact: true }).click();
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('wizard-customize-desktop.png') });
   expect(await panel.locator('.ws-body').evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
   await next(); await back();
@@ -95,8 +99,16 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   await expect(panel.getByRole('heading', { name: 'Make it your own' })).toBeVisible();
   await expect(panel.getByLabel('Main product content', { exact: true })).toHaveValue(phone);
   await expect(panel.getByRole('radio', { name: 'Change details', exact: true })).toBeChecked();
-  await expect(panel.getByLabel('Final prompt preview', { exact: true })).toHaveValue(preview);
   expect(writes).toEqual([]); expect(await imageCalls(request, token)).toBe(0);
+  // Plan changes: the image is analyzed once (1 AI call, reused afterwards) and the fields resolved into the exact prompt.
+  await panel.getByRole('button', { name: 'Plan changes · 1 AI call', exact: true }).click();
+  const promptBox = panel.getByLabel('Resolved final prompt text', { exact: true });
+  await expect(promptBox).toHaveValue(new RegExp(phone), { timeout: 30000 });
+  const preview = await promptBox.inputValue();
+  expect(preview).toContain('Warm studio backdrop');
+  // The fields stay the way in: the plan is beside them.
+  await expect(panel.getByLabel('Main product content', { exact: true })).toHaveValue(phone);
+  expect(writes).toEqual([`POST ${API}/scene-analyses`, expect.stringMatching(new RegExp(`^POST ${API}/scene-analyses/[^/]+/resolutions$`))]);
 
   // Changed content cannot skip generation; one click (even a double one) makes exactly one image request.
   await next();
@@ -105,12 +117,14 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   await generatedState(request, generating.id).toBe('generated');
   await expect(useImage).toBeEnabled({ timeout: 30000 });
   const generated = await execution(request, generating.id);
-  expect(generated).toMatchObject({ state: 'generated', usage: { plannerCalls: 0, imageGenerationCalls: 1, promptGenerationCalled: false } });
+  expect(generated).toMatchObject({ state: 'generated', usage: { plannerCalls: 0, imageGenerationCalls: 1, promptGenerationCalled: false, analysisCalls: 1, generationPromptSource: 'resolved-plan' } });
   expect(generated.runId).toBeUndefined(); expect(generated.inspection).toBeUndefined(); expect(generated.edit.prompt).toBe(preview);
-  expect(generated.compatibility).toMatchObject({ status: 'compatible' }); expect(generated.editOptions).toEqual({ mainProduct: { mode: 'details' } });
+  expect(generated.compatibility).toMatchObject({ status: 'compatible' });
+  // The result keeps the uploaded image's own size.
+  expect(generated.edit.image).toMatchObject({ width: generated.upload.width, height: generated.upload.height });
   expect(await imageCalls(request, token)).toBe(1);
-  expect(writes).toEqual([`POST ${API}/template-executions`]);
-  await expect(panel.getByText('Prompt planning:')).toContainText('0 calls · ₹0');
+  expect(writes.slice(2)).toEqual([`POST ${API}/template-executions`]);
+  await expect(panel.getByText('Image analysis:')).toContainText('1 call');
   await expect(panel.getByText('Image generation:')).toContainText('1 call ·');
   expect(await loaded(panel.getByRole('img', { name: 'Generated creative', exact: true }))).toBe(true);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('wizard-generated-desktop.png') });
@@ -125,27 +139,27 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   expect(regenerated.edit.prompt).toBe(preview);
   expect((await execution(request, generated.id)).state).toBe('generated');
   expect(await imageCalls(request, token)).toBe(2);
-  expect(writes).toEqual([`POST ${API}/template-executions`, `POST ${API}/template-executions`]);
+  expect(writes.slice(2)).toEqual([`POST ${API}/template-executions`, `POST ${API}/template-executions`]);
 
   // Refresh reopens the persisted review, without another image or decomposition request.
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
   await expect(useImage).toBeEnabled();
-  expect(await loaded(panel.getByRole('img', { name: 'Generated creative', exact: true }))).toBe(true);
+  await expect.poll(() => loaded(panel.getByRole('img', { name: 'Generated creative', exact: true })), { timeout: 15_000 }).toBe(true);
   // Saved Runs reopens the same review step.
   await panel.getByRole('tab', { name: 'Saved Runs', exact: true }).click();
   await expect(session(panel, regenerated.id)).toContainText('Waiting for your review');
   await session(panel, regenerated.id).click();
   await expect(panel.getByRole('heading', { name: 'Review your creative' })).toBeVisible();
   await expect(useImage).toBeEnabled();
-  expect(await imageCalls(request, token)).toBe(2); expect(writes).toHaveLength(2);
+  expect(await imageCalls(request, token)).toBe(2); expect(writes).toHaveLength(4);
 
   // Approval starts the decomposition of the approved image, with the saved plan and no planner.
   await started(page, request, () => useImage.click(), `${API}/template-executions/${regenerated.id}/decompose`);
   await expect(panel.getByRole('heading', { name: 'Turn your creative into layers' }).or(panel.getByRole('heading', { name: 'Editor-ready layers' }))).toBeVisible();
   await expect(panel.getByRole('button', { name: 'Open in Editor', exact: true })).toBeEnabled({ timeout: 90000 });
   const done = await execution(request, regenerated.id);
-  expect(done.usage).toMatchObject({ plannerCalls: 0, imageGenerationCalls: 1, generationPromptSource: 'saved-template', decompositionPlanSource: 'saved-template' });
+  expect(done.usage).toMatchObject({ plannerCalls: 0, imageGenerationCalls: 1, generationPromptSource: 'resolved-plan', decompositionPlanSource: 'saved-template' });
   expect(await imageCalls(request, token)).toBe(2);
   const run = await runOf(request, done.runId);
   expect(run.calls).toMatchObject({ planner: 0, seedreamInitial: 1 });
@@ -154,12 +168,10 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   expect(decomposed.equals(bytes)).toBe(false);
   const d = await (await request.get(`${API}/runs/${done.runId}/diagnostics`)).json();
   expect(d.stages.find((s: { id: string }) => s.id === 'planner').calls).toEqual([]);
-  expect(d.stages.find((s: { id: string }) => s.id === 'reference').calls).toEqual([]);
+  // The image's analysis and the change resolution are counted with this creative's calls.
+  expect(d.stages.find((s: { id: string }) => s.id === 'reference').calls.length).toBeGreaterThan(0);
   expect(d.stages.find((s: { id: string }) => s.id === 'generation').cost).toEqual(done.generationCost);
-  const costs = panel.getByRole('definition');
-  await expect(panel.getByRole('term')).toContainText(['Structure analysis', 'Prompt planning', 'Image generation', 'Decomposition planner', 'Layer extraction (Seedream)']);
-  await expect(costs.nth(0)).toHaveText('0 calls'); await expect(costs.nth(1)).toHaveText('0 calls · ₹0');
-  await expect(costs.nth(2)).toContainText('1 call ·'); await expect(costs.nth(3)).toHaveText('0 calls · ₹0');
+  await expect(panel.getByRole('term')).toContainText(['Structure analysis', 'Image analysis', 'Change resolution', 'Image generation', 'AI check of the result', 'Decomposition planner', 'Layer extraction (Seedream)']);
   await panel.getByText('Preview layers', { exact: true }).click();
   await expect(panel.locator('.cti-layer-previews img').first()).toBeVisible();
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('wizard-layers-desktop.png') });
@@ -172,6 +184,23 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   await panel.getByRole('button', { name: 'Open in Editor', exact: true }).click();
   await expect(page.getByLabel('Open design').locator('option')).toHaveCount(2);
   expect(detections).toEqual([]); expect(errors).toEqual([]);
+});
+
+test('in every viewport, the library card keeps its thumbnail above its name, and Customize with filled fields fits without scrolling', async ({ page, request }) => {
+  const template = await bootstrapTemplate(request), panel = await openWizard(page);
+  const card = panel.getByRole('article', { name: `${template.name} v${template.version}`, exact: true }).first();
+  await expect.poll(() => loaded(card.getByRole('img')), { timeout: 15_000 }).toBe(true);
+  const [thumb, title] = await Promise.all([card.locator('.tw-template-image').boundingBox(), card.getByRole('heading').boundingBox()]);
+  expect(thumb!.y + thumb!.height).toBeLessThanOrEqual(title!.y);
+  await panel.getByRole('button', { name: `Select ${template.name} v${template.version}`, exact: true }).first().click();
+  await panel.getByRole('button', { name: 'Next', exact: true }).click();
+  // Its own image: nothing analysed yet, so the filled fields are listed as the changes Generate will plan.
+  await panel.getByLabel('Creative image', { exact: true }).setInputFiles({ name: 'own.png', mimeType: 'image/png', buffer: await ownImage(await (await request.get('/__test__/reference.png')).body()) });
+  await panel.getByRole('radio', { name: 'Change details', exact: true }).check();
+  await panel.getByLabel('Main product content', { exact: true }).fill('Green smartphone');
+  await panel.getByLabel('Background content', { exact: true }).fill('Warm studio backdrop');
+  await expect(panel.getByRole('region', { name: 'What will change' }).getByRole('listitem')).toHaveText([/^Background\s*Warm studio backdrop$/, /^Main product\s*Green smartphone$/]);
+  expect(await panel.locator('.ws-body').evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1)).toBe(true);
 });
 
 test('Journey B: no changes → Use original image → zero image calls; wrong-template warning; new dynamic card; explicit Plan fresh', async ({ page, request }, testInfo) => {
@@ -238,6 +267,37 @@ test('Journey B: no changes → Use original image → zero image calls; wrong-t
   expect(await execution(request, fresh.id)).toMatchObject({ plannerReason: 'plan-fresh', usage: { plannerCalls: 1 } });
 });
 
+test('Normal Generate with every field empty: the original image is reviewed with no AI or image request, decomposed, and opened in the editor at its own size', async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'One journey on desktop.');
+  test.setTimeout(120000);
+  const template = await bootstrapTemplate(request), panel = await openWizard(page), writes = writesOf(page);
+  const next = panel.getByRole('button', { name: 'Next', exact: true }), useImage = panel.getByRole('button', { name: 'Use this image', exact: true });
+  await panel.getByRole('button', { name: `Select ${template.name} v1`, exact: true }).click(); await next.click();
+  await expect(panel.getByLabel('Main product content', { exact: true })).toHaveValue('');
+  await next.click();
+  await expect(panel.getByRole('note').filter({ hasText: 'No changes:' })).toContainText('shows your original image for review, with no image request');
+  await expect(panel.getByRole('button', { name: 'Regenerate anyway · 1 image request', exact: true })).toBeEnabled();
+  const original = await started(page, request, () => panel.getByRole('button', { name: 'Generate Creative', exact: true }).click());
+  await generatedState(request, original.id).toBe('generated');
+  const reviewed = await execution(request, original.id);
+  // Nothing was asked to change: the image to review is the upload itself (no analysis, no image request).
+  expect(reviewed).toMatchObject({ edit: { original: true, image: { sha256: reviewed.upload.sha256, width: reviewed.upload.width, height: reviewed.upload.height } }, usage: { imageGenerationCalls: 0, imageGenerationCalled: false } });
+  expect(reviewed.usage.analysisCalls ?? 0).toBe(0);
+  expect(writes).toEqual([`POST ${API}/template-executions`]);
+  await expect(panel.getByRole('region', { name: 'Image review' })).toContainText('this is your original image, exactly as uploaded');
+  await expect(useImage).toBeEnabled({ timeout: 30000 });
+  await started(page, request, () => useImage.click(), `${API}/template-executions/${original.id}/decompose`);
+  await expect(panel.getByRole('button', { name: 'Open in Editor', exact: true })).toBeEnabled({ timeout: 90000 });
+  const done = await execution(request, original.id), run = await runOf(request, done.runId);
+  expect(done).toMatchObject({ state: 'done', usage: { imageGenerationCalls: 0, plannerCalls: 0 } });
+  expect(run.canvas).toEqual({ width: reviewed.upload.width, height: reviewed.upload.height });
+  await panel.getByRole('button', { name: 'Open in Editor', exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator('.workspace-unit')).toHaveText(`${run.canvas.width} × ${run.canvas.height} px`);
+  await expect(page.getByRole('list', { name: 'Design layers' }).locator('li')).toHaveCount(run.outputLayers.length);
+  await expectEditorLayers(page, run);
+});
+
 test('a failed regeneration keeps the previous image, which approval then decomposes', async ({ page, request }, testInfo) => {
   test.setTimeout(120000);
   const template = await bootstrapTemplate(request), token = `${testInfo.project.name}-${Date.now().toString(36)}`;
@@ -302,9 +362,10 @@ test('Journey D: 390px and 320px phones keep cards, prompts, the generated previ
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`wizard-library-${width}.png`) });
     await next.click();
     await panel.getByLabel('Main product content', { exact: true }).fill(`Phone at ${width}`);
-    const prompt = panel.getByLabel('Final prompt preview', { exact: true });
-    await prompt.scrollIntoViewIfNeeded(); await expect(prompt).toHaveValue(new RegExp(`Phone at ${width}`));
-    expect((await prompt.boundingBox())!.width).toBeGreaterThan(width - 90);
+    // The user's change is listed beside the fields (as "Your changes", or in the plan once the image has an analysis).
+    const yours = panel.getByRole('complementary', { name: 'Generation prompts' });
+    await yours.scrollIntoViewIfNeeded(); await expect(yours).toContainText(`Phone at ${width}`);
+    expect((await yours.boundingBox())!.width).toBeGreaterThan(width - 90);
     await footer(); await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`wizard-customize-${width}.png`) });
     await next.click();
     await panel.getByRole('button', { name: 'Generate Creative', exact: true }).click();
@@ -343,16 +404,19 @@ test('Journey E: earbuds-style replacement → BOAT SPEAKER: a kept product is f
   await expect(panel.getByRole('radio', { name: 'Replace product', exact: true })).toBeChecked();
   await product.fill(`SPEAKER Kept product test ${token}`);
   await panel.getByLabel('Brand (optional)', { exact: true }).fill('BOAT');
-  const changes = panel.getByRole('region', { name: 'What will change' });
-  await expect(changes.getByRole('listitem')).toHaveText([new RegExp(`Replace\\s*Main product: BOAT SPEAKER Kept product test ${token}$`)]);
-  await expect(changes.getByRole('note')).toContainText('After you review the image, you choose');
+  // The change, with its brand, is listed beside the fields ("Your changes", or the plan's draft once the image has an analysis).
+  await expect(panel.getByRole('complementary', { name: 'Generation prompts' }).getByRole('listitem').filter({ hasText: `BOAT SPEAKER Kept product test ${token}` })).toHaveCount(1);
   // Fields and their prompt parts point at each other.
   await panel.getByLabel('Background content', { exact: true }).focus();
   await expect(panel.getByLabel('Base template prompt', { exact: true }).getByRole('button', { name: '{Background}', exact: true })).toHaveClass(/is-linked/);
-  const prompt = panel.getByLabel('Final prompt preview', { exact: true });
-  await expect(prompt).toHaveValue(new RegExp(`Replace the main product in the center with "BOAT SPEAKER Kept product test ${token}"\\. Remove the original main product completely: no part of it may remain\\. The new product may have a different shape, size and silhouette`));
+  // The fields are planned against the image (one analysis call; the product, its brand and what depends on them).
+  await panel.getByRole('button', { name: /^(Plan changes · 1 AI call|Resolve changes)$/ }).click();
+  const prompt = panel.getByLabel('Resolved final prompt text', { exact: true });
+  await expect(prompt).toHaveValue(new RegExp(`Replace the smartphone in the center with "BOAT SPEAKER Kept product test ${token}"\\. Remove the original completely: no part of it may remain\\. The new one may have a different shape and size`), { timeout: 30000 });
   await expect(prompt).not.toHaveValue(/Do not add or remove elements/);
-  await expect(prompt).toHaveValue(/do not invent logos, model numbers or specifications/);
+  await expect(prompt).toHaveValue(/Show the BOAT brand only as this product would plainly carry it\. Do not invent model numbers, specifications or logos\./);
+  // The phone's own brand mark goes with it (it was printed on the phone).
+  await expect(panel.getByRole('region', { name: 'Resolved changes' })).toContainText('Product brand mark');
   const keptPrompt = await prompt.inputValue();
 
   // The fixture's model keeps the phone for this prompt: the local review flags it, and nothing proceeds unseen.
@@ -360,7 +424,7 @@ test('Journey E: earbuds-style replacement → BOAT SPEAKER: a kept product is f
   const kept = await started(page, request, () => panel.getByRole('button', { name: 'Generate Creative', exact: true }).dblclick());
   await generatedState(request, kept.id).toBe('generated');
   const review = panel.getByRole('region', { name: 'Image review' });
-  await expect(review.getByRole('alert')).toContainText('Main product may not have been replaced', { timeout: 30000 });
+  await expect(review.getByRole('alert')).toContainText('may not have been replaced', { timeout: 30000 });
   await expect(review).toContainText('Local pixel comparison only');
   await expect(useImage).toBeDisabled();
   const keptExecution = await execution(request, kept.id);
@@ -374,7 +438,8 @@ test('Journey E: earbuds-style replacement → BOAT SPEAKER: a kept product is f
   await product.fill(`SPEAKER Extraction 422 test ${token}`);
   const photo = await sharp({ create: { width: 320, height: 320, channels: 3, background: '#1d1d1f' } }).png().toBuffer();
   await panel.getByLabel('Product reference image', { exact: true }).setInputFiles({ name: 'speaker.png', mimeType: 'image/png', buffer: photo });
-  await expect(prompt).toHaveValue(/Match the new product to the second attached image \(the product reference\)/);
+  await panel.getByRole('button', { name: 'Resolve changes', exact: true }).click();
+  await expect(prompt).toHaveValue(/Match it to the second attached image \(the product photo\)/, { timeout: 30000 });
   const replacedPrompt = await prompt.inputValue();
   await next.click();
   const replaced = await started(page, request, () => panel.getByRole('button', { name: 'Generate Creative', exact: true }).click());

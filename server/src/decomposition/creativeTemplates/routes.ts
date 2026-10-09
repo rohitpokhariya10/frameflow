@@ -36,7 +36,7 @@ import { executionGenerationCost } from '../runDiagnostics.js';
 import { settingsChange, templateHealth, templateText, versionWithSettings } from './templateEdits.js';
 
 type ExecutionForm = { bytes: Buffer; fileName?: string; mimeType?: string; fields: Record<string, string>; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string } };
-const FORM_FIELDS = ['mode', 'idempotencyKey', 'templateId', 'templateVersion', 'editInstruction', 'values', 'options', 'planFresh', 'allowMismatch', 'reviewBeforeDecompose', 'analysisId', 'resolutionId', 'draft'];
+const FORM_FIELDS = ['mode', 'idempotencyKey', 'templateId', 'templateVersion', 'editInstruction', 'values', 'options', 'planFresh', 'allowMismatch', 'reviewBeforeDecompose', 'analysisId', 'resolutionId', 'draft', 'regenerateUnchanged'];
 function readExecutionForm(req: Request): Promise<ExecutionForm> {
   return new Promise((resolve, reject) => {
     let parser: ReturnType<typeof busboy>;
@@ -153,7 +153,7 @@ export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemp
       if (form.fields.draft !== undefined) { try { draft = JSON.parse(form.fields.draft); } catch { throw new RunError('INVALID_REQUEST', 'The smart edit draft must be valid JSON.'); } }
       if (form.fields.options !== undefined) { try { options = JSON.parse(form.fields.options); } catch { throw new RunError('INVALID_REQUEST', 'Edit options must be valid JSON.'); } }
       const { execution, created } = await service.start({ mode: form.fields.mode, values, ...(options !== undefined ? { options } : {}),
-        ...(form.fields.resolutionId !== undefined ? { resolutionId: form.fields.resolutionId, analysisId: form.fields.analysisId, draft } : form.fields.analysisId !== undefined || draft !== undefined ? { analysisId: form.fields.analysisId, draft } : {}), ...(form.productReference ? { productReference: form.productReference } : {}), reviewBeforeDecompose: form.fields.reviewBeforeDecompose === 'true', allowMismatch: form.fields.allowMismatch === 'true', templateVersion: form.fields.templateVersion !== undefined ? Number(form.fields.templateVersion) : undefined,
+        ...(form.fields.resolutionId !== undefined ? { resolutionId: form.fields.resolutionId, analysisId: form.fields.analysisId, draft } : form.fields.analysisId !== undefined || draft !== undefined ? { analysisId: form.fields.analysisId, draft } : {}), ...(form.productReference ? { productReference: form.productReference } : {}), reviewBeforeDecompose: form.fields.reviewBeforeDecompose === 'true', regenerateUnchanged: form.fields.regenerateUnchanged === 'true', allowMismatch: form.fields.allowMismatch === 'true', templateVersion: form.fields.templateVersion !== undefined ? Number(form.fields.templateVersion) : undefined,
         planFresh: form.fields.planFresh === 'true', idempotencyKey: form.fields.idempotencyKey, ...(form.fields.templateId !== undefined ? { templateId: form.fields.templateId } : {}),
         ...(form.fields.editInstruction !== undefined ? { editInstruction: form.fields.editInstruction } : {}), upload: { bytes: form.bytes, ...(form.fileName ? { fileName: form.fileName } : {}), ...(form.mimeType ? { mimeType: form.mimeType } : {}) } });
       res.status(created ? 202 : 200).json(shown(execution));

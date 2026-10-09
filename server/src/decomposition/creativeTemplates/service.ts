@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExtractionPlan, type GenerationReview, type TemplateEditOptions, type TemplateExecution, type TemplateStructure, type TemplateVersion, type TemplateInspection } from '@frameflow/shared';
+import { sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExecutionImage, type ExtractionPlan, type GenerationReview, type SmartEditStrategyRecord, type TemplateEditOptions, type TemplateExecution, type TemplateStructure, type TemplateVersion, type TemplateInspection } from '@frameflow/shared';
 import type { GenerationConfig } from '../generationGroups.js';
 import { validateReferenceUpload } from '../imageTemplates.js';
 import { createRun, executeRun, saveRunRecord, PlannerNotAllowedError, readRun, resumeRun, RunError, type RunnerDeps, type RunRecord, type Stage } from '../layerizeExperiment.js';
@@ -25,7 +25,9 @@ import { addVariantLayers, createComposedRun, type VariantRunLayer } from './com
 import type { SmartCreative } from './smartCreative.js';
 import { reviewGeneration } from './review.js';
 import type { ExecutionStore } from './executions.js';
-import { editTemplateImage, ImageEditError } from './imageEdit.js';
+import { ImageEditError } from './imageEdit.js';
+import { smartEditImage } from './smartEditImage.js';
+import type { VariantSubject } from './variantCompose.js';
 import type { TemplateStore } from './store.js';
 import type { StructureInspector } from './inspect.js';
 
@@ -39,7 +41,9 @@ export type TemplateServices = {
   inTurn: (label: string, work: () => Promise<unknown>) => void;
   log?: (line: string) => void;
 };
-export type StartRequest = { mode: unknown; values?: unknown; analysisId?: unknown; resolutionId?: unknown; draft?: unknown; options?: unknown; updatesTemplate?: TemplateExecution['updatesTemplate']; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; planFresh?: boolean; idempotencyKey: unknown; templateId?: unknown; editInstruction?: unknown; upload: { bytes: Buffer; fileName?: string; mimeType?: string } };
+export type StartRequest = { mode: unknown; values?: unknown; analysisId?: unknown; resolutionId?: unknown; draft?: unknown; options?: unknown;
+  /** Nothing to change, and the user explicitly asks for a new image anyway (otherwise the original is reviewed, no call). */
+  regenerateUnchanged?: boolean; updatesTemplate?: TemplateExecution['updatesTemplate']; productReference?: { bytes: Buffer; fileName?: string; mimeType?: string }; reviewBeforeDecompose?: boolean; templateVersion?: number; allowMismatch?: boolean; inspect?: boolean; planFresh?: boolean; idempotencyKey: unknown; templateId?: unknown; editInstruction?: unknown; upload: { bytes: Buffer; fileName?: string; mimeType?: string } };
 /** Run stages, as the execution shows them. */
 const STATE_OF: Partial<Record<Stage, ExecutionState>> = { planning: 'planning', planned: 'decomposing', uploading: 'decomposing', submitting: 'decomposing', queued: 'decomposing', in_progress: 'decomposing', downloading: 'decomposing', refining: 'decomposing' };
 /** fal's stored answer for these is final: resuming would read the same error. */
@@ -76,12 +80,15 @@ export function createTemplateExecutions(services: TemplateServices) {
   const editOptionsOf = (value: unknown): TemplateEditOptions => {
     if (value === undefined) return {};
     const o = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined, main = o?.mainProduct as Record<string, unknown> | undefined;
-    if (!o || Object.keys(o).some(k => k !== 'mainProduct') || (main !== undefined && (typeof main !== 'object' || Array.isArray(main) || Object.keys(main).some(k => !['mode', 'brand', 'keepSupporting'].includes(k)))))
-      throw new RunError('INVALID_REQUEST', 'Edit options may only say how the main product changes.');
+    const decisions = o?.textDecisions as Record<string, unknown> | undefined;
+    if (!o || Object.keys(o).some(k => k !== 'mainProduct' && k !== 'textDecisions') || (main !== undefined && (typeof main !== 'object' || Array.isArray(main) || Object.keys(main).some(k => !['mode', 'brand', 'keepSupporting'].includes(k))))
+      || (decisions !== undefined && (!decisions || typeof decisions !== 'object' || Array.isArray(decisions) || Object.values(decisions).some(v => v !== 'keep' && v !== 'remove'))))
+      throw new RunError('INVALID_REQUEST', 'Edit options may only say how the main product changes, and keep or remove for text fields.');
     if (main?.mode !== undefined && main.mode !== 'replace' && main.mode !== 'details') throw new RunError('INVALID_REQUEST', 'The main product is either replaced or changed in detail.');
     if (main?.brand !== undefined && typeof main.brand !== 'string') throw new RunError('INVALID_REQUEST', 'A brand is plain text.');
     if (main?.keepSupporting !== undefined && typeof main.keepSupporting !== 'boolean') throw new RunError('INVALID_REQUEST', 'keepSupporting is true or false.');
-    return main ? { mainProduct: { ...(main.mode ? { mode: main.mode as 'replace' | 'details' } : {}), ...(typeof main.brand === 'string' && main.brand.trim() ? { brand: sanitizeEditInstruction(main.brand) } : {}), ...(main.keepSupporting !== undefined ? { keepSupporting: main.keepSupporting as boolean } : {}) } } : {};
+    const textDecisions = decisions && Object.keys(decisions).length ? { textDecisions: decisions as Record<string, 'keep' | 'remove'> } : {};
+    return main ? { ...textDecisions, mainProduct: { ...(main.mode ? { mode: main.mode as 'replace' | 'details' } : {}), ...(typeof main.brand === 'string' && main.brand.trim() ? { brand: sanitizeEditInstruction(main.brand) } : {}), ...(main.keepSupporting !== undefined ? { keepSupporting: main.keepSupporting as boolean } : {}) } } : textDecisions;
   };
   /** The template's own source creative: its run holds exact layer shapes for the local review. */
   const sourceRunFor = (version: TemplateVersion, uploadSha: string) => {
@@ -163,12 +170,25 @@ export function createTemplateExecutions(services: TemplateServices) {
     } };
   };
 
-  /** A chosen variant's layers as run layers, back to front: the clean scenery plate, its contact shadow, the exact subject. */
+  /**
+   * A chosen variant's layers as run layers, back to front: the clean scenery plate, the contact shadows, and the exact
+   * products — each product its own layer when the variant has them (one product keeps the earlier single-layer names).
+   */
   const variantLayers = (execution: TemplateExecution, withPlate: boolean): VariantRunLayer[] => {
     const v = execution.variant!, read = (file: string) => readFileSync(executions.path(execution.id, file)), subjectName = v.protectedLabels.join(' + ') || 'Subject';
-    return [...(withPlate ? [{ file: 'layer-1-new-scenery.png', name: 'New scenery', description: 'The generated scenery, with the subject\'s area filled locally', png: read(v.layers.plate.file), kind: 'full-canvas' as const, placement: { x: 0, y: 0, width: v.layers.plate.width, height: v.layers.plate.height }, semantic: { id: 'new_scenery', type: 'background' } }] : []),
+    const plate = withPlate ? [{ file: 'layer-1-new-scenery.png', name: 'New scenery', description: 'The generated scenery, with the products\' area filled locally', png: read(v.layers.plate.file), kind: 'full-canvas' as const, placement: { x: 0, y: 0, width: v.layers.plate.width, height: v.layers.plate.height }, semantic: { id: 'new_scenery', type: 'background' } }] : [];
+    // A variant on its own ratio canvas: the generated scene is one flattened picture; each product is its own exact layer.
+    const ratio = !!v.aspectRatio, scaled = v.scale !== undefined && v.scale < 1 ? `original pixels, scaled to ${Math.round(v.scale * 100)}%` : 'exact source pixels';
+    if (v.layers.subjects && (v.layers.subjects.length > 1 || ratio)) {
+      const slug = (k: number) => `${k + 1}`;
+      return [...plate.map(l => ratio ? { ...l, name: 'Generated scene (flattened)', description: 'The AI-generated scene as one flattened picture; the products\' area is filled locally' } : l),
+        ...(v.layers.shadows ?? []).map((l, k) => ({ file: `layer-2-shadow-${slug(k)}.png`, name: `Contact shadow · ${l.label}`, description: `A soft shadow under ${l.label} (editable)`, png: read(l.file), kind: 'bbox-crop' as const, placement: l.placement, semantic: { id: `contact_shadow_${slug(k)}`, type: 'effect' } })),
+        ...v.layers.subjects.map((l, k) => ({ file: `layer-3-subject-${slug(k)}.png`, name: `${l.label} (${scaled})`, description: `${l.label}: the reference image's own pixels${v.scale !== undefined && v.scale < 1 ? ', resampled once, never redrawn' : ''}`, png: read(l.file), kind: 'bbox-crop' as const, placement: l.placement, semantic: { id: `protected_subject_${slug(k)}`, type: 'product' } }))];
+    }
+    // One combined product layer (an uploaded cutout, or a set made before products were separated).
+    return [...plate.map(l => ratio ? { ...l, name: 'Generated scene (flattened)', description: 'The AI-generated scene as one flattened picture; the products\' area is filled locally' } : l),
       ...(v.layers.shadow ? [{ file: 'layer-2-contact-shadow.png', name: 'Contact shadow', description: 'A soft shadow under the subject (editable)', png: read(v.layers.shadow.file), kind: 'bbox-crop' as const, placement: v.layers.shadow.placement, semantic: { id: 'contact_shadow', type: 'effect' } }] : []),
-      { file: 'layer-3-subject.png', name: `${subjectName} (exact source pixels)`, description: 'The protected subject: the reference image\'s own pixels', png: read(v.layers.subject.file), kind: 'bbox-crop', placement: v.layers.subject.placement, semantic: { id: 'protected_subject', type: 'product' } }];
+      { file: 'layer-3-subject.png', name: `${subjectName} (${scaled})`, description: `The protected subject: the reference image's own pixels${v.scale !== undefined && v.scale < 1 ? ', resampled once, never redrawn' : ''}`, png: read(v.layers.subject.file), kind: 'bbox-crop', placement: v.layers.subject.placement, semantic: { id: 'protected_subject', type: 'product' } }];
   };
   /** What a finished run means for its execution: a saved template (create), reuse statistics (reuse), or a failure. */
   const finish = (id: string, run: RunRecord, started: number, decompositionStarted: number): TemplateExecution => {
@@ -243,6 +263,13 @@ export function createTemplateExecutions(services: TemplateServices) {
       // 1. The image to decompose: the upload itself, or its one edit.
       if (policy.imageGeneration && execution.edit?.image) {
         bytes = readFileSync(executions.path(id, execution.edit.image.file));
+      } else if (policy.imageGeneration && execution.edit?.original) {
+        // Nothing was asked to change: the image to review is the original upload, exactly, at its own size (no image request).
+        const { originalName: _name, ...image } = execution.upload; void _name;
+        execution = executions.update(id, x => { x.edit = { ...x.edit!, image, size: `${image.width}x${image.height}`,
+          review: { method: 'whole-image', checks: [], requiresAcknowledgement: false, note: 'Nothing was asked to change: this is your original image, exactly as uploaded. No image request was made.' },
+          ...(x.resolution ? { strategy: { kind: 'none', regions: [], areaPercent: 0, protectIds: [], reasons: ['Nothing changes: your original image is used, with no image request.'] } } : {}) }; });
+        log(`[GENERATION] skipped: nothing to change, the original image is reviewed execution=${id}`);
       } else if (policy.imageGeneration) {
         const config = services.generation(), reference = execution.edit?.reference;
         const compiled = execution.slotValues ? compileEdit(version!, execution.slotValues, execution.editOptions ?? {}, !!reference) : undefined;
@@ -255,16 +282,45 @@ export function createTemplateExecutions(services: TemplateServices) {
         try {
           const referenceBytes = reference ? readFileSync(executions.path(id, reference.file)) : undefined;
           if (reference && sha(referenceBytes!) !== reference.sha256) throw new RunError('INPUT_IDENTITY_MISMATCH', 'The saved product reference image has changed. Upload it again.');
-          const edited = await editTemplateImage(config, { bytes, file: execution.upload.file, width: execution.upload.width, height: execution.upload.height }, prompt, (file, value) => executions.writeFile(id, file, value),
-            reference ? { bytes: referenceBytes!, file: reference.file } : undefined);
-          execution = executions.update(id, (x) => { x.edit = { ...x.edit!, size: edited.size, image: edited.image, requestFile: edited.requestFile, responseFile: edited.responseFile, durationMs: edited.durationMs }; x.usage.timings.generationMs = edited.durationMs; });
+          const save = (file: string, value: Buffer | object) => executions.writeFile(id, file, value);
+          let edited: { image: ExecutionImage; bytes: Buffer; size: string; requestFile: string; responseFile: string; durationMs: number }, scope: SmartEditStrategyRecord['regions'] | undefined, fallback: string | undefined;
+          if (smart) {
+            // A smart edit is made the way its plan's strategy says: only the changed regions, the background around the
+            // products it keeps (cut out first), or the whole image; always at the source's own size.
+            let strategy = smart.strategy, subjects: VariantSubject[] | undefined;
+            if (strategy.kind === 'none') {
+              if (!execution.edit?.regenerate) return failed(id, 'NO_CHANGES', 'Nothing changes in this smart edit: use the original image (no image request).', 'generating', started);
+              strategy = { ...strategy, kind: 'global', reasons: ['Nothing changes, and you asked for a new image anyway: the whole image is regenerated, at its own size.'] };
+            }
+            if (strategy.kind === 'background') {
+              const cut = await services.smart!.editCutout({ scene: smart.scene, protectIds: strategy.protectIds, image: bytes, save });
+              executions.update(id, x => { x.usage.segmentationCalls = (x.usage.segmentationCalls ?? 0) + cut.calls; if (cut.provider) x.usage.segmentationProvider = cut.provider; });
+              if ('failure' in cut) { fallback = `${cut.failure} The whole image was edited instead, so the products may have been redrawn: check them.`; strategy = { ...strategy, kind: 'global', protectIds: [] }; }
+              else { subjects = cut.subjects; cut.masks.forEach((m, k) => save(`edit-cutout-${k + 1}.png`, m)); }
+            }
+            const record: SmartEditStrategyRecord = { kind: strategy.kind as SmartEditStrategyRecord['kind'], regions: strategy.regions, areaPercent: strategy.areaPercent, protectIds: strategy.protectIds, reasons: strategy.reasons, ...(fallback ? { fallback } : {}) };
+            execution = executions.update(id, x => { x.edit = { ...x.edit!, strategy: record }; });
+            log(`[GENERATION] smart edit strategy=${record.kind}${record.kind === 'local' ? ` regions=${record.regions.length} area=${record.areaPercent}%` : ''}${fallback ? ' (cutout failed: whole image)' : ''} execution=${id}`);
+            const made = await smartEditImage(config, { bytes, file: execution.upload.file }, prompt, strategy, save, { ...(reference ? { reference: { bytes: referenceBytes!, file: reference.file } } : {}), ...(subjects ? { subjects } : {}) });
+            edited = made;
+            if (record.kind === 'local') scope = record.regions;
+            execution = executions.update(id, (x) => { x.edit = { ...x.edit!, size: made.size, image: made.image, generated: made.generated, preservation: made.preservation, requestFile: made.requestFile, responseFile: made.responseFile, durationMs: made.durationMs }; x.usage.timings.generationMs = made.durationMs; });
+          } else {
+            // Template fields without an image analysis: one whole-image edit, contained in the model's canvas and mapped
+            // back, so the result keeps the source's own size and aspect.
+            const made = await smartEditImage(config, { bytes, file: execution.upload.file }, prompt, { kind: 'global', regions: [] }, save, reference ? { reference: { bytes: referenceBytes!, file: reference.file } } : {});
+            edited = made;
+            const record: SmartEditStrategyRecord = { kind: 'global', regions: [], areaPercent: 100, protectIds: [], reasons: ['Edited as one whole image from the template\'s fields, at the image\'s own size.'] };
+            execution = executions.update(id, (x) => { x.edit = { ...x.edit!, size: made.size, image: made.image, generated: made.generated, strategy: record, requestFile: made.requestFile, responseFile: made.responseFile, durationMs: made.durationMs }; x.usage.timings.generationMs = made.durationMs; });
+          }
           bytes = edited.bytes;
           // The local review (pixel comparisons; never a semantic judgment): what it found waits for the user.
           let review: GenerationReview | undefined;
           const changes = compiled?.changes ?? smart?.compiled.changes;
           if (changes) {
-            try { review = await reviewGeneration({ source: readFileSync(executions.path(id, execution.upload.file)), generated: edited.bytes, version: version!, changes, sourceRunDir: sourceRunFor(version!, execution.upload.sha256) }); }
+            try { review = await reviewGeneration({ source: readFileSync(executions.path(id, execution.upload.file)), generated: edited.bytes, version: version!, changes, sourceRunDir: sourceRunFor(version!, execution.upload.sha256), ...(smart ? { regions: smart.regions } : {}), ...(scope ? { scope: scope.map(r => r.box) } : {}) }); }
             catch (error) { review = { method: 'whole-image', checks: [{ id: 'region-unknown', severity: 'info', message: `The local review could not run (${error instanceof Error ? error.message : String(error)}).`, evidence: {} }], requiresAcknowledgement: false, note: 'Review the image before using it.' }; }
+            if (fallback) review = { ...review, checks: [...review.checks, { id: 'cutout-limitation', severity: 'warning', message: fallback, evidence: {} }], requiresAcknowledgement: true };
             // A replaced or removed object can never be confirmed by pixels: a person checks it, whatever the review found.
             const objectChange = compiled ? compiled.changes.some(c => c.operation === 'replace' || c.operation === 'remove') : smart!.objectChange;
             if (objectChange) review = { ...review, requiresAcknowledgement: true };
@@ -357,7 +413,8 @@ export function createTemplateExecutions(services: TemplateServices) {
       }
       const version = template ? usableVersion(template.id, template.version) : undefined;
       if (template && !version) throw new RunError('STALE_TEMPLATE_VERSION', 'The selected template is incomplete or unavailable. Choose another template or create a new one.');
-      let compiled: CompiledTemplateEdit | undefined, editOptions: TemplateEditOptions | undefined, smartPlan: ReturnType<SmartCreative['forGeneration']> | undefined;
+      let compiled: CompiledTemplateEdit | undefined, editOptions: TemplateEditOptions | undefined, smartPlan: ReturnType<SmartCreative['forGeneration']> | undefined, editIntent: 'original' | 'regenerate' | undefined;
+      if (request.regenerateUnchanged !== undefined && typeof request.regenerateUnchanged !== 'boolean') throw new RunError('INVALID_REQUEST', 'regenerateUnchanged is true or false.');
       if (request.resolutionId !== undefined) {
         // A smart edit: generated only from a ready, clear resolution whose binding to these exact inputs is checked here.
         if (!services.smart) throw new RunError('SMART_EDIT_UNAVAILABLE', 'Smart edits are not available on this server.');
@@ -365,13 +422,18 @@ export function createTemplateExecutions(services: TemplateServices) {
         if (request.values !== undefined || request.editInstruction !== undefined || request.options !== undefined) throw new RunError('INVALID_REQUEST', 'Use either a resolved smart edit or template fields, not both.');
         smartPlan = services.smart.forGeneration({ analysisId: request.analysisId, resolutionId: request.resolutionId, draft: request.draft, uploadSha256: sha(request.upload.bytes),
           ...(request.productReference ? { referenceSha256: sha(request.productReference.bytes) } : {}), template: { id: template!.id, version: template!.version } });
-        request.editInstruction = `${smartPlan.compiled.summary.slice(0, 440)} · resolution ${smartPlan.resolution.id}`;
+        // Nothing to change: the original is reviewed as it is (no image request that could only redraw it), unless the
+        // user explicitly asks for a new image anyway.
+        if (smartPlan.resolution.plan!.status === 'unchanged') editIntent = request.regenerateUnchanged ? 'regenerate' : 'original';
+        request.editInstruction = `${smartPlan.compiled.summary.slice(0, 420)} · resolution ${smartPlan.resolution.id}${editIntent ? ` · ${editIntent}` : ''}`;
       } else if (request.analysisId !== undefined || request.draft !== undefined) throw new RunError('INVALID_REQUEST', 'A smart edit names its resolution.');
       if (smartPlan) { /* resolved above */ } else if (request.values !== undefined) {
         if (request.editInstruction) throw new RunError('INVALID_REQUEST', 'Use either dynamic fields or an edit instruction.');
         if (!version) { slotInstruction(version, request.values); throw new RunError('INVALID_REQUEST', 'Fields belong to a selected template.'); }
         editOptions = editOptionsOf(request.options);
         compiled = compileEdit(version, request.values, editOptions, !!request.productReference);
+        // Without an image analysis, text or a logo that may name a replaced product is the user's decision: never kept by guess.
+        if (compiled.questions.length) throw new RunError('DECISION_REQUIRED', `Decide first: ${compiled.questions.map(q => q.message).join(' ')}`, { questions: compiled.questions });
         // The summary names every change (and the reference image), so an identical submission is recognised as one.
         // A product photo shows the new main product: it goes only with a replaced one, never with unrelated edits.
         if (request.productReference && !compiled.changes.some(c => c.role === 'main_product' && c.operation === 'replace')) throw new RunError('INVALID_REQUEST', 'A product photo goes with a replaced main product. Fill in the new product, or remove the photo.');
@@ -379,6 +441,8 @@ export function createTemplateExecutions(services: TemplateServices) {
         if (compiled.compatibility.status === 'structural-change' && !request.reviewBeforeDecompose) throw new RunError('PLAN_DECISION_REQUIRED',
           `${compiled.compatibility.reasons.join(' ')} Generate the creative for review first, then choose how to extract its layers.`);
         request.editInstruction = compiled.changes.length ? `${compiled.summary}${request.productReference ? ` · product reference ${sha(request.productReference.bytes).slice(0, 12)}` : ''}` : '';
+        // No field changes anything: the original is reviewed as it is, unless the user explicitly asks for a new image.
+        if (!compiled.changes.length && request.reviewBeforeDecompose) { editIntent = request.regenerateUnchanged ? 'regenerate' : 'original'; if (editIntent === 'original') request.editInstruction = 'No changes: the original image'; }
       } else if (request.options !== undefined || request.productReference) throw new RunError('INVALID_REQUEST', 'Edit options and a product reference go with template fields.');
       if (request.reviewBeforeDecompose && !request.editInstruction) request.editInstruction = GENERATE_UNCHANGED_INSTRUCTION;
       const editing = EXECUTION_POLICY[mode].imageGeneration;
@@ -395,7 +459,7 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (request.inspect && (mode !== 'CREATE_TEMPLATE' || request.planFresh)) throw new RunError('INVALID_REQUEST', 'Automatic detection takes an upload only.');
       const smartFields = smartPlan ? { resolution: { id: smartPlan.resolution.id, analysisId: smartPlan.analysis.id, summary: smartPlan.compiled.summary, changes: smartPlan.resolution.plan!.entries.filter(e => e.operation !== 'keep').length,
         inferred: smartPlan.resolution.plan!.entries.filter(e => e.operation !== 'keep' && e.source === 'inferred').length }, editPrompt: smartPlan.compiled.text, generationPromptSource: 'resolved-plan' as const, compatibility: smartPlan.compiled.compatibility } : {};
-      const result = executions.create({ live: id => active.has(id), ...smartFields, ...(request.updatesTemplate ? { updatesTemplate: request.updatesTemplate } : {}), ...(editOptions && Object.keys(editOptions).length ? { editOptions } : {}), ...(compiled ? { compatibility: compiled.compatibility } : {}),
+      const result = executions.create({ live: id => active.has(id), ...smartFields, ...(editIntent ? { editIntent } : {}), ...(request.updatesTemplate ? { updatesTemplate: request.updatesTemplate } : {}), ...(editOptions && Object.keys(editOptions).length ? { editOptions } : {}), ...(compiled ? { compatibility: compiled.compatibility } : {}),
         ...(request.productReference && reference ? { productReference: { bytes: request.productReference.bytes, ext: reference.format === 'jpeg' ? 'jpg' : reference.format!, mimeType: `image/${reference.format}`, width: reference.width!, height: reference.height! } } : {}),
         inspect: request.inspect, reviewBeforeDecompose: request.reviewBeforeDecompose, ...(request.values ? { slotValues: Object.fromEntries(Object.entries(request.values).map(([key, value]) => [key, sanitizeEditInstruction(value)])) } : {}), mode, plannerReason: mode === 'CREATE_TEMPLATE' ? request.planFresh ? 'plan-fresh' : 'new-structure' : undefined, idempotencyKey: String(request.idempotencyKey ?? ''), ...(template ? { template } : {}), ...(editing ? { editInstruction: sanitizeEditInstruction(request.editInstruction) } : {}),
         upload: { bytes: request.upload.bytes, ext: meta.format === 'jpeg' ? 'jpg' : meta.format!, mimeType: `image/${meta.format}`, width: (turned ? meta.height : meta.width)!, height: (turned ? meta.width : meta.height)!, ...(request.upload.fileName ? { originalName: request.upload.fileName } : {}) } });
