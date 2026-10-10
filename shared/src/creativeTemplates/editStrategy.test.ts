@@ -38,12 +38,13 @@ describe('the edit strategy of a resolved plan', () => {
   it('a restyled background keeps every product that stays as its own pixels; a replaced product is not protected', () => {
     const s = scene(phoneOfferAnalysis());
     expect(editStrategy(s, plan(s, { background_1: { action: 'modify', value: 'warm sunset gradient' } }))).toMatchObject({ kind: 'background', protectIds: ['earbuds_1', 'smartphone_1'] });
-    expect(editStrategy(s, plan(s, { background_1: { action: 'modify', value: 'warm sunset gradient' }, smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, earbuds_1: { action: 'keep' } }))).toMatchObject({ kind: 'background', protectIds: ['earbuds_1'] });
+    // Feature 2 keeps the layout: with a replaced phone the background pass keeps it in place too, then it is repainted in its own slot.
+    expect(editStrategy(s, plan(s, { background_1: { action: 'modify', value: 'warm sunset gradient' }, smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, earbuds_1: { action: 'keep' } }))).toMatchObject({ kind: 'layered', protectIds: ['earbuds_1', 'smartphone_1'] });
   });
 
-  it('changes covering most of the image are one whole-image edit', () => {
+  it('changes covering most of the image still edit only their own slots (Feature 2 never re-composes the template)', () => {
     const s = scene(appliancesAnalysis()), st = editStrategy(s, plan(s, { refrigerator_1: { action: 'replace', value: 'black refrigerator' }, washing_machine_1: { action: 'replace', value: 'grey dryer' } }));
-    expect(st.kind).toBe('global');
+    expect(st.kind).toBe('local');
     expect(st.areaPercent).toBeGreaterThan(LOCAL_AREA_LIMIT * 100);
   });
 });

@@ -48,6 +48,24 @@ it is specific to a product category, brand, layout or field name.
      **Keep** or **Remove** before generating (`DECISION_REQUIRED`); nothing is kept or removed by guess.
    - The result keeps the image's own size and aspect.
 
+### Feature 2 keeps the template's structure (2026-10-10)
+
+Feature 2 edits the CONTENT of a template; its structure is kept by construction, not left to the image model:
+
+- **Own-ratio canvas** (`editCanvasSize`): every Feature 2 edit is made on a canvas of the creative's own aspect ratio
+  (900×1600 → 944×1680). Before, a 9:16 creative was padded into 4:5 and the model composed across the padding, so
+  mapped back its products came out larger and cut at the edges. `SMART_EDIT_CANVAS=fixed` restores the old sizes.
+- **No whole-image edit for ordinary changes** (`editStrategy`): object and text changes are always `local` (only their
+  slots are painted; every other pixel stays the source's own), however much of the image they cover. A new background
+  with other changes is `layered`: pass 1 restyles the background while every product keeps its own pixels in place
+  (SAM-3 cutouts), pass 2 repaints each changed object only inside its own slot of that image (2 image requests).
+  `global` remains only for a change to another kind of product (the hero goes in the area the old products held, fully
+  inside the frame) or a background with nothing in front of it.
+- **Slot wording**: each replaced object is drawn "exactly in the original's slot (about x–y% across and a–b% down)", the
+  same size, the same tilt (read from its cutout mask when its shape shows one clearly), the same depth relations, never
+  cropped. The AI check adds `layout-kept`; a slot whose new content reaches its edge is a review warning.
+- Feature 1 is unchanged: it keeps its own ratio sizes and free composition.
+
 ### Smart edit from the item cards (Feature 2)
 
 1. **Analyze image · 1 AI call** reads the uploaded image into a validated scene: every product, person, held or worn
@@ -141,6 +159,37 @@ The plan's main rule: **an empty field inherits the existing content only while 
   run again and their saved resolver answer is merged again, with no new call. Nothing is sent from an older prompt.
 
 ### Generate creative template (Feature 1)
+
+**Rendered into each scene (default in the app since 2026-10-09; `rendering: 'integrated'`).** Live runs of the exact
+mode below showed its limits: every variant had the source's product arrangement (the mask froze it), products floated
+where their plinths had been, and the ghost fill left artifacts. Integrated sets work differently (`creativeDirections.ts`):
+
+- **References, not masks.** The kept products are cut out as before (SAM-3, one request each) and laid side by side on a
+  plain neutral sheet (`product-sheet.png`), so the old background, plinths and layout never reach the model. Each
+  variant is one unmasked `images.edit` with that sheet; the model renders the products inside the scene (its light,
+  shadows, perspective and pose). If the cutout fails, the original image is the reference (said in the review).
+- **Directions, planned locally.** `planDirections` picks N of 12 distinct ad archetypes (studio hero, lifestyle, in hand,
+  levitation, flat lay, colour-block poster, festive, tech, luxury, natural, minimal, city), as far apart as possible and
+  away from the original's own setting; small-product-only ones (in hand, flat lay) only for small products. The concept
+  writer enriches one assigned brief per variant; a missing, text-asking or too-similar answer, or a failed call, falls
+  back to the built-in direction. No prompt is ever needed.
+- **Product fields.** Each kept product can be renamed ("Apple iPhone 15" instead of a Samsung phone; a filled Main product
+  field starts there). A renamed product gets no cutout reference; its old names (`productNames`) are forbidden in the
+  prompt and checked by the AI check, and an unchanged accessory of its old brand is left out.
+- **Prompt parts:** PRODUCTS (keep consistent) · CREATIVE DIRECTION (varies) · INTEGRATION (regenerate as one image) · NEVER.
+- **Hand-off:** a chosen creative is a normal generated image (`variantSource`, no exact layers): review (tick unless the AI
+  check passed), plan choice (saved / simpler / refresh), decomposition and the editor, as for smart edits.
+- **Every product, every variant (fixed after the first live run, where 2 of 3 variants showed one appliance and the
+  faucet was missing):** a product standing right against a kept one (relation plus touching regions) is kept too (the
+  purifier's faucet); products the scene ties together share one tile on the sheet; the prompt numbers every product in
+  the sheet's order with a short look description (two of the same kind are told apart), requires all N, and ends with a
+  final count; directions are phrased for the product group, and a written staging that shows one product alone is
+  replaced by the planned group staging; the AI check asks for all N products and their attached parts by number. A
+  variant whose AI check failed shows **Check failed** (never a green Ready) and offers Regenerate, or Use anyway.
+- **Trade-off:** the products are redrawn, guided by their cutouts: fine print or small markings can differ. The earlier
+  exact mode stays under Advanced (**Exact original pixels**), and API requests without `rendering` keep it.
+
+The exact mode, as built before:
 
 1. Click **Generate creative template** (it analyzes the image first if needed). The image on screen is the reference.
 2. The panel says what will be kept: **Keeps exactly: …, chosen automatically**. The advertised product or product

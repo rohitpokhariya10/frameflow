@@ -33,6 +33,7 @@ import { protectRenderedLayers, type InteractionRecord } from './interactionGrou
 import { callLines, newRefinementRecord, noCalls, refineDecomposition, refinementOptions, type CallCounts, type RefinementOptions, type RefinementRecord } from './recursiveDecomposition.js';
 import { EXECUTION_POLICY, type RunTemplateExecution } from '@frameflow/shared';
 import { semanticAnalysisOf } from './runPlan.js';
+import { classifySeedreamRejection, prepareProviderImage, ProviderImageError, rejectionExplanation, verifyUploadedImage, type ProviderImageReport, type SeedreamRejection } from './providerImage.js';
 
 export const SEEDREAM_ENDPOINT = endpointRegistry.seedream.endpoint;
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -92,8 +93,13 @@ export type RunRecord = {
   /**
    * A creative variant's exact layers in this run (creativeTemplates/composedRun.ts): either the whole run was composed
    * locally from them (extraction none: no provider call), or they were added above a decomposition of its new scenery.
+   * qwen-layers: the alternative provider's layers (creativeTemplates/qwenLayers.ts) for an image Seedream refused.
    */
-  composed?: { source: 'creative-variant'; setId: string; variantId: string; layers: string[]; extraction: 'none' | 'scenery' };
+  composed?: { source: 'creative-variant' | 'single-layer' | 'product-cutouts' | 'qwen-layers'; setId?: string; variantId?: string; layers: string[]; extraction: 'none' | 'scenery' | 'cutouts' | 'qwen' };
+  /** What was checked about the image before it was sent, and the exact copy fal got (providerImage.ts). */
+  providerImage?: ProviderImageReport;
+  /** fal's refusal of this run, classified from its own answer, with the image and prompt it refused. */
+  rejection?: SeedreamRejection;
 };
 export type RunnerDeps = {
   planner: Planner;
@@ -104,6 +110,8 @@ export type RunnerDeps = {
   onUpdate?: (run: RunRecord) => void;
   /** The refinement's one clean-background image edit (cleanBackground.ts). Without it a refined run falls back to a local fill. */
   backgroundReconstructor?: BackgroundReconstructor;
+  /** Read every upload back from fal storage and compare its sha256 before submitting (on for live runs). */
+  verifyUploads?: boolean;
 };
 
 /** `details` are extra fields for the API error body (e.g. suggestedLayers). */
@@ -156,6 +164,8 @@ const providerFailure = (error: unknown): ProviderFailure | undefined =>
   error instanceof ProviderError && error.providerDetail ? { code: error.code, ...error.providerDetail } : undefined;
 /** fal's complete error response for a failed run (status, headers, full body with its echoed input). Local only. */
 export const PROVIDER_ERROR_FILE = 'provider-error.json';
+/** The canonical copy of a run's image that was uploaded, when it differs from the original (providerImage.ts). */
+export const PROVIDER_INPUT_FILE = 'provider-input.png';
 /** Our message, led by what fal itself said when the transport captured it. */
 function describe(error: unknown): string {
   const ours = error instanceof Error ? error.message : String(error), detail = providerFailure(error);
@@ -267,14 +277,26 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
   let input: Record<string, unknown>;
   try { input = buildProviderInput('seedream', { imageUrl: 'https://fal.media/placeholder-until-upload', prompt: promptOf(run), imageSize: 'auto', enhancePromptMode: 'standard', width: run.input.width, height: run.input.height }); }
   catch (error) { return fail(dir, run, 'INVALID_SEEDREAM_INPUT', error instanceof Error ? error.message : String(error), deps); }
+  // The image fal gets: fully decoded and checked against the endpoint's contract first, sent as a canonical copy of its
+  // own pixels (the run's original stays as it is). An image that cannot be valid input is refused here, with no upload.
+  let prepared: Awaited<ReturnType<typeof prepareProviderImage>>;
+  try { prepared = await prepareProviderImage(image, run.input.mime); }
+  catch (error) { if (error instanceof ProviderImageError) return fail(dir, run, error.code, error.message, deps); throw error; }
+  run.providerImage = prepared.report;
+  if (prepared.report.provider.normalized) writeFileSync(join(dir, PROVIDER_INPUT_FILE), prepared.bytes);
   let transport: FalTransport, imageUrl: string;
   try {
     transport = deps.transport();
     run.stage = 'uploading'; save(dir, run, deps);
     const t = Date.now();
-    imageUrl = await transport.upload(image, run.input.mime);
+    imageUrl = await transport.upload(prepared.bytes, prepared.report.provider.mime);
+    // Read back before submitting: fal must serve exactly these bytes.
+    if (deps.verifyUploads) await verifyUploadedImage(imageUrl, prepared.report.provider.sha256, url => transport.download(url));
     run.timings.uploadMs = Date.now() - t;
-  } catch (error) { return fail(dir, run, 'FAL_UPLOAD_FAILED', `${describe(error)} (nothing was submitted)`, deps, error); }
+  } catch (error) {
+    if (error instanceof ProviderImageError) { run.rejection = { category: 'image-url', endpoint: SEEDREAM_ENDPOINT, imageSha256: prepared.report.provider.sha256, message: error.message }; return fail(dir, run, error.code, error.message, deps); }
+    return fail(dir, run, 'FAL_UPLOAD_FAILED', `${describe(error)} (nothing was submitted)`, deps, error);
+  }
   run.seedream.input = { ...input, image_url: `<fal upload of ${run.input.file}, ${run.input.width}x${run.input.height}>` };
   json(dir, 'seedream-request.json', { endpoint: SEEDREAM_ENDPOINT, input: run.seedream.input });
   run.stage = 'submitting'; count(run, 'seedreamInitial'); save(dir, run, deps);
@@ -330,17 +352,14 @@ async function collect(dir: string, run: RunRecord, deps: RunnerDeps, fresh = fa
       const final = error instanceof ProviderError && (error.status === 400 || error.status === 422);
       // The safety checker withheld the result: not a decomposition failure, and not retryable with another prompt.
       if (final && isSafetyRejection(providerFailure(error))) return fail(dir, run, 'PROVIDER_SAFETY_REJECTED', `${describe(error)}. ${safetyExplanation(requestId)}`, deps, error);
-      // A 422: fal refused this request. Whether the model ran is read from fal's own evidence, never assumed.
+      // A 422: fal refused this request. What it said is recorded and classified from its own answer (the image and the
+      // prompt it refused are kept by hash); nothing about our plan is inferred. 139 recorded requests showed valid,
+      // identical images both refused and accepted, and the plan's size made no difference, so no plan is blamed.
       if (error instanceof ProviderError && error.status === 422) {
-        // What fal reported, nothing inferred: its error Date header is not when it decided (the queue reported the same
-        // requests IN_PROGRESS for about a minute first), so it is no evidence of where in fal the request failed.
-        const detail = providerFailure(error), partner = isPartnerValidationFailure(detail);
-        const what = partner
-          ? ` fal labels this content_policy_violation, but its reason is ${PARTNER_VALIDATION_FAILED}: the provider's own validation rejected the decomposition after inference. It is not a safety flag on the image (the same request on the same image has both passed and failed).`
-          : ` Seedream did not produce a valid decomposition for this image/prompt combination.${detail?.billableUnits === '0' ? ' fal billed 0 units for it.' : ''} This can be transient.`;
-        // How fine the plan was: rejections so far came with plans that split a photographic scene and text effects apart.
-        const planned = plannedLayersOf(run)?.length, fine = planned ? ` The plan asked for ${planned} layers; a simpler grouping or a refreshed plan sends a different prompt, and plans that keep a photographic scene as one plate and text effects with their text have been accepted where finer ones were rejected.` : '';
-        return fail(dir, run, 'PROVIDER_DECOMPOSITION_REJECTED', `${describe(error)}.${what}${fine} This is a layer-extraction failure, not an image-generation failure: any generated creative is kept. This stored result is final for request ${requestId}, so Resume returns the same error. The output layer count is never sent to Seedream, so it is not the cause. Nothing was retried automatically; an explicit retry is one new Seedream request.`, deps, error);
+        const detail = providerFailure(error);
+        run.rejection = classifySeedreamRejection(detail, { endpoint: SEEDREAM_ENDPOINT, imageSha256: run.providerImage?.provider.sha256, prompt: promptOf(run), status: 422 });
+        if (isPartnerValidationFailure(detail)) run.rejection.reason = PARTNER_VALIDATION_FAILED;
+        return fail(dir, run, 'PROVIDER_DECOMPOSITION_REJECTED', `${describe(error)}. ${rejectionExplanation(run.rejection)} This is a layer-extraction failure, not an image-generation failure: the creative is kept. This stored result is final for request ${requestId}, so Resume returns the same answer. Nothing was retried automatically.`, deps, error);
       }
       return fail(dir, run, 'FAL_RESULT_FAILED', `${describe(error)}. Request ${requestId} is saved; ${final ? 'this result is final, so Resume would return the same error' : 'use Resume'}.`, deps, error);
     }
@@ -452,7 +471,7 @@ export function listRuns(runsDir: string): RunRecord[] {
 }
 
 export function liveDeps(env = process.env): RunnerDeps {
-  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: decompositionPlannerModel(env) }), transport: () => createFalTransport(env.FAL_KEY ?? ''), backgroundReconstructor: liveBackgroundReconstructor(env) };
+  return { planner: createOpenAIPlanner({ apiKey: env.OPENAI_API_KEY, model: decompositionPlannerModel(env) }), transport: () => createFalTransport(env.FAL_KEY ?? ''), backgroundReconstructor: liveBackgroundReconstructor(env), verifyUploads: true };
 }
 /** OpenAI's image edit for the refinement's clean background; a misconfigured model fails that one step (a fallback), not the run. */
 function liveBackgroundReconstructor(env = process.env): BackgroundReconstructor {

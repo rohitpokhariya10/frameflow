@@ -12,6 +12,8 @@ export const AI_PRICING = {
   },
   image: { model: 'gpt-image-2', textInput: 5, imageInput: 8, textCached: 1.25, imageCached: 2, output: 30 },
   seedream: { model: 'bytedance/seedream/v5/pro/layerize', low: 0.03375, high: 0.0675, thresholdPixels: 1536 * 1536 },
+  /** fal's listed price, checked 2026-10-10 ("$0.05 per image"); not yet confirmed against an invoice. */
+  qwenLayered: { model: 'fal-ai/qwen-image-layered', perRequest: 0.05 },
   sources: [
     'https://developers.openai.com/api/docs/pricing',
     'https://developers.openai.com/api/docs/models/gpt-5-mini',
@@ -19,6 +21,7 @@ export const AI_PRICING = {
     'https://developers.openai.com/api/docs/models/gpt-5.6-luna',
     'https://developers.openai.com/api/docs/models/gpt-6-luna',
     'https://fal.ai/models/bytedance/seedream/v5/pro/layerize',
+    'https://fal.ai/models/fal-ai/qwen-image-layered',
   ],
 } as const;
 export type CostConfidence = 'Calculated' | 'Estimated' | 'Unknown';

@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
+import { editCanvasSize } from '@frameflow/shared';
 import type { GenerationConfig } from '../generationGroups.js';
 import { editTemplateImage } from './imageEdit.js';
 import { regionAlpha, smartEditImage } from './smartEditImage.js';
@@ -20,7 +21,8 @@ describe('a smart edit made locally: only its regions are painted', { timeout: 6
     const creative = await tall(), { fake, config } = model('drifts'), { files, save } = saved();
     const result = await smartEditImage(config, { bytes: creative.png, file: 'upload.png' }, 'Replace the red box with a green bottle.', { kind: 'local', regions: [{ targetId: 'box_1', label: 'Box', box: REGION }] }, save);
     expect(result.image).toMatchObject({ width: 720, height: 1280 });
-    expect(fake.requests).toEqual([{ prompt: 'Replace the red box with a green bottle.', size: '1216x1520', hasMask: true }]);
+    // Its own 9:16 ratio: nothing is padded for the model to compose across.
+    expect(fake.requests).toEqual([{ prompt: 'Replace the red box with a green bottle.', size: `${editCanvasSize(720, 1280).width}x${editCanvasSize(720, 1280).height}`, hasMask: true }]);
     const out = await raw(result.bytes), alpha = regionAlpha([REGION], 720, 1280, Math.round(0.015 * 720));
     let outside = 0, differing = 0, inside = 0, changedInside = 0;
     for (let i = 0; i < 720 * 1280; i++) {
@@ -35,10 +37,10 @@ describe('a smart edit made locally: only its regions are painted', { timeout: 6
     const mask = await sharp(files.get('edit-mask.png') as Buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true }), { width: mw, height: mh } = mask.info;
     let x0 = mw, y0 = mh, x1 = 0, y1 = 0;
     for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) if (mask.data[(y * mw + x) * 4 + 3] === 0) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-    const scale = 1520 / 1280, left = Math.floor((1216 - Math.round(720 * scale)) / 2);
+    const canvas = editCanvasSize(720, 1280), scale = Math.min(canvas.width / 720, canvas.height / 1280), left = Math.floor((canvas.width - Math.round(720 * scale)) / 2), top = Math.floor((canvas.height - Math.round(1280 * scale)) / 2);
     expect(Math.abs(x0 - (left + REGION.x * 720 * scale))).toBeLessThanOrEqual(3);
-    expect(Math.abs(y1 - (REGION.y + REGION.h) * 1280 * scale)).toBeLessThanOrEqual(3);
-    expect(result.generated).toMatchObject({ file: 'edit-generated.png', width: 1216, height: 1520 });
+    expect(Math.abs(y1 - (top + (REGION.y + REGION.h) * 1280 * scale))).toBeLessThanOrEqual(3);
+    expect(result.generated).toMatchObject({ file: 'edit-generated.png', ...editCanvasSize(720, 1280) });
     // Before: the same model through the whole-image edit returns another size, and repaints what nobody asked to change.
     const before = await editTemplateImage(config, { bytes: creative.png, file: 'upload.png', width: 720, height: 1280 }, 'Replace the red box with a green bottle.', () => undefined);
     expect(before.image).toMatchObject({ width: 1216, height: 1520 });

@@ -18,7 +18,9 @@ import { toFile } from 'openai';
 import { advertisedProducts, applySceneCorrections, basePlan, canonicalDraft, conceptScene, parseConcept, selectDiverseConcepts, VARIANT_RATIOS, cleanCorrections, cleanDraft, cleanScenePrompt, closestGenerationRatio, compileResolvedEdit, compileVariantPrompt, describeTemplateSlots, directionProblems,
   editStrategy, GENERATION_IMAGE_SIZES, holderOf, isForeground, parseResolverProposal, PLAN_RULES, sceneTarget, type ResolverProposal, lightingSentence, mapSceneToSlots, mergeResolution, needsResolver, planExpectations, protectedGroup, sanitizeEditInstruction, SCENE_SCHEMA_VERSION, sceneSimilarity, scenePromptProblems,
   SEMANTIC_NOTE, uncheckedVerification, VARIANT_LIMITS, variantExpectations, verificationStatus, type ChangePlan, type VariantRatio, type CreativeVariant, type ExecutionImage, type GenerationReview, type GenerationReviewCheck,
-  type SceneDescription, type SemanticExpectation, type SemanticVerification, type TemplateExecution, type TemplateRole, type TemplateVersion, type VariantSet } from '@frameflow/shared';
+  type SceneDescription, type SemanticExpectation, type SemanticVerification, type TemplateExecution, type TemplateRole, type TemplateVersion, type VariantSet,
+  compileCreativePrompt, conceptDistance, directionConcept, directionScene, directionSeed, integratedExpectations, keptPeople, MIN_CONCEPT_DISTANCE, planDirections, productNameProblems, renderedProducts,
+  showsHand, smallProducts, variantProducts, VARIANT_RENDERINGS, type VariantConcept, type VariantRendering, groupScale, productOrder, stagingShowsAll, autoResolve } from '@frameflow/shared';
 import { imageFailureCode, imageFileType, responseWithoutImage, returnedImage, type ApiFailure, type GenerationConfig } from '../generationGroups.js';
 import { referenceForPrompt, validateReferenceUpload } from '../imageTemplates.js';
 import { RunError } from '../layerizeExperiment.js';
@@ -28,7 +30,7 @@ import type { ChangeResolver, ConceptWriter, SceneAnalyzer, SemanticVerifier } f
 import type { Segmenter } from './segmenter.js';
 import { newRecordId, sha256, type ResolutionRecord, type SceneAnalysisRecord, type SceneStore, type VariantStore } from './smartStores.js';
 import { checkMask, composeVariant, cutoutFiles, generationInputs, maskBox, maskPng, maskRaster, refineEdges, sourceRaster, splitMaskByBoxes, userCutoutMask, type PixelBox, type VariantSubject } from './variantCompose.js';
-import { backgroundColour, canvasInputs, DEFAULT_COMPOSITION, groupBox, placeGroup, placeProducts, touchedEdges } from './variantLayout.js';
+import { backgroundColour, canvasInputs, DEFAULT_COMPOSITION, groupBox, placeGroup, placeProducts, productSheet, touchedEdges } from './variantLayout.js';
 
 export type Upload = { bytes: Buffer; fileName?: string; mimeType?: string };
 export interface SmartFeatures {
@@ -134,6 +136,8 @@ export function createSmartCreative(services: SmartServices) {
   // ── Creative variants ─────────────────────────────────────────────────────────────────────────────────────────────
   const shownSet = (set: VariantSet): VariantSet => {
     const stopped = !active.has(set.id);
+    if (stopped && set.rendering === 'integrated' && set.state === 'cutout')
+      return { ...set, state: 'failed', error: { code: 'INTERRUPTED', message: 'The server stopped while preparing the product references. Start a new set: nothing was generated.' } };
     // Stopped while cutting out: no mask was saved, so the set waits for an uploaded cutout (or a new set) instead of hanging.
     if (stopped && (set.cutout.status === 'segmenting' || (set.cutout.status === 'pending' && set.state === 'cutout')))
       return { ...set, state: 'needs-cutout', cutout: { ...set.cutout, status: 'needs-cutout', error: { code: 'INTERRUPTED', message: 'The server stopped while cutting out the subject. Upload a cutout PNG exported from this image, or start a new set.' } } };
@@ -232,6 +236,146 @@ export function createSmartCreative(services: SmartServices) {
       return false;
     }
   }
+  /**
+   * Integrated sets: the image model's product references, prepared once. The kept products that stay as they are are
+   * cut out (one mask request each, as before) and laid on a plain neutral sheet, so the old background, plinths and
+   * layout never reach the model. A replaced product needs no cutout: its old look must not come back. When the cutout
+   * is unavailable or unreliable, the original image is the reference instead (said plainly); the set never stops here.
+   */
+  async function prepareReferences(setId: string, scene: SceneDescription) {
+    const set = variants.get(setId), keep = renderedProducts(set.products ?? []).filter(p => !p.requested);
+    variants.update(setId, s => { s.state = 'cutout'; s.cutout.status = 'segmenting'; });
+    if (!keep.length) {
+      variants.update(setId, s => { s.references = {}; s.cutout = { status: 'ready', provider: 'none', checks: ['No cutout needed: every product is drawn as the identity you asked for.'], limitations: [] }; });
+      return;
+    }
+    const image = setFile(set, set.source.file), source = await sourceRaster(image);
+    const found = await editCutout({ scene, protectIds: keep.map(p => p.id), image, save: (file, value) => variants.writeFile(setId, file.replace(/^edit-/, ''), value) });
+    variants.update(setId, s => { s.usage.segmentationCalls += found.calls; });
+    if ('failure' in found) {
+      const limitation = `${found.failure} The original image is used as the product reference instead, so its background or layout may influence the new scenes.`;
+      variants.update(setId, s => { s.references = { original: true, limitation }; s.cutout = { status: 'ready', ...(found.provider ? { provider: found.provider } : {}), checks: [], limitations: [limitation] }; });
+      return;
+    }
+    // Products the scene ties together physically (held, worn, attached, or standing right against each other) share a tile.
+    const ids = found.subjects.map(x => x.id), box = (id: string) => scene.objects.find(o => o.id === id)?.box;
+    const touching = (a: string, b: string) => { const p = box(a), q = box(b); return !!p && !!q && p.x < q.x + q.w + 0.01 && q.x < p.x + p.w + 0.01 && p.y < q.y + q.h + 0.01 && q.y < p.y + p.h + 0.01; };
+    const together = scene.relations.filter(r => ids.includes(r.source) && ids.includes(r.target) && r.confidence >= 0.7
+      && (['holds', 'wears', 'attached_to', 'part_of'].includes(r.relation) || (['next_to', 'on', 'in_front_of', 'behind', 'accessory_of'].includes(r.relation) && touching(r.source, r.target))))
+      .map(r => [ids.indexOf(r.source), ids.indexOf(r.target)] as [number, number]);
+    const refined = refineEdges(source, found.subjects.map(x => x.mask)), sheet = await productSheet(refined.reference, refined.masks, together);
+    variants.writeFile(setId, 'product-sheet.png', sheet.png);
+    // The sheet's tiles left to right, as product ids: the prompt numbers the products in this same order.
+    const groups = sheet.groups.map(g => g.map(k => found.subjects[k].id));
+    const masks: NonNullable<VariantSet['cutout']['masks']> = [];
+    // Each file from its own subject's mask (editCutout's `masks` follow another order).
+    for (const [k, x] of found.subjects.entries()) { variants.writeFile(setId, `mask-${k + 1}.png`, await maskPng(x.mask, source.width, source.height)); masks.push({ subjectId: x.id, label: x.label, file: `mask-${k + 1}.png` }); }
+    variants.update(setId, s => {
+      s.references = { sheet: groups.flat().map(id => (s.products ?? []).find(p => p.id === id)?.detected ?? id), groups, file: 'product-sheet.png' };
+      s.cutout = { status: 'ready', provider: found.provider, masks, checks: ['Each kept product was cut out and placed on a plain sheet as the image model\'s reference.'], limitations: found.limitations };
+    });
+  }
+  /**
+   * Integrated sets: one creative direction per open variant, planned locally so the variants are different kinds of ad
+   * (planDirections), then enriched by one concept call when a writer is available. A writer answer that is missing,
+   * asks for text, or comes too close to another variant is replaced by its built-in direction: every variant gets a
+   * usable, different direction without the user writing anything, even when the call fails.
+   */
+  async function integratedConcepts(setId: string, scene: SceneDescription) {
+    const set = variants.get(setId), open = set.variants.filter(needsScene);
+    if (!open.length) return;
+    if (set.count === 1 && set.direction && !set.concepts) { variants.update(setId, s => { s.concepts = { status: 'skipped' }; s.variants[0].scene = s.direction!; s.variants[0].title = 'Your direction'; s.variants[0].status = 'pending'; delete s.variants[0].error; }); return; }
+    const products = productOrder(set.products ?? [], set.references ?? {}), objects = products.map(p => scene.objects.find(o => o.id === p.id)!).filter(Boolean), n = products.length;
+    const used = set.variants.filter(v => !needsScene(v) && v.concept).map(v => v.concept!);
+    const directions = planDirections(open.length, { small: smallProducts(objects), people: keptPeople(scene, set.protectedIds) > 0, original: scene.summary, seed: directionSeed(`${set.id}:${set.usage.conceptCalls}`), used, products: n });
+    const builtIn = directions.map(d => directionConcept(d, n)), writer = services.providers.concepts?.();
+    let written: (VariantConcept | undefined)[] = [], failure: string | undefined;
+    const rejected: { title: string; reason: string }[] = [];
+    if (writer) {
+      variants.update(setId, s => { s.state = 'concepts'; s.usage.conceptCalls += 1; s.usage.models.concepts = writer.model; });
+      try {
+        const brands = [...new Set(products.map(p => p.brand ?? (p.requested ? '' : objects.find(o => o.id === p.id)?.identity?.brand ?? '')).filter(Boolean))];
+        const details = objects.filter(o => !products.find(p => p.id === o.id)?.requested).flatMap(o => o.properties.filter(p => ['color', 'material', 'finish', 'style'].includes(p.key)).map(p => `${o.category}: ${p.value}`)).slice(0, 12);
+        const answer = await writer.write({ subjects: products.map((p, i) => `${i + 1}. ${p.requested ?? p.detected}${!p.requested && p.look ? ` (${p.look})` : ''}`), productCount: n, summary: scene.summary, lighting: lightingSentence(scene.lighting), ...(set.direction ? { direction: set.direction } : {}), count: directions.length,
+          ...(set.aspectRatio ? { ratio: set.aspectRatio } : {}), brands, details, changed: products.filter(p => p.requested).map(p => ({ from: p.detected, to: p.requested! })),
+          briefs: builtIn.map(c => ({ title: c.title, presentation: c.presentation!, family: c.family, staging: c.staging!, style: c.style!, camera: c.camera, composition: { x: c.composition.x, y: c.composition.y, scale: c.composition.scale, copy_space: c.composition.copySpace } })) },
+          (file, value) => variants.writeFile(setId, file, value));
+        written = answer.map((c, i) => {
+          const parsed = parseConcept(c);
+          if (!parsed.concept) { rejected.push({ title: sanitizeEditInstruction(c.title ?? '').slice(0, VARIANT_LIMITS.title) || `Concept ${i + 1}`, reason: `${parsed.problems[0]} Its built-in direction is used instead.` }); return undefined; }
+          // A staging that shows one product of several (or none) is replaced by the brief's own: every product stays in.
+          const staging = stagingShowsAll(parsed.concept.staging, n) ? parsed.concept.staging : builtIn[i]?.staging;
+          if (staging !== parsed.concept.staging) rejected.push({ title: parsed.concept.title, reason: `its staging did not show all ${n} products; the planned group staging is used instead` });
+          return { ...parsed.concept, presentation: parsed.concept.presentation ?? directions[i]?.id, staging, style: parsed.concept.style || builtIn[i]?.style,
+            composition: { ...parsed.concept.composition, scale: groupScale(parsed.concept.composition.scale, n) } };
+        });
+      } catch (error) { failure = describe(error); }
+    }
+    const chosen: VariantConcept[] = [];
+    for (const [i, fallback] of builtIn.entries()) {
+      const candidate = written[i], others = [...used, ...chosen];
+      const close = candidate && others.some(c => conceptDistance(candidate, c) < MIN_CONCEPT_DISTANCE);
+      if (candidate && close) rejected.push({ title: candidate.title, reason: 'too close to another variant: its built-in direction is used instead' });
+      chosen.push(candidate && !close && !scenePromptProblems(directionScene(candidate, n)).length ? candidate : fallback);
+    }
+    variants.update(setId, s => {
+      s.concepts = writer && !failure ? { status: 'done', model: writer.model, requestFile: 'concepts.openai-request.json', responseFile: 'concepts.openai-response.json' }
+        : { status: 'built-in', ...(writer ? { model: writer.model, requestFile: 'concepts.openai-request.json' } : {}), ...(failure ? { error: { code: 'CONCEPTS_FAILED', message: `${failure} Built-in directions were used instead.` } } : {}) };
+      const all = [...used, ...chosen], pairs: number[] = [];
+      for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) pairs.push(conceptDistance(all[i], all[j]));
+      s.conceptReport = { candidates: written.length, chosen: chosen.length, minDistance: pairs.length ? Math.round(Math.min(...pairs) * 100) / 100 : null, rejected };
+      let next = 0;
+      s.variants.forEach((v, i) => {
+        if (!needsScene(v)) return;
+        const c = chosen[next++];
+        if (!c) return;
+        v.concept = c; v.title = c.title || `Variant ${i + 1}`; v.scene = directionScene(c, n); v.status = 'pending'; delete v.error;
+      });
+    });
+  }
+  /** Integrated sets: one image request per variant, rendering the products into its direction (no mask, nothing pasted). */
+  async function generateIntegrated(setId: string, variantId: string) {
+    const set = variants.get(setId), scene = applySceneCorrections(scenes.get(set.analysisId).scene!, set.corrections ?? {});
+    const attempt = set.variants.find(v => v.id === variantId)!.attempts + 1, prefix = `${variantId}-a${attempt}`, config = services.generation(), started = Date.now();
+    variants.update(setId, s => { const v = s.variants.find(x => x.id === variantId)!; v.status = 'generating'; v.attempts = attempt; v.startedAt = new Date().toISOString(); v.rendering = 'integrated'; delete v.error; s.usage.imageGenerationCalls += 1; s.usage.models.image = config.model; });
+    try {
+      const v = variants.get(setId).variants.find(x => x.id === variantId)!, refs = set.references ?? {};
+      const ratio = set.aspectRatio ?? closestGenerationRatio(set.source.width, set.source.height), size = GENERATION_IMAGE_SIZES[ratio], sizeText = `${size.width}x${size.height}`;
+      const people = keptPeople(scene, set.protectedIds);
+      const prompt = compileCreativePrompt({ products: set.products ?? [], references: refs, scene: v.scene, ratio, people: people > 0, hands: showsHand(v.concept, v.scene) });
+      const files = [...(refs.sheet?.length && refs.file ? [{ bytes: setFile(set, refs.file), name: 'products.png', note: `<the kept products on a plain sheet: ${refs.sheet.join(', ')}>` }] : []),
+        ...(refs.original ? [{ bytes: setFile(set, set.source.file), name: set.source.file, note: '<the original creative>' }] : [])];
+      const method = files.length ? 'images.edit' : 'images.generate';
+      variants.writeFile(setId, `${prefix}.openai-request.json`, { method, model: config.model, prompt, size: sizeText, n: 1, output_format: 'png', ...(files.length ? { image: files.map(f => f.note) } : {}) });
+      variants.update(setId, s => { const x = s.variants.find(y => y.id === variantId)!; x.prompt = prompt; x.model = config.model; x.size = sizeText; x.requestFile = `${prefix}.openai-request.json`; });
+      let response: { data?: { b64_json?: string }[] | null };
+      try {
+        const images = config.client().images, request = { model: config.model, prompt, size: sizeText as never, n: 1, output_format: 'png' as const };
+        const uploads = await Promise.all(files.map(f => toFile(f.bytes, f.name, { type: imageFileType(f.name) })));
+        response = (files.length ? await images.edit({ ...request, image: uploads.length === 1 ? uploads[0] : uploads } as never) : await images.generate(request as never)) as unknown as { data?: { b64_json?: string }[] | null };
+      } catch (error) {
+        const api: ApiFailure = error instanceof RunError ? {} : error as ApiFailure;
+        if (api.status !== undefined) variants.writeFile(setId, `${prefix}.provider-error.json`, { requestId: api.requestID ?? null, capturedAt: new Date().toISOString(), status: api.status, body: api.error ?? null });
+        throw Object.assign(new Error(`The image request failed: ${describe(error)}`), { code: imageFailureCode(error) });
+      }
+      variants.writeFile(setId, `${prefix}.openai-response.json`, responseWithoutImage(response));
+      const generated = await returnedImage(response.data?.[0]?.b64_json);
+      const file = `${prefix}-creative.${ext(generated.format)}`;
+      variants.writeFile(setId, file, generated.bytes);
+      const image: ExecutionImage = { file, mimeType: `image/${generated.format === 'jpg' ? 'jpeg' : generated.format}`, width: generated.width, height: generated.height, bytes: generated.bytes.length, sha256: generated.sha256 };
+      let verification: SemanticVerification | undefined;
+      if (set.verify) {
+        const checkedOnce = await verify(setFile(set, set.source.file), generated.bytes, integratedExpectations(set.products ?? [], people, refs), (f, value) => variants.writeFile(setId, f, value), `${prefix}-`);
+        verification = checkedOnce.verification;
+        if (checkedOnce.called) variants.update(setId, s => { s.usage.verificationCalls += 1; s.usage.models.verifier = verification!.model ?? ''; });
+      }
+      variants.update(setId, s => { const x = s.variants.find(y => y.id === variantId)!; Object.assign(x, { status: 'done', image, responseFile: `${prefix}.openai-response.json`, durationMs: Date.now() - started, finishedAt: new Date().toISOString(), ...(verification ? { verification } : {}) }); });
+      log(`[SMART] integrated variant done set=${setId} ${variantId} attempt=${attempt} references=${files.length} ${method}`);
+    } catch (error) {
+      variants.update(setId, s => { const x = s.variants.find(y => y.id === variantId)!; x.status = 'failed'; x.error = { code: errorCode(error, 'GENERATION_FAILED'), message: describe(error) }; x.durationMs = Date.now() - started; x.finishedAt = new Date().toISOString(); });
+      log(`[SMART] integrated variant failed set=${setId} ${variantId}: ${describe(error)}`);
+    }
+  }
   /** Codes of a variant that has no usable scene yet: none was written, it was refused, or the concept call failed. */
   const SCENE_CODES = ['CONCEPT_REJECTED', 'CONCEPT_MISSING', 'CONCEPTS_FAILED'];
   /** A variant still waiting for a scene idea (a finished, running or user-edited one keeps its own). */
@@ -242,6 +386,7 @@ export function createSmartCreative(services: SmartServices) {
    * for an explicit second call or the user's own scene.
    */
   async function concepts(setId: string, scene: SceneDescription) {
+    if (variants.get(setId).rendering === 'integrated') return integratedConcepts(setId, scene);
     const set = variants.get(setId), open = set.variants.filter(needsScene);
     if (!open.length) return;
     if (set.count === 1 && set.direction && !set.concepts) { variants.update(setId, s => { s.concepts = { status: 'skipped' }; s.variants[0].scene = s.direction!; s.variants[0].title = 'Your direction'; }); return; }
@@ -299,6 +444,7 @@ export function createSmartCreative(services: SmartServices) {
     }
   }
   async function generateVariant(setId: string, variantId: string) {
+    if (variants.get(setId).rendering === 'integrated') return generateIntegrated(setId, variantId);
     const set = variants.get(setId), analysis = scenes.get(set.analysisId), scene = applySceneCorrections(analysis.scene!, set.corrections ?? {});
     const attempt = set.variants.find(v => v.id === variantId)!.attempts + 1, prefix = `${variantId}-a${attempt}`, config = services.generation(), started = Date.now();
     variants.update(setId, s => { const v = s.variants.find(x => x.id === variantId)!; v.status = 'generating'; v.attempts = attempt; v.startedAt = new Date().toISOString(); delete v.error; s.usage.imageGenerationCalls += 1; s.usage.models.image = config.model; });
@@ -372,7 +518,8 @@ export function createSmartCreative(services: SmartServices) {
   });
   async function runSet(setId: string, from: 'cutout' | 'concepts') {
     const set = variants.get(setId), scene = applySceneCorrections(scenes.get(set.analysisId).scene!, set.corrections ?? {});
-    if (from === 'cutout' && !await cutout(setId, scene)) return;
+    if (from === 'cutout' && set.rendering === 'integrated') await prepareReferences(setId, scene);
+    else if (from === 'cutout' && !await cutout(setId, scene)) return;
     await concepts(setId, scene);
     if (variants.get(setId).state === 'failed') return;
     variants.update(setId, s => { s.state = 'generating'; });
@@ -395,15 +542,19 @@ export function createSmartCreative(services: SmartServices) {
    * Undefined when its resolver answer cannot be read: it is then resolved like a new draft.
    */
   async function rebuildResolution(analysisId: string, record: SceneAnalysisRecord, corrected: SceneDescription, draft: ReturnType<typeof cleanDraft>, old: ResolutionRecord): Promise<ResolutionRecord | undefined> {
-    const proposal = old.resolver.called ? savedProposal(analysisId, old.resolver.responseFile) : undefined;
+    // A resolution that failed after its resolver answered never recorded the file: its answer is read from the usual name (no new call).
+    const proposal = old.resolver.called ? savedProposal(analysisId, old.resolver.responseFile ?? `res-${old.id.toLowerCase()}-resolution.openai-response.json`) : undefined;
     if (old.resolver.called && !proposal) return undefined;
     const referenceBytes = old.reference ? readFileSync(scenes.resolutionFile(analysisId, old.reference.file)) : undefined;
     const fresh = scenes.createResolution(analysisId, { binding: old.binding, draft, ...(old.reference && referenceBytes ? { reference: old.reference, referenceBytes, referenceExt: old.reference.file.split('.').pop()! } : {}) });
     const base = basePlan(corrected, draft, contextOf(record)), merged = proposal ? mergeResolution(corrected, draft, base, proposal) : { plan: base, rejected: [] };
     try {
-      const compiled = merged.plan.status === 'needs-input' ? undefined : compileResolvedEdit(corrected, merged.plan, { productReference: !!old.binding.referenceSha256 });
-      log(`[SMART] resolution ${old.id} rebuilt under ${PLAN_RULES} as ${fresh.id} (${proposal ? 'saved resolver answer merged again' : 'rules only'}; no call)`);
-      return scenes.updateResolution(analysisId, fresh.id, r => { r.state = 'ready'; r.plan = merged.plan; r.rejected = merged.rejected; r.rules = PLAN_RULES; r.resolver = { ...old.resolver, reusedFrom: old.id }; if (compiled) { r.prompt = compiled.text; r.summary = compiled.summary; } });
+      // Nothing is asked: the AI answers every open question from the user's intent (autoResolve), with no call.
+      const auto = autoResolve(corrected, draft, contextOf(record), proposal);
+      const compiled = compileResolvedEdit(corrected, auto.plan, { productReference: !!old.binding.referenceSha256 });
+      log(`[SMART] resolution ${old.id} rebuilt under ${PLAN_RULES} as ${fresh.id} (${proposal ? 'saved resolver answer merged again' : 'rules only'}; ${auto.decisions.length} automatic decisions; no call)`);
+      return scenes.updateResolution(analysisId, fresh.id, r => { r.state = 'ready'; r.plan = auto.plan; r.rejected = merged.rejected; r.rules = PLAN_RULES; r.resolver = { ...old.resolver, ...(proposal && !old.resolver.responseFile ? { responseFile: `res-${old.id.toLowerCase()}-resolution.openai-response.json` } : {}), reusedFrom: old.id };
+        r.auto = { summary: auto.intent.summary, intent: auto.intent.kind, decisions: auto.decisions }; r.prompt = compiled.text; r.summary = compiled.summary; });
     } catch (error) {
       return scenes.updateResolution(analysisId, fresh.id, r => { r.state = 'failed'; r.rules = PLAN_RULES; r.resolver = { ...old.resolver, reusedFrom: old.id }; r.error = { code: errorCode(error, 'RESOLUTION_FAILED'), message: describe(error) }; });
     }
@@ -447,6 +598,8 @@ export function createSmartCreative(services: SmartServices) {
       // A resolution made under older plan rules is rebuilt (rules again, and its saved resolver answer merged again: no call).
       if (cached && cached.rules !== PLAN_RULES) { const rebuilt = await rebuildResolution(analysisId, record, corrected, draft, cached); if (rebuilt) return { resolution: rebuilt, created: true }; }
       else if (cached && !(cached.resolver.called === false && needsResolver(corrected, draft) && !input.rulesOnly)) return { resolution: cached, created: false };
+      // Only a failed one for these inputs, whose resolver had already answered: planned again from that saved answer (no new call).
+      if (!cached) { const failed = scenes.findResolution(analysisId, binding, 'failed'); if (failed?.resolver.called) { const rebuilt = await rebuildResolution(analysisId, record, corrected, draft, failed); if (rebuilt?.state === 'ready') return { resolution: rebuilt, created: true }; } }
       const flight = `${analysisId}|${JSON.stringify(binding)}|${input.rulesOnly ? 'rules' : 'ai'}`, pending = resolving.get(flight);
       if (pending) return { resolution: (await pending).resolution, created: false };
       const work = this.resolveNew(analysisId, { record, corrected, draft, binding, ...(input.reference ? { reference: input.reference } : {}), ...(referenceMeta ? { referenceMeta } : {}), rulesOnly: !!input.rulesOnly });
@@ -458,9 +611,14 @@ export function createSmartCreative(services: SmartServices) {
       const { record, corrected, draft, binding, referenceMeta } = input;
       const resolution = scenes.createResolution(analysisId, { binding, draft, ...(input.reference && referenceMeta ? { reference: { file: '', mimeType: `image/${referenceMeta.format}`, width: referenceMeta.width, height: referenceMeta.height, bytes: input.reference.bytes.length, sha256: binding.referenceSha256! },
         referenceBytes: input.reference.bytes, referenceExt: ext(referenceMeta.format) } : {}) });
-      const finishWith = (plan: ChangePlan, rejected: string[], resolver: ResolutionRecord['resolver']) => {
-        const compiled = plan.status === 'needs-input' ? undefined : compileResolvedEdit(corrected, plan, { productReference: !!input.reference });
-        return scenes.updateResolution(analysisId, resolution.id, r => { r.state = 'ready'; r.plan = plan; r.rejected = rejected; r.resolver = resolver; r.rules = PLAN_RULES; if (compiled) { r.prompt = compiled.text; r.summary = compiled.summary; } });
+      // Nothing is asked: every open question is answered from the user's intent and the scene's relations (autoResolve),
+      // planned again with the resolver's answer, if any. The resolution stays bound to exactly what the user typed.
+      const finishWith = (plan: ChangePlan, rejected: string[], resolver: ResolutionRecord['resolver'], proposal?: ResolverProposal) => {
+        const auto = autoResolve(corrected, draft, contextOf(record), proposal), notes = plan.notes.filter(n => !auto.plan.notes.includes(n));
+        const final = { ...auto.plan, notes: [...auto.plan.notes, ...notes] }, compiled = compileResolvedEdit(corrected, final, { productReference: !!input.reference });
+        if (auto.decisions.length) log(`[SMART] resolution ${resolution.id}: ${auto.decisions.length} automatic decisions (${auto.intent.kind})`);
+        return scenes.updateResolution(analysisId, resolution.id, r => { r.state = 'ready'; r.plan = final; r.rejected = rejected; r.resolver = resolver; r.rules = PLAN_RULES;
+          r.auto = { summary: auto.intent.summary, intent: auto.intent.kind, decisions: auto.decisions }; r.prompt = compiled.text; r.summary = compiled.summary; });
       };
       try {
         const base = basePlan(corrected, draft, contextOf(record));
@@ -481,7 +639,7 @@ export function createSmartCreative(services: SmartServices) {
           return { resolution: updated, created: true };
         }
         const merged = mergeResolution(corrected, draft, base, proposal);
-        return { resolution: finishWith(merged.plan, merged.rejected, { called: true, model: resolver.model, requestFile: `${prefix}-resolution.openai-request.json`, responseFile: `${prefix}-resolution.openai-response.json`, durationMs: Date.now() - started }), created: true };
+        return { resolution: finishWith(merged.plan, merged.rejected, { called: true, model: resolver.model, requestFile: `${prefix}-resolution.openai-request.json`, responseFile: `${prefix}-resolution.openai-response.json`, durationMs: Date.now() - started }, proposal), created: true };
       } catch (error) {
         const updated = scenes.updateResolution(analysisId, resolution.id, r => { r.state = 'failed'; r.error = { code: errorCode(error, 'RESOLUTION_FAILED'), message: describe(error) }; });
         return { resolution: updated, created: true };
@@ -523,7 +681,7 @@ export function createSmartCreative(services: SmartServices) {
       // Where each change is, by the analysis's own boxes (the review's regions where the template has none of its own).
       const regions: Record<string, { x: number; y: number; w: number; h: number }> = {};
       for (const e of plan.entries.filter(x => x.operation !== 'keep')) { const t = sceneTarget(scene, e.targetId); if (t) regions[e.slotId ?? e.targetId] = t.item.box; }
-      return { scene, compiled: compileResolvedEdit(scene, plan, { productReference: !!resolution.binding.referenceSha256 }), expectations: planExpectations(scene, plan),
+      return { scene, plan, compiled: compileResolvedEdit(scene, plan, { productReference: !!resolution.binding.referenceSha256 }), expectations: planExpectations(scene, plan),
         strategy: editStrategy(scene, plan), regions,
         // A replaced or removed object (asked or inferred) can never be confirmed by pixels: a person looks at it.
         objectChange: plan.entries.some(e => e.operation === 'replace' || e.operation === 'remove') };
@@ -532,7 +690,7 @@ export function createSmartCreative(services: SmartServices) {
     verify, semanticChecks,
 
     // ── Variant sets ──
-    async startVariants(input: { analysisId: unknown; templateId: unknown; templateVersion: unknown; protectedIds?: unknown; aspectRatio?: unknown; corrections?: unknown; direction?: unknown; surprise?: unknown; count?: unknown; verify?: unknown; idempotencyKey: unknown }) {
+    async startVariants(input: { analysisId: unknown; templateId: unknown; templateVersion: unknown; protectedIds?: unknown; aspectRatio?: unknown; corrections?: unknown; direction?: unknown; surprise?: unknown; count?: unknown; verify?: unknown; rendering?: unknown; products?: unknown; idempotencyKey: unknown }) {
       const f = services.features().variants;
       if (!f.available) throw fail('VARIANTS_UNAVAILABLE', f.reason ?? 'Creative variants are unavailable.');
       if (typeof input.analysisId !== 'string') throw fail('INVALID_REQUEST', 'Analyze the image first.');
@@ -559,15 +717,35 @@ export function createSmartCreative(services: SmartServices) {
       const surprise = input.surprise === true || !direction;
       if (input.verify !== undefined && typeof input.verify !== 'boolean') throw fail('INVALID_REQUEST', 'verify is true or false.');
       const wantsVerify = input.verify !== false && services.features().verification.available;
-      const now = new Date().toISOString(), labels = cutoutTargets(scene, group.ids).map(o => o.label);
-      const signature = JSON.stringify({ analysisId: record.id, ids: [...group.ids].sort(), direction, surprise, count, ...(aspectRatio ? { aspectRatio } : {}) });
+      const now = new Date().toISOString(), targets = cutoutTargets(scene, group.ids), labels = targets.map(o => o.label);
+      // How the products appear: rendered into each scene (integrated, what the app asks for) or pasted as exact pixels
+      // (every request made before `rendering` existed). Only an integrated set can change what a product is.
+      if (input.rendering !== undefined && !(VARIANT_RENDERINGS as readonly unknown[]).includes(input.rendering)) throw fail('INVALID_REQUEST', `rendering is ${VARIANT_RENDERINGS.join(' or ')}.`);
+      const rendering: VariantRendering = (input.rendering as VariantRendering | undefined) ?? 'exact';
+      const asked: Record<string, { name?: string; brand?: string }> = {};
+      if (input.products !== undefined) {
+        if (!input.products || typeof input.products !== 'object' || Array.isArray(input.products)) throw fail('INVALID_REQUEST', 'products maps a kept product to its name.');
+        for (const [id, value] of Object.entries(input.products as Record<string, unknown>)) {
+          const v = value as { name?: unknown; brand?: unknown } | null;
+          if (!targets.some(o => o.id === id) || !v || typeof v !== 'object' || (v.name !== undefined && typeof v.name !== 'string') || (v.brand !== undefined && typeof v.brand !== 'string')) throw fail('INVALID_REQUEST', 'Each product change names a kept product and its new name.');
+          const problem = productNameProblems(v.name)[0] ?? productNameProblems(v.brand)[0];
+          if (problem) throw fail('INVALID_PRODUCT', problem);
+          asked[id] = { ...(v.name ? { name: v.name as string } : {}), ...(v.brand ? { brand: v.brand as string } : {}) };
+        }
+      }
+      const products = rendering === 'integrated' ? variantProducts(scene, targets.map(o => o.id), asked) : undefined;
+      if (rendering === 'exact' && targets.some(o => asked[o.id]?.name && variantProducts(scene, [o.id], asked)[0]?.requested))
+        throw fail('INVALID_REQUEST', 'Exact product pixels keep the original product: changing a product needs the AI-rendered mode.');
+      const signature = JSON.stringify({ analysisId: record.id, ids: [...group.ids].sort(), direction, surprise, count, ...(aspectRatio ? { aspectRatio } : {}),
+        ...(rendering === 'integrated' ? { rendering, products: products!.map(p => [p.id, p.requested ?? '']) } : {}) });
       const { set, created } = variants.create(id => {
         const file = `source.${record.upload.file.split('.').at(-1)}`;
         variants.writeFile(id, file, readFileSync(scenes.path(record.id, record.upload.file)));
         return { id, createdAt: now, updatedAt: now, idempotencyKey: String(input.idempotencyKey), template: { id: version.templateId, name: version.name, version: version.version }, analysisId: record.id,
           source: { ...record.upload, file }, protectedIds: group.ids, protectedLabels: labels, ...(direction ? { direction } : {}), surprise, count, state: 'cutout', verify: wantsVerify,
           cutout: { status: 'pending', checks: [], limitations: [] }, variants: Array.from({ length: count }, (_, i): CreativeVariant => ({ id: `v${i + 1}`, title: `Variant ${i + 1}`, scene: '', status: 'pending', attempts: 0, history: [] })),
-          usage: { segmentationCalls: 0, conceptCalls: 0, imageGenerationCalls: 0, verificationCalls: 0, models: {} }, signature, selection, ...(aspectRatio ? { aspectRatio } : {}), ...(Object.keys(corrections).length ? { corrections } : {}) } as VariantSet;
+          usage: { segmentationCalls: 0, conceptCalls: 0, imageGenerationCalls: 0, verificationCalls: 0, models: {} }, signature, selection, ...(aspectRatio ? { aspectRatio } : {}), ...(Object.keys(corrections).length ? { corrections } : {}),
+          ...(products ? { rendering, products } : {}) } as VariantSet;
       }, String(input.idempotencyKey ?? ''), existing => (existing as VariantSet & { signature?: string }).signature === signature);
       if (created) { log(`[SMART] variant set=${set.id} protected=${group.ids.join(',')} (${selection.basis}) count=${count}${aspectRatio ? ` ratio=${aspectRatio}` : ''}`); schedule(set.id, () => runSet(set.id, 'cutout')); }
       return { set: shownSet(variants.get(set.id)), created };
@@ -636,9 +814,31 @@ export function createSmartCreative(services: SmartServices) {
       const set = variants.get(setId), v = set.variants.find(x => x.id === variantId);
       if (!v) throw fail('NOT_FOUND', 'Variant not found.');
       if (v.executionId) { try { return { execution: executions.get(v.executionId), created: false }; } catch { /* its execution is gone: make a new one */ } }
-      if (v.status !== 'done' || !v.image || !v.layers) throw fail('NOT_READY', 'Only a finished variant can be used.');
+      if (v.status !== 'done' || !v.image || (!v.layers && v.rendering !== 'integrated')) throw fail('NOT_READY', 'Only a finished variant can be used.');
       const bytes = readFileSync(variants.path(setId, v.image.file));
       if (sha256(bytes) !== v.image.sha256) throw fail('INPUT_IDENTITY_MISMATCH', 'The saved variant image changed on disk; regenerate it.');
+      if (v.rendering === 'integrated' || !v.layers) {
+        // One rendered creative: reviewed, planned and decomposed like any generated image (its layout is new, so the
+        // template's saved plan is a choice, not a default). The products were re-rendered: a person checks them.
+        const verification = v.verification ?? uncheckedVerification('The AI check was not asked for.'), limitations = set.cutout.limitations;
+        const changed = renderedProducts(set.products ?? []).filter(p => p.requested);
+        const review: GenerationReview = { method: 'creative-variant', semantic: verification,
+          checks: [...limitations.map((message): GenerationReviewCheck => ({ id: 'cutout-limitation', severity: 'warning', message, evidence: {} })), ...semanticChecks(verification)],
+          requiresAcknowledgement: !!limitations.length || verification.status !== 'passed',
+          note: `A new creative rendered by the image model: ${changed.length ? `${changed.map(p => p.requested).join(', ')} as you asked, ` : ''}${renderedProducts(set.products ?? []).some(p => !p.requested) ? 'your products drawn from their cutouts (their identity is guided, not copied pixel for pixel)' : 'no original product pixels'}. Check each product's shape, colours and markings, and the edges and light.` };
+        const files: Record<string, Buffer | object> = {};
+        for (const [from, to] of [[v.requestFile, 'edit.openai-request.json'], [v.responseFile, 'edit.openai-response.json'], [v.verification?.requestFile, 'verification.openai-request.json'], [v.verification?.responseFile, 'verification.openai-response.json'], [set.concepts?.requestFile, 'concepts.openai-request.json'], [set.concepts?.responseFile, 'concepts.openai-response.json']] as const) {
+          try { if (from) files[to] = JSON.parse(readFileSync(variants.path(setId, from), 'utf8')); } catch { /* missing: its usage stays unknown */ }
+        }
+        const result = executions.create({ mode: 'REUSE_TEMPLATE_WITH_EDIT', reviewBeforeDecompose: true, idempotencyKey: String(input.idempotencyKey ?? ''), template: set.template,
+          editInstruction: `creative variant ${setId} ${variantId} attempt ${v.attempts}`, upload: { bytes: readFileSync(variants.path(setId, set.source.file)), ext: set.source.file.split('.').at(-1)!, mimeType: set.source.mimeType, width: set.source.width, height: set.source.height, ...(set.source.originalName ? { originalName: set.source.originalName } : {}) },
+          compatibility: { status: 'structural-change', changedSlots: [], reasons: ['A new composition: the template\'s saved plan describes the original layout.'] },
+          prepared: { image: { bytes, ext: v.image.file.split('.').at(-1)!, mimeType: v.image.mimeType, width: v.image.width, height: v.image.height }, prompt: v.prompt ?? '', model: v.model ?? '', size: v.size ?? '', review, files,
+            requestFile: v.requestFile ? 'edit.openai-request.json' : undefined, responseFile: v.responseFile ? 'edit.openai-response.json' : undefined, durationMs: v.durationMs, variantSource: { setId, variantId },
+            verificationCalls: v.verification && v.verification.status !== 'unchecked' ? 1 : 0, verifierModel: v.verification?.model } });
+        variants.update(setId, s => { s.variants.find(x => x.id === variantId)!.executionId = result.execution.id; });
+        return result;
+      }
       const limitations = set.cutout.limitations, verification = v.verification ?? uncheckedVerification('The AI check was not asked for.');
       const review: GenerationReview = { method: 'creative-variant', semantic: verification,
         checks: [...limitations.map((message): GenerationReviewCheck => ({ id: 'cutout-limitation', severity: 'warning', message, evidence: {} })), ...semanticChecks(verification)],

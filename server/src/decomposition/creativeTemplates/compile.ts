@@ -82,9 +82,29 @@ export function simpleTemplateVersion(version: TemplateVersion): TemplateVersion
   const fold = (l: TemplateLayer, parent?: TemplateLayer): TemplateLayer => parent && parent.id !== l.id && l.independent
     ? { ...l, independent: false, required: false, attachment: { relation: 'part_of_object', parent: parent.id, keepWithParent: true, separationRisk: 'low' } } : l;
   const simple = layers.map(l => ['backdrop', 'decoration', 'effect'].includes(l.role) ? fold(l, background) : l.role === 'supporting_product' ? fold(l, main) : l);
-  return { ...version, structure: { ...version.structure, layers: simple } };
+  return restructured(version, { ...version.structure, layers: simple });
 }
 export const compileSimpleTemplatePlan = (version: TemplateVersion, compiledAt?: string) => compileTemplatePlan(simpleTemplateVersion(version), compiledAt);
+/**
+ * A version with another structure and the plan texts rebuilt from it, as a version is saved (capture.ts): the layer
+ * model's instruction is the saved plan's prompt, so a changed structure with the old prompt would still ask the provider
+ * for the old layers.
+ */
+function restructured(version: TemplateVersion, structure: TemplateStructure): TemplateVersion {
+  return { ...version, structure, plan: { ...version.plan, strategy: templatePlanStrategy(structure), prompt: templatePlanPrompt(structure, version.plan.occlusionWording),
+    recommendedLayers: structure.layers.filter(l => l.independent).length } };
+}
+/**
+ * The saved plan without the layers of objects an edit removed (and what is kept with them): a plan must not ask the
+ * provider for layers the image no longer has. The background is never removed; a plan left with no layer is kept whole.
+ */
+export function withoutSlots(version: TemplateVersion, removed: readonly string[]): TemplateVersion {
+  const layers = version.structure.layers, gone = new Set(removed.filter(id => layers.some(l => l.id === id && l.role !== 'background')));
+  for (let grew = gone.size > 0; grew;) { grew = false; for (const l of layers) if (!gone.has(l.id) && l.attachment && gone.has(l.attachment.parent)) { gone.add(l.id); grew = true; } }
+  const kept = layers.filter(l => !gone.has(l.id)).map(l => l.occlusion ? { ...l, occlusion: { ...l.occlusion, occludedBy: l.occlusion.occludedBy.filter(id => !gone.has(id)) } } : l);
+  if (!gone.size || !kept.some(l => l.independent)) return version;
+  return restructured(version, { ...version.structure, layers: kept, relationships: version.structure.relationships.filter(r => !gone.has(r.source) && !gone.has(r.target)) });
+}
 
 /** A run's prompt source from a template version: its saved plan, protected and validated as a planner answer would be. */
 export function compileTemplatePlan(version: TemplateVersion, compiledAt = new Date().toISOString()): Extract<PromptSource, { mode: 'template-plan' }> {

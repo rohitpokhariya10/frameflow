@@ -155,7 +155,10 @@ describe('OpenAI → Seedream decomposition runs', () => {
     const run = await executeRun(dir, { planner: plan, transport: () => transport, sleep: async () => undefined });
     expect(run.error).toMatchObject({ code: 'PROVIDER_DECOMPOSITION_REJECTED', stage: 'queued', provider: { code: 'PROVIDER_REJECTED', status: 422, billableUnits: '0', requestId: 'req-123', messages: [{ msg: expect.stringMatching(/could not be processed/), type: 'invalid_request', loc: 'body.image_url' }] } });
     // Without fal's response date nothing says when it refused: no claim of intake, and none of a completed inference.
-    expect(run.error!.message).toMatch(/^fal HTTP 422: The provided image could not be processed.*Seedream did not produce a valid decomposition for this image\/prompt combination\. fal billed 0 units for it\..*This is a layer-extraction failure, not an image-generation failure: any generated creative is kept\. This stored result is final for request req-123, so Resume returns the same error\. The output layer count is never sent to Seedream/);
+    // fal's own words, classified (never blamed on the plan): an image Seedream could not process, billed 0, kept, final.
+    expect(run.error!.message).toMatch(/^fal HTTP 422: The provided image could not be processed.*Seedream answered that this image "could not be processed for layer decomposition"\. fal billed 0 units for it\..*the reason is not disclosed.*This is a layer-extraction failure, not an image-generation failure: the creative is kept\. This stored result is final for request req-123, so Resume returns the same answer\./);
+    expect(run.rejection).toMatchObject({ category: 'unprocessable-image', status: 422, loc: 'body.image_url', billableUnits: '0', endpoint: 'bytedance/seedream/v5/pro/layerize' });
+    expect(run.error!.message).not.toMatch(/plan asked for|finer ones were rejected/);
     expect(run.error!.message).not.toMatch(/completed inference|at intake/);
     expect(readRun(dir).error).toEqual(run.error);
     // No automatic paid retry: one submission, one result read.
@@ -191,7 +194,7 @@ describe('OpenAI → Seedream decomposition runs', () => {
     const run = await executeRun((await createRun(runsDir, await png(800, 600))).dir, { planner: plan, transport: () => transport, sleep: async () => undefined });
     expect(run.error).toMatchObject({ code: 'PROVIDER_DECOMPOSITION_REJECTED', provider: { billableUnits: '0', bodyFile: 'provider-error.json' } });
     expect(run.error!.message).not.toMatch(/at intake|no decomposition was attempted|answer is dated/);
-    expect(run.error!.message).toContain('Seedream did not produce a valid decomposition for this image/prompt combination. fal billed 0 units for it.');
+    expect(run.error!.message).toContain('"could not be processed for layer decomposition". fal billed 0 units for it.');
     expect(run.error!.message).toContain('layer-extraction failure, not an image-generation failure');
     expect(transport.submit).toHaveBeenCalledTimes(1);
   });
@@ -234,7 +237,9 @@ describe('OpenAI → Seedream decomposition runs', () => {
     const { dir } = await createRun(runsDir, await png(800, 600));
     const run = await executeRun(dir, { planner: plan, transport: () => transport, sleep: async () => undefined });
     expect(run.error).toMatchObject({ code: 'PROVIDER_DECOMPOSITION_REJECTED', provider: { messages: [{ type: 'content_policy_violation', reason: 'partner_validation_failed' }] } });
-    expect(run.error!.message).toMatch(/its reason is partner_validation_failed: the provider's own validation rejected the decomposition after inference\. It is not a safety flag on the image/);
+    // A partner content check on the image: recorded as fal said it, never as a plan problem.
+    expect(run.error!.message).toMatch(/fal's partner content check refused this image \(body\.image: partner_validation_failed\); the reason is not disclosed\. fal billed 0 units for it\./);
+    expect(run.rejection).toMatchObject({ category: 'partner-content', loc: 'body.image', reason: 'partner_validation_failed' });
     expect(run.error!.message).not.toMatch(/try a different image\.$/);
     expect(readRun(dir).error!.code).toBe('PROVIDER_DECOMPOSITION_REJECTED');
     // An explicit retry is allowed (a new run; the retry itself submits nothing).

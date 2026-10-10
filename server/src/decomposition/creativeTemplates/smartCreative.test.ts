@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
-import { compileResolvedEdit, compileTemplateEdit, describeTemplateSlots, draftFromTemplateFields, parseSceneDescription, PLAN_RULES, TEXT_FREE_RULE, type ResolverProposal, type SemanticCheck, type TemplateExecution, type TemplateStructure, type TemplateVersion, type VariantSet } from '@frameflow/shared';
+import { compileResolvedEdit, compileTemplateEdit, editCanvasSize, describeTemplateSlots, draftFromTemplateFields, parseSceneDescription, PLAN_RULES, TEXT_FREE_RULE, type ResolverProposal, type SemanticCheck, type TemplateExecution, type TemplateStructure, type TemplateVersion, type VariantSet } from '@frameflow/shared';
 import type { FalTransport } from '../providers/falClient.js';
 import { readRun } from '../layerizeExperiment.js';
+import { ProviderError } from '../providers/adapters.js';
 import { createOpenAIPlanner } from '../layerizePlanner.js';
 import { templateEditPrompt, templatePlanPrompt, templatePlanStrategy } from './compile.js';
 import { fileExecutionStore } from './executions.js';
@@ -53,12 +54,28 @@ async function setup() {
   const templates = fileTemplateStore(join(root, 'templates')), executions = fileExecutionStore(join(root, 'executions')), runsDir = join(root, 'runs');
   const scenes = fileSceneStore(join(root, 'analyses')), variants = fileVariantStore(join(root, 'variants'));
   // Seedream: every image comes back as its base plus one named layer (enough for a finished run).
-  const decomposed: Buffer[] = [], files = new Map<string, Buffer>(), fal = { resultFailures: 0, baseScale: 1 };
+  const decomposed: Buffer[] = [], files = new Map<string, Buffer>(), fal = { resultFailures: 0, baseScale: 1, partnerRejections: 0, qwenFailures: 0 }, submitted: string[] = [];
   const transport: FalTransport = {
     upload: async image => { decomposed.push(image as Buffer); return `https://v3b.fal.media/files/t/in-${decomposed.length}.png`; },
-    submit: async () => ({ requestId: `r${decomposed.length}` }), status: async () => 'COMPLETED',
-    result: async (_e, id) => {
+    submit: async endpoint => { submitted.push(endpoint); return { requestId: `r${decomposed.length}` }; }, status: async () => 'COMPLETED',
+    result: async (endpoint, id) => {
+      if (endpoint === 'fal-ai/qwen-image-layered') {
+        if (fal.qwenFailures > 0) { fal.qwenFailures--; throw Object.assign(new ProviderError('PROVIDER_REJECTED', 'rejected', false, 422), { providerDetail: { status: 422, billableUnits: '0', requestId: `req-${id}`, messages: [{ msg: 'Qwen could not process the image.', type: 'invalid_request' }] } }); }
+        // Qwen-Image-Layered, faked as it answers: the upload stretched to its working size (about 640², sides of 32), an
+        // opaque scene plate without the phone, and the phone as its own transparent layer.
+        const input = decomposed[Number(id.slice(1)) - 1], meta = await sharp(input).metadata(), r = meta.width! / meta.height!, qw = Math.sqrt(640 * 640 * r);
+        const at = { width: Math.round(qw / 32) * 32, height: Math.round(qw / r / 32) * 32 }, phone = px(PHONE);
+        const plate = await sharp(input).composite([{ input: { create: { width: phone.width, height: phone.height, channels: 3, background: '#dcd0f0' } }, left: phone.left, top: phone.top }]).png().toBuffer();
+        const cut = await sharp(input).ensureAlpha().composite([{ input: await sharp({ create: { width: meta.width!, height: meta.height!, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+          .composite([{ input: { create: { width: phone.width, height: phone.height, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } }, left: phone.left, top: phone.top }]).png().toBuffer(), blend: 'dest-in' }]).png().toBuffer();
+        files.set(`qwen-${id}-0`, await sharp(plate).resize(at.width, at.height, { fit: 'fill' }).png().toBuffer());
+        files.set(`qwen-${id}-1`, await sharp(cut).resize(at.width, at.height, { fit: 'fill' }).png().toBuffer());
+        return { images: [0, 1].map(k => ({ url: `https://v3b.fal.media/files/t/qwen-${id}-${k}.png`, width: at.width, height: at.height, content_type: 'image/png' })), seed: 1, has_nsfw_concepts: [false, false] };
+      }
       if (fal.resultFailures > 0) { fal.resultFailures--; throw new Error('fal result temporarily unavailable'); }
+      // fal's partner check refusing the image, exactly as live (422, body.image, partner_validation_failed, billed 0).
+      if (fal.partnerRejections > 0) { fal.partnerRejections--; throw Object.assign(new ProviderError('PROVIDER_REJECTED', 'rejected', false, 422), { providerDetail: { status: 422, billableUnits: '0', requestId: `req-${id}`,
+        messages: [{ msg: 'The content could not be processed because it contained material flagged by a content checker.', type: 'content_policy_violation', loc: 'body.image', reason: 'partner_validation_failed' }] } }); }
       // Seedream may answer at another size than it was given (image_size auto).
       const input = decomposed[Number(id.slice(1)) - 1], meta = await sharp(input).metadata(), width = Math.round(meta.width! * fal.baseScale), height = Math.round(meta.height! * fal.baseScale);
       files.set(`base-${id}`, await sharp(input).resize(width, height, { fit: 'fill' }).png().toBuffer());
@@ -96,7 +113,9 @@ async function setup() {
     const mask = sharp({ create: { width: input.width, height: input.height, channels: 3, background: '#000000' } });
     return { mask: await (maskBoxes.length ? mask.composite(maskBoxes.map(b => rect(b, '#ffffff'))) : mask).png().toBuffer(), requestIds: ['sam-1'] };
   });
-  const generation = () => ({ model: 'gpt-image-2', client: () => ({ images: { edit: imageEdits, generate: vi.fn() } }) as never });
+  // Text-to-image (an integrated set whose every product was renamed has no reference to send).
+  const imageGenerations = vi.fn(async (request: { size: string }) => { const [width, height] = request.size.split('x').map(Number); return { data: [{ b64_json: (await sharp(await creative('#d0e0f0')).resize(width, height, { fit: 'fill' }).png().toBuffer()).toString('base64') }] }; });
+  const generation = () => ({ model: 'gpt-image-2', client: () => ({ images: { edit: imageEdits, generate: imageGenerations } }) as never });
   const features = () => readSmartFeatures({}, { openai: true, fal: true, cutout: 'fake', models: { analysis: 'fake-scene', resolver: 'fake-resolver', verifier: 'fake-verifier' } });
   let line: Promise<unknown> = Promise.resolve();
   const smart = createSmartCreative({ scenes, variants, executions, templates, generation, features, log: () => undefined,
@@ -118,7 +137,7 @@ async function setup() {
   };
   const settledSet = async (id: string): Promise<VariantSet> => { await vi.waitFor(() => expect(['ready', 'needs-cutout', 'failed']).toContain(smart.set(id).state), { timeout: 20_000 }); return smart.set(id); };
   const settled = async (id: string): Promise<TemplateExecution> => { await vi.waitFor(() => expect(['done', 'failed']).toContain(executions.get(id).state), { timeout: 20_000 }); return executions.get(id); };
-  return { root, templates, executions, scenes, variants, smart, service, source, version, upload, analyzed, generate, settledSet, settled, imageEdits, analyze, resolve, verify, write, segment, decomposed, plannerCalls, fal,
+  return { root, templates, executions, scenes, variants, smart, service, source, version, upload, analyzed, generate, settledSet, settled, imageEdits, imageGenerations, analyze, resolve, verify, write, segment, decomposed, submitted, plannerCalls, fal,
     setScene: (value: unknown) => { sceneAnswer = value; }, setProposal: (value: ResolverProposal | Error) => { proposal = value; }, setVerdict: (value: typeof verdict) => { verdict = value; },
     setConcepts: (make: typeof concepts) => { concepts = make; }, setMask: (value: typeof maskBoxes) => { maskBoxes = value; } };
 }
@@ -156,13 +175,14 @@ describe('smart edits: analysis, resolution, binding and generation (offline fak
     expect(t.smart.analysis(record.id)).toMatchObject({ state: 'failed', error: { code: 'INTERRUPTED' } });
   });
 
-  it('resolves explicitly, asks about an accessory, reuses an identical resolution, and generates exactly the persisted prompt', async () => {
+  it('resolves explicitly, decides the accessory itself (no question), reuses an identical resolution, and generates exactly the persisted prompt', async () => {
     const t = await setup(), analysis = await t.analyzed();
     t.setProposal(xiaomi());
-    const asking = (await t.smart.resolve(analysis.id, { draft: { edits: { smartphone_1: { action: 'replace', value: 'Xiaomi phone' } }, corrections: {} } })).resolution;
-    expect(asking).toMatchObject({ state: 'ready', plan: { status: 'needs-input', conflicts: [{ id: 'rule:accessory:earbuds_1' }] } });
-    expect(asking.prompt).toBeUndefined();
-    await expect(t.generate(analysis.id, asking.id, { edits: { smartphone_1: { action: 'replace', value: 'Xiaomi phone' } }, corrections: {} })).rejects.toMatchObject({ code: 'RESOLUTION_NEEDS_INPUT' });
+    // The accessory of a phone that changes brand goes with it: decided automatically and recorded, never asked.
+    const decided = (await t.smart.resolve(analysis.id, { draft: { edits: { smartphone_1: { action: 'replace', value: 'Xiaomi phone' } }, corrections: {} } })).resolution;
+    expect(decided).toMatchObject({ state: 'ready', plan: { status: 'clear', conflicts: [] }, auto: { intent: 'replace', decisions: [{ id: 'rule:accessory:earbuds_1', choice: 'Remove Earbuds' }] } });
+    expect(decided.plan!.entries.find(e => e.targetId === 'earbuds_1' && e.operation === 'remove')).toMatchObject({ source: 'inferred' });
+    expect(decided.prompt).toContain('Remove the earbuds');
     const { resolution, created } = await t.smart.resolve(analysis.id, { draft: replacePhone });
     expect(created).toBe(true);
     expect(resolution.plan!.status).toBe('clear');
@@ -569,9 +589,10 @@ describe('smart edits made by their strategy: local regions, a restyle around th
     t.setProposal(xiaomi());
     const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
     const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
-    expect(execution.edit).toMatchObject({ strategy: { kind: 'local' }, image: { width: W, height: H }, generated: { width: 1216, height: 1520 }, preservation: { method: 'outside-regions', maxDifferenceOutside: 0 } });
+    // Feature 2 edits on the creative's own-ratio canvas (nothing padded, nothing cropped on the way back).
+    expect(execution.edit).toMatchObject({ strategy: { kind: 'local' }, image: { width: W, height: H }, generated: editCanvasSize(W, H), preservation: { method: 'outside-regions', maxDifferenceOutside: 0 } });
     expect(execution.edit!.strategy!.regions.map(r => r.targetId).sort()).toEqual(['mark_2', 'smartphone_1', 'text_1']);
-    expect(t.imageEdits.mock.calls[0][0]).toMatchObject({ size: '1216x1520', mask: expect.anything() });
+    expect(t.imageEdits.mock.calls[0][0]).toMatchObject({ size: `${editCanvasSize(W, H).width}x${editCanvasSize(W, H).height}`, mask: expect.anything() });
     const [out, src] = await Promise.all([raw(readFileSync(t.executions.path(execution.id, execution.edit!.image!.file))), raw(t.source)]);
     // Outside: every pixel the regions (and their soft inner edge) do not reach, exactly as the composite defines them.
     const alpha = regionAlpha(execution.edit!.strategy!.regions.map(r => r.box), W, H, Math.round(0.015 * W));
@@ -669,3 +690,157 @@ describe('smart edits made by their strategy: local regions, a restyle around th
     expect(execution).toMatchObject({ state: 'generated', usage: { resolutionCalls: 1 } });
   });
 });
+
+describe('Generate creative template, integrated: products rendered into different creatives (offline fakes)', { timeout: 90_000 }, () => {
+  const start = (t: Awaited<ReturnType<typeof setup>>, analysisId: string, extra: Record<string, unknown> = {}) => t.smart.startVariants({ analysisId, templateId: t.version.templateId, templateVersion: 1, protectedIds: ['smartphone_1'], rendering: 'integrated', count: 3, aspectRatio: '4:5', idempotencyKey: randomUUID(), ...extra });
+
+  it('renders every variant from a clean product sheet (no mask), gives each a different direction with no prompt even when the concept call fails, and hands the chosen one to the normal review', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.write.mockRejectedValueOnce(new Error('concept writer down'));
+    const set = await t.settledSet((await start(t, analysis.id)).set.id);
+    expect(set).toMatchObject({ state: 'ready', rendering: 'integrated', concepts: { status: 'built-in' }, references: { file: 'product-sheet.png' }, usage: { segmentationCalls: 1, imageGenerationCalls: 3 } });
+    expect(set.variants.map(v => v.status)).toEqual(['done', 'done', 'done']);
+    expect(new Set(set.variants.map(v => v.concept?.presentation)).size).toBe(3);
+    const sent = t.imageEdits.mock.calls.map(c => c[0] as { prompt: string; mask?: unknown; size: string });
+    expect(sent.every(r => !r.mask && r.size === '1216x1520' && r.prompt.includes('PRODUCTS (keep consistent)') && r.prompt.includes('INTEGRATION'))).toBe(true);
+    expect(new Set(sent.map(r => r.prompt)).size).toBe(3);
+    const { execution } = t.smart.selectVariant(set.id, 'v1', { idempotencyKey: randomUUID() });
+    expect(execution).toMatchObject({ state: 'generated', variantSource: { setId: set.id, variantId: 'v1' }, compatibility: { status: 'structural-change' } });
+    expect(execution.variant).toBeUndefined();
+  });
+
+  it('draws a renamed product as its new identity without the old cutout, and names the old brand as stale', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    const set = await t.settledSet((await start(t, analysis.id, { products: { smartphone_1: { name: 'Apple iPhone 15' } }, count: 1 })).set.id);
+    expect(set.products?.[0]).toMatchObject({ id: 'smartphone_1', requested: 'Apple iPhone 15', brand: 'Apple' });
+    expect(t.segment).not.toHaveBeenCalled();
+    expect(t.imageEdits).not.toHaveBeenCalled();
+    const prompt = (t.imageGenerations.mock.calls[0][0] as unknown as { prompt: string }).prompt;
+    expect(prompt).toContain('show it as a genuine Apple iPhone 15');
+    await expect(start(t, analysis.id, { rendering: 'exact', products: { smartphone_1: { name: 'Apple iPhone 15' } } })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+});
+
+describe('Feature 2 keeps the template structure: a new background and a replaced product (offline fakes)', { timeout: 60_000 }, () => {
+  it('runs layered: the background around every product kept in place, then the phone repainted only in its own slot, on the creative\'s own-ratio canvas', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi()); t.setMask([PHONE, BUDS]);
+    const draft = { edits: { smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, background_1: { action: 'modify', value: 'warm sunset gradient' }, earbuds_1: { action: 'keep' } }, corrections: {} };
+    const { resolution } = await t.smart.resolve(analysis.id, { draft });
+    expect(resolution.plan).toMatchObject({ status: 'clear', conflicts: [] });
+    const { execution } = await t.generate(analysis.id, resolution.id, draft);
+    expect(execution.state).toBe('generated');
+    expect(execution.edit!.strategy).toMatchObject({ kind: 'layered', protectIds: ['earbuds_1', 'smartphone_1'] });
+    expect(execution.edit!.strategy!.regions.map(r => r.targetId)).toEqual(['smartphone_1']);
+    expect(execution.usage.imageGenerationCalls).toBe(2);
+    const canvas = `${editCanvasSize(W, H).width}x${editCanvasSize(W, H).height}`, calls = t.imageEdits.mock.calls.map(c => c[0] as { size: string; prompt: string });
+    expect(calls.map(c => c.size)).toEqual([canvas, canvas]);
+    // Pass 1 restyles the background and keeps the phone; pass 2 replaces the phone inside its own slot.
+    expect(calls[0].prompt).toContain('Restyle the background');
+    expect(calls[0].prompt).not.toContain('Replace the smartphone');
+    expect(calls[1].prompt).toMatch(/Replace the smartphone[^.]*\. Remove the original completely: no part of it may remain\. Draw the new one exactly in the original's slot \(about \d+–\d+% across/);
+    expect(execution.edit).toMatchObject({ image: { width: W, height: H }, preservation: { method: 'outside-regions', maxDifferenceOutside: 0 } });
+  });
+});
+
+describe('a creative Seedream refuses is never lost: classified, not repeated blindly, recoverable without Seedream (offline fakes)', { timeout: 60_000 }, () => {
+  it('records the partner refusal by image hash, asks before an identical repeat, and cuts the products out (no Seedream, no regeneration) into editor layers', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi()); t.setMask([PHONE, BUDS]);
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    const image = readFileSync(t.executions.path(execution.id, execution.edit!.image!.file)), edits = t.imageEdits.mock.calls.length;
+    t.fal.partnerRejections = 2;
+    t.service.decompose(execution.id, { acknowledgeReview: true, plan: 'simple' });
+    const failed = await t.settled(execution.id);
+    expect(failed).toMatchObject({ state: 'failed', error: { code: 'PROVIDER_DECOMPOSITION_REJECTED' } });
+    const run = readRun(join(t.root, 'runs', failed.runId!));
+    expect(run.rejection).toMatchObject({ category: 'partner-content', loc: 'body.image', reason: 'partner_validation_failed', billableUnits: '0', imageSha256: execution.edit!.image!.sha256 });
+    expect(run.providerImage).toMatchObject({ source: { sha256: execution.edit!.image!.sha256 }, provider: { normalized: false } });
+    // The identical request again (same image, same plan) needs the person's confirmation; another plan does not, once.
+    expect(() => t.service.retryExtraction(failed.id, { plan: 'simple' })).toThrow(expect.objectContaining({ code: 'REPEAT_REQUIRES_CONFIRMATION' }));
+    t.service.retryExtraction(failed.id, { plan: 'saved' });
+    const twice = await t.settled(failed.id);
+    expect(t.service.extractionHistory(twice.id)).toMatchObject({ imageSha256: execution.edit!.image!.sha256, accepted: 0, refused: { 'partner-content': 2 }, billedZero: 2 });
+    // Refused twice by the partner check and never accepted: every further Seedream try asks first.
+    expect(() => t.service.retryExtraction(twice.id, { plan: 'refresh' })).toThrow(expect.objectContaining({ code: 'REPEAT_REQUIRES_CONFIRMATION' }));
+    // Recovery without Seedream: the products cut out (SAM-3, one request each) over a background filled locally.
+    const submits = t.decomposed.length, segments = t.segment.mock.calls.length;
+    t.service.retryExtraction(twice.id, { plan: 'cutouts' });
+    const recovered = await t.settled(twice.id);
+    expect(recovered).toMatchObject({ state: 'done', planDecision: { choice: 'cutouts' }, warnings: [expect.stringMatching(/^LAYERS_CUTOUTS_ONLY: .*a local fill, not a reconstruction/)] });
+    expect(t.decomposed.length).toBe(submits); // no Seedream upload
+    expect(t.segment.mock.calls.length).toBeGreaterThan(segments);
+    expect(t.imageEdits.mock.calls.length).toBe(edits); // never regenerated
+    expect(readFileSync(t.executions.path(execution.id, execution.edit!.image!.file))).toEqual(image);
+    const done = readRun(join(t.root, 'runs', recovered.runId!));
+    expect(done).toMatchObject({ stage: 'done', composed: { source: 'product-cutouts', extraction: 'cutouts' } });
+    expect(done.layers?.map(l => l.name)).toEqual(['Background (filled locally behind the products)', 'Smartphone (cut out)', 'Earbuds (cut out)']);
+    expect(done.editorLayerFiles).toHaveLength(3);
+  });
+
+  it('a flat preview is one layer, said so, with no request at all', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi());
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    t.fal.partnerRejections = 1;
+    t.service.decompose(execution.id, { acknowledgeReview: true, plan: 'simple' });
+    const failed = await t.settled(execution.id), submits = t.decomposed.length, segments = t.segment.mock.calls.length;
+    t.service.retryExtraction(failed.id, { plan: 'flat' });
+    const flat = await t.settled(failed.id);
+    expect(flat).toMatchObject({ state: 'done', warnings: [expect.stringMatching(/^LAYERS_NOT_SPLIT: a flat preview, not a decomposition/)] });
+    const run = readRun(join(t.root, 'runs', flat.runId!));
+    expect(run).toMatchObject({ stage: 'done', composed: { source: 'single-layer', extraction: 'none' } });
+    expect(run.layers?.map(l => l.name)).toEqual(['Flat preview (not split into layers)']);
+    expect([t.decomposed.length, t.segment.mock.calls.length]).toEqual([submits, segments]);
+  });
+
+  it('Qwen layers are an alternative only after Seedream refused the image: chosen explicitly, one request, real layers for the editor', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi()); t.setMask([PHONE, BUDS]);
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    // Seedream is always the first extractor.
+    expect(() => t.service.decompose(execution.id, { acknowledgeReview: true, plan: 'qwen' })).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }));
+    t.fal.partnerRejections = 1;
+    t.service.decompose(execution.id, { acknowledgeReview: true, plan: 'simple' });
+    const failed = await t.settled(execution.id);
+    expect(failed).toMatchObject({ state: 'failed', error: { code: 'PROVIDER_DECOMPOSITION_REJECTED' } });
+    const image = readFileSync(t.executions.path(execution.id, execution.edit!.image!.file)), edits = t.imageEdits.mock.calls.length, seedream = t.submitted.filter(e => e.startsWith('bytedance/')).length;
+    t.service.retryExtraction(failed.id, { plan: 'qwen' });
+    const done = await t.settled(failed.id);
+    expect(done).toMatchObject({ state: 'done', planDecision: { choice: 'qwen' }, usage: { qwenLayerCalls: 1 }, warnings: [expect.stringMatching(/^LAYERS_QWEN: .*AI-generated/)] });
+    expect(t.submitted.filter(e => e === 'fal-ai/qwen-image-layered')).toHaveLength(1);
+    expect(t.submitted.filter(e => e.startsWith('bytedance/'))).toHaveLength(seedream); // no Seedream request
+    expect(t.imageEdits.mock.calls.length).toBe(edits); // never regenerated
+    expect(readFileSync(t.executions.path(execution.id, execution.edit!.image!.file))).toEqual(image);
+    const run = readRun(join(t.root, 'runs', done.runId!));
+    expect(run).toMatchObject({ stage: 'done', composed: { source: 'qwen-layers', extraction: 'qwen' }, templateExecution: { plan: 'qwen', input: { sha256: execution.edit!.image!.sha256 } } });
+    expect(run.layers!.map(l => l.name)).toEqual([expect.stringMatching(/^Background \(Qwen; /), expect.stringMatching(/smartphone/i)]);
+    expect(run.layers![1].placement).toMatchObject({ kind: 'bbox-crop' });
+    expect(run.editorLayerFiles).toHaveLength(2);
+    const report = JSON.parse(readFileSync(join(t.root, 'runs', done.runId!, 'qwen-layers.json'), 'utf8'));
+    expect(report).toMatchObject({ endpoint: 'fal-ai/qwen-image-layered', requestId: expect.any(String), alignment: { ok: true, mapping: 'stretch' }, kept: 2 });
+    expect(report.reconstruction.mae).toBeLessThan(2);
+    expect(JSON.parse(readFileSync(t.executions.path(execution.id, 'qwen-request.json'), 'utf8'))).toMatchObject({ endpoint: 'fal-ai/qwen-image-layered', input: { enable_safety_checker: true, image_url: expect.stringMatching(/^<uploaded copy/) } });
+  });
+
+  it('a failed Qwen request leaves the refused Seedream run in place, so every other choice stays open, and is repeated only when confirmed', async () => {
+    const t = await setup(), analysis = await t.analyzed();
+    t.setProposal(xiaomi());
+    const { resolution } = await t.smart.resolve(analysis.id, { draft: replacePhone });
+    const { execution } = await t.generate(analysis.id, resolution.id, replacePhone);
+    t.fal.partnerRejections = 1;
+    t.service.decompose(execution.id, { acknowledgeReview: true, plan: 'simple' });
+    const refused = await t.settled(execution.id);
+    t.fal.qwenFailures = 1;
+    t.service.retryExtraction(refused.id, { plan: 'qwen' });
+    const failed = await t.settled(refused.id);
+    expect(failed).toMatchObject({ state: 'failed', runId: refused.runId, error: { code: 'QWEN_LAYERS_FAILED', message: expect.stringContaining('HTTP 422') }, usage: { qwenLayerCalls: 1 } });
+    expect(() => t.service.retryExtraction(failed.id, { plan: 'qwen' })).toThrow(expect.objectContaining({ code: 'REPEAT_REQUIRES_CONFIRMATION' }));
+    t.service.retryExtraction(failed.id, { plan: 'refresh' });
+    expect(await t.settled(failed.id)).toMatchObject({ state: 'done', planDecision: { choice: 'refresh' } });
+  });
+});
+

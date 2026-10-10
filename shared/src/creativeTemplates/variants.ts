@@ -18,7 +18,7 @@ import { sanitizeEditInstruction } from './editPrompt.js';
 import { TEXT_FREE_RULE } from './changePlan.js';
 import type { SemanticVerification } from './verification.js';
 
-export const VARIANT_LIMITS = { min: 1, max: 5, direction: 300, scene: 600, title: 60 } as const;
+export const VARIANT_LIMITS = { min: 1, max: 5, direction: 300, scene: 1600, title: 60 } as const;
 /** The counts the form offers; the API accepts every count from 1 to 5 (sets made before offered 1–4). */
 export const VARIANT_COUNTS = [1, 3, 5] as const;
 /** The canvas ratios a set may ask for: the image model's sizes this app uses (9:16 waits for a live size check). */
@@ -36,6 +36,8 @@ export interface ConceptComposition { x: number; y: number; scale: number; copyS
 export interface VariantConcept {
   title: string; family: ConceptFamily; theme: string; environment: string; surface: string; props: string[]; palette: string[];
   lighting: string; mood: string; camera: typeof CAMERA_ANGLES[number]; composition: ConceptComposition;
+  /** Integrated sets (creativeDirections.ts): the ad archetype, how the product is presented, and the kind of ad. */
+  presentation?: string; staging?: string; style?: string;
 }
 /** The composition bounds every concept is held to: products stay in frame and keep a share of it. */
 export const COMPOSITION_LIMITS = { x: [0.2, 0.8], y: [0.25, 0.8], scale: [0.35, 0.85] } as const;
@@ -62,6 +64,8 @@ export interface CreativeVariant {
   title: string;
   /** The editable creative direction: the scene only. The protective rules are added around it when sent. */
   scene: string;
+  /** integrated: one image rendered from product references (no layers, no pixel measurement); absent: exact source pixels. */
+  rendering?: 'integrated' | 'exact';
   /** Exactly what was sent for the current image. */
   prompt?: string;
   status: CreativeVariantStatus;
@@ -114,7 +118,7 @@ export interface VariantSet {
   direction?: string; surprise: boolean; count: number;
   state: 'cutout' | 'concepts' | 'generating' | 'ready' | 'needs-cutout' | 'failed';
   cutout: VariantCutout;
-  concepts?: { status: 'done' | 'failed' | 'skipped'; model?: string; requestFile?: string; responseFile?: string; error?: { code: string; message: string } };
+  concepts?: { status: 'done' | 'failed' | 'skipped' | 'built-in'; model?: string; requestFile?: string; responseFile?: string; error?: { code: string; message: string } };
   variants: CreativeVariant[];
   usage: { segmentationCalls: number; conceptCalls: number; imageGenerationCalls: number; verificationCalls: number; models: Record<string, string> };
   verify: boolean;
@@ -129,6 +133,15 @@ export interface VariantSet {
   /** The last concept call: how many concepts came back, how many were used, and why the others were not. */
   conceptReport?: { candidates: number; chosen: number; minDistance: number | null; rejected: { title: string; reason: string }[] };
   error?: { code: string; message: string };
+  /**
+   * integrated: every variant is one image the model renders from clean product references and its own direction
+   * (creativeDirections.ts); absent or exact: the exact-source-pixel compositor (every set made before).
+   */
+  rendering?: 'integrated' | 'exact';
+  /** Integrated sets: the kept products and any identity the user asked for instead. */
+  products?: import('./creativeDirections.js').VariantProduct[];
+  /** Integrated sets: the references sent with every image request (prepared once, after the cutout). */
+  references?: import('./creativeDirections.js').CreativeReferences & { file?: string; limitation?: string };
 }
 
 /** Asking a scene for words, prices, logos or signs would add text; the creative stays text-free. */
@@ -140,7 +153,14 @@ export function scenePromptProblems(text: unknown): string[] {
   if (TEXT_REQUEST.test(clean)) return ['A scene cannot ask for text, quotes, prices, offers, logos or signs: new creatives stay text-free. Describe the setting, light and objects instead.'];
   return [];
 }
-export const cleanScenePrompt = (text: unknown) => sanitizeEditInstruction(text).slice(0, VARIANT_LIMITS.scene);
+/** Text cut to a limit at a word boundary (never mid-word: "light from th" reads as a broken instruction). */
+export function clipWords(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit), at = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf(','), cut.lastIndexOf(';'));
+  // Never end on a dangling joining word ("…compartment, and").
+  return (at > limit * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:–-]+$/, '').replace(/(?:[\s,;]+(?:and|or|with|of|the|a|an|to|in|on|for|by|its|their))+$/i, '').replace(/[\s,;:–-]+$/, '').trim();
+}
+export const cleanScenePrompt = (text: unknown) => clipWords(sanitizeEditInstruction(text), VARIANT_LIMITS.scene);
 export function directionProblems(text: unknown): string[] {
   const clean = sanitizeEditInstruction(text);
   if (!clean) return [];
@@ -150,7 +170,7 @@ export function directionProblems(text: unknown): string[] {
 const LIGHT: Record<SceneLighting['direction'], string> = { left: 'from the left', right: 'from the right', top: 'from above', front: 'from the front', back: 'from behind', diffuse: 'soft and even', unclear: 'as it falls on the subject' };
 export const lightingSentence = (l: SceneLighting) => `the light comes ${LIGHT[(LIGHT_DIRECTIONS as readonly string[]).includes(l.direction) ? l.direction : 'unclear']}${l.quality !== 'unclear' ? `, ${l.quality}` : ''}${l.color !== 'unclear' ? `, ${l.color} in tone` : ''}`;
 const clamp = (n: number, [lo, hi]: readonly [number, number]) => Math.min(hi, Math.max(lo, n));
-const text = (value: unknown, limit: number) => sanitizeEditInstruction(typeof value === 'string' ? value : '').replace(/["“”]/g, '\'').slice(0, limit).trim();
+const text = (value: unknown, limit: number) => clipWords(sanitizeEditInstruction(typeof value === 'string' ? value : '').replace(/["“”]/g, '\''), limit);
 /**
  * A concept writer's answer for one variant, checked: every text field plain, bounded and text-free (a concept may not
  * ask for words, prices, offers, logos or signs), enums known, and the composition held to COMPOSITION_LIMITS.
@@ -158,18 +178,23 @@ const text = (value: unknown, limit: number) => sanitizeEditInstruction(typeof v
 export function parseConcept(raw: unknown): { concept?: VariantConcept; problems: string[] } {
   const r = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const c = (r.composition && typeof r.composition === 'object' ? r.composition : {}) as Record<string, unknown>;
-  const list = (value: unknown, max: number) => (Array.isArray(value) ? value : []).map(v => text(v, 40)).filter(Boolean).slice(0, max);
+  const list = (value: unknown, max: number) => (Array.isArray(value) ? value : []).map(v => text(v, 60)).filter(Boolean).slice(0, max);
   const num = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
   const concept: VariantConcept = {
     title: text(r.title, VARIANT_LIMITS.title), family: (CONCEPT_FAMILIES as readonly unknown[]).includes(r.family) ? r.family as ConceptFamily : 'studio',
-    theme: text(r.theme, 120), environment: text(r.environment, 200), surface: text(r.surface, 100), props: list(r.props, 4), palette: list(r.palette, 4),
-    lighting: text(r.lighting, 100), mood: text(r.mood, 60), camera: (CAMERA_ANGLES as readonly unknown[]).includes(r.camera) ? r.camera as VariantConcept['camera'] : 'eye-level',
+    theme: text(r.theme, 160), environment: text(r.environment, 240), surface: text(r.surface, 140), props: list(r.props, 4), palette: list(r.palette, 4),
+    lighting: text(r.lighting, 160), mood: text(r.mood, 80), camera: (CAMERA_ANGLES as readonly unknown[]).includes(r.camera) ? r.camera as VariantConcept['camera'] : 'eye-level',
     composition: { x: clamp(num(c.x, 0.5), COMPOSITION_LIMITS.x), y: clamp(num(c.y, 0.58), COMPOSITION_LIMITS.y), scale: clamp(num(c.scale, 0.6), COMPOSITION_LIMITS.scale),
       copySpace: (COPY_SPACES as readonly unknown[]).includes(c.copy_space ?? c.copySpace) ? (c.copy_space ?? c.copySpace) as CopySpace : 'none' },
   };
+  // Integrated concepts also say how the product is presented and what kind of ad it is (older concepts have neither).
+  const staging = text(r.staging ?? r.product_staging, 220), style = text(r.style ?? r.ad_style, 160);
+  if (typeof r.presentation === 'string' && /^[a-z-]{2,30}$/.test(r.presentation)) concept.presentation = r.presentation;
+  if (staging) concept.staging = staging;
+  if (style) concept.style = style;
   const problems: string[] = [];
   if (!concept.environment || !concept.surface) problems.push('A concept needs a setting and a surface for the products.');
-  const words = [concept.title, concept.theme, concept.environment, concept.surface, ...concept.props, ...concept.palette, concept.lighting, concept.mood].join(' ');
+  const words = [concept.title, concept.theme, concept.environment, concept.surface, ...concept.props, ...concept.palette, concept.lighting, concept.mood, concept.staging ?? '', concept.style ?? ''].join(' ');
   if (TEXT_REQUEST.test(words)) problems.push('This concept asks for text, prices, offers, logos or signs: new creatives stay text-free.');
   return problems.length ? { problems } : { concept, problems };
 }

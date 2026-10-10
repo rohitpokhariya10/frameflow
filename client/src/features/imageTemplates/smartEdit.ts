@@ -118,8 +118,8 @@ export const defaultProtected = (scene: SceneDescription) => mainIsAmbiguous(sce
 export const protectableObjects = (scene: SceneDescription) => scene.objects.filter(o => !o.ignored && isForeground(o));
 
 /** Smart and variant executions' cost lines: each kind of call counted apart, as recorded. */
-export function smartCostRows(execution: Pick<TemplateExecution, 'resolution' | 'variant' | 'usage'> | undefined): { label: string; value: string }[] | undefined {
-  if (!execution?.resolution && !execution?.variant) return undefined;
+export function smartCostRows(execution: Pick<TemplateExecution, 'resolution' | 'variant' | 'variantSource' | 'usage'> | undefined): { label: string; value: string }[] | undefined {
+  if (!execution?.resolution && !execution?.variant && !execution?.variantSource) return undefined;
   const n = (count: number | undefined, word: string) => `${count ?? 0} ${word}${count === 1 ? '' : 's'}`;
   return execution.resolution
     ? [{ label: 'Image analysis', value: `${n(execution.usage.analysisCalls, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: n(execution.usage.resolutionCalls, 'call') },
@@ -128,8 +128,8 @@ export function smartCostRows(execution: Pick<TemplateExecution, 'resolution' | 
 }
 /** How a resolved smart edit will be made (the server decides the same way from the same plan), and its extra paid calls. */
 export function strategyPreview(scene: SceneDescription, plan: ChangePlan, cutout?: string): { kind: string; text: string; extra?: string } {
-  const s = editStrategy(scene, plan), title = { none: 'No image request', local: 'Edits only the changed areas', background: 'Restyles around your products', global: 'Edits the whole image' }[s.kind];
-  const masks = s.kind === 'background' ? cutout === 'birefnet' ? 1 : s.protectIds.length : 0;
+  const s = editStrategy(scene, plan), title = { none: 'No image request', local: 'Edits only the changed areas', background: 'Restyles around your products', layered: 'New background, then each changed product in its own place', global: 'Edits the whole image' }[s.kind];
+  const masks = s.kind === 'background' || s.kind === 'layered' ? cutout === 'birefnet' ? 1 : s.protectIds.length : 0;
   return { kind: s.kind, text: `${title}. ${s.reasons.join(' ')}${s.kind === 'none' ? '' : ' The result keeps your image\'s own size.'}`,
     ...(masks ? { extra: `${masks} mask request${masks === 1 ? '' : 's'} to cut the products out before the image request (if the cutout is not reliable, the whole image is edited and you are asked to check it).` } : {}) };
 }
@@ -144,4 +144,4 @@ export function strategyResult(edit: TemplateExecution['edit']): string | undefi
 }
 export const semanticLabel = (v: SemanticVerification | undefined) => !v ? undefined : ({ passed: 'AI check passed', contradiction: 'AI check found a problem', uncertain: 'AI check is unsure', unchecked: 'Not checked by AI' } as const)[v.status];
 export const VARIANT_STATUS: Record<string, string> = { pending: 'Waiting', generating: 'Generating…', done: 'Ready', failed: 'Failed' };
-export const SET_STATUS: Record<VariantSet['state'], string> = { cutout: 'Cutting out the subject…', concepts: 'Writing scene ideas…', generating: 'Generating scenes…', ready: 'Ready', 'needs-cutout': 'Needs a cutout', failed: 'Stopped' };
+export const SET_STATUS: Record<VariantSet['state'], string> = { cutout: 'Preparing your products…', concepts: 'Writing scene ideas…', generating: 'Generating scenes…', ready: 'Ready', 'needs-cutout': 'Needs a cutout', failed: 'Stopped' };

@@ -313,7 +313,7 @@ describe('creative variants and semantic checks', () => {
   it('asks exactly the expected checks and never turns a failure into a pass', () => {
     const s = scene(phoneOfferAnalysis()), plan = basePlan(s, draft(s, { smartphone_1: { action: 'replace', value: 'Xiaomi phone', brand: 'Xiaomi' }, earbuds_1: { action: 'keep' } }));
     const asked = planExpectations(s, plan);
-    expect(asked.map(a => a.id)).toEqual(['replacement-done', 'brand-consistent', 'old-references-absent', 'protected-kept', 'subject-count', 'no-added-text', 'no-duplicates']);
+    expect(asked.map(a => a.id)).toEqual(['replacement-done', 'brand-consistent', 'old-references-absent', 'protected-kept', 'subject-count', 'no-added-text', 'no-duplicates', 'layout-kept']);
     expect(asked.find(a => a.id === 'protected-kept')!.expectation).toContain('the merchant logo at the top left; the bank logo at the bottom right');
     const answer = (status: string) => ({ checks: asked.map(a => ({ id: a.id, status: a.id === 'no-added-text' ? status : 'pass', message: 'ok' })) });
     expect(verificationStatus(parseVerificationAnswer(answer('pass'), asked))).toBe('passed');

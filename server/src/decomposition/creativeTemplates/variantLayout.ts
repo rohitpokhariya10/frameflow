@@ -113,3 +113,44 @@ export async function canvasInputs(reference: Raster, union: Uint8Array) {
   for (let i = 0; i < width * height; i++) rgba[i * 4 + 3] = union[i] >= 128 ? 255 : 0;
   return { image: await sharp(reference.rgb, { raw: { width, height, channels: 3 } }).png().toBuffer(), mask: await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toBuffer(), placement: { x: 0, y: 0, width, height } };
 }
+/**
+ * Integrated sets: the kept products as the image model's reference, cut out (refined edges) on a plain neutral
+ * background. Products that belong together (`together`: index pairs the scene relates physically, a hand and what it
+ * holds, a purifier and its faucet) stay as they stood; every other product stands on its own, side by side at its own
+ * relative size, so the reference shows what they look like, not where they stood. Overlapping regions alone never
+ * join two products: products in front of each other are still separate units.
+ */
+export async function productSheet(source: Raster, masks: Uint8Array[], together: [number, number][] = []): Promise<{ png: Buffer; groups: number[][] }> {
+  const { width: W, height: H } = source;
+  const found = masks.map((m, index) => ({ m, index, box: maskBox(m, W, H, 128).box })).filter((x): x is { m: Uint8Array; index: number; box: PixelBox } => !!x.box);
+  if (!found.length) throw new Error('The products\' masks are empty.');
+  const parent = found.map((_, i) => i), root = (i: number): number => parent[i] === i ? i : (parent[i] = root(parent[i]));
+  const at = (index: number) => found.findIndex(x => x.index === index);
+  for (const [a, b] of together) { const i = at(a), j = at(b); if (i >= 0 && j >= 0) parent[root(j)] = root(i); }
+  const groups = new Map<number, { masks: Uint8Array[]; indices: number[] }>();
+  found.forEach((x, i) => { const g = groups.get(root(i)) ?? { masks: [], indices: [] }; g.masks.push(x.m); g.indices.push(x.index); groups.set(root(i), g); });
+  let lum = 0, count = 0;
+  // Tiles left to right in the order their products stood in the source (the prompt numbers them in this order).
+  const ordered = [...groups.values()].map(g => ({ ...g, box: groupBox(g.masks, W, H) })).sort((a, b) => a.box.x - b.box.x);
+  const tiles = ordered.map(({ masks: members, box }) => {
+    const rgba = Buffer.alloc(box.width * box.height * 4);
+    for (let y = 0; y < box.height; y++) for (let x = 0; x < box.width; x++) {
+      const s = (box.y + y) * W + box.x + x, i = (y * box.width + x) * 4;
+      let a = 0; for (const m of members) a = Math.max(a, m[s]);
+      for (let c = 0; c < 3; c++) rgba[i + c] = source.rgb[s * 3 + c];
+      rgba[i + 3] = a;
+      if (a >= 200) { lum += 0.299 * source.rgb[s * 3] + 0.587 * source.rgb[s * 3 + 1] + 0.114 * source.rgb[s * 3 + 2]; count++; }
+    }
+    return { rgba, width: box.width, height: box.height };
+  });
+  // A light product reads best on a mid grey, anything else on a near-white grey.
+  const grey = count && lum / count > 175 ? 196 : 236, tallest = Math.max(...tiles.map(t => t.height));
+  const gap = Math.round(tallest * 0.08), pad = Math.round(tallest * 0.1);
+  const width = tiles.reduce((w, t) => w + t.width, 0) + gap * (tiles.length - 1) + pad * 2, height = tallest + pad * 2;
+  let left = pad;
+  const layers = tiles.map(t => { const layer = { input: t.rgba, raw: { width: t.width, height: t.height, channels: 4 as const }, left, top: pad + tallest - t.height }; left += t.width + gap; return layer; });
+  const sheet = await sharp({ create: { width, height, channels: 3, background: { r: grey, g: grey, b: grey } } }).composite(layers).png().toBuffer();
+  const png = Math.max(width, height) > 1536 ? await sharp(sheet).resize({ width: 1536, height: 1536, fit: 'inside', kernel: 'lanczos3' }).png().toBuffer() : sheet;
+  // Within a tile, products left to right too.
+  return { png, groups: ordered.map(g => [...g.indices].sort((a, b) => maskBox(masks[a], W, H, 128).box!.x - maskBox(masks[b], W, H, 128).box!.x)) };
+}

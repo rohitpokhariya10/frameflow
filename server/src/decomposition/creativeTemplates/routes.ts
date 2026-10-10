@@ -15,7 +15,10 @@
  *   POST   /templates/:id/replan                   an explicit new plan of the source creative (planner 1) → a new version
  *   GET    /template-executions/:id/images/:which  upload | edited | reference
  *   POST   /template-executions/:id/decompose      { plan?, acknowledgeReview? } — the user's explicit approval of a generated creative
- *   POST   /template-executions/:id/retry-extraction { plan } — an explicit new extraction after a failed one
+ *   POST   /template-executions/:id/retry-extraction { plan, confirmRepeat? } — an explicit new extraction after a failed one
+ *          (plan flat: a flat preview, no request; cutouts: products cut out with SAM-3 masks; a repeat fal already
+ *          refused needs confirmRepeat, else 409 REPEAT_REQUIRES_CONFIRMATION with the image's history)
+ *   GET    /template-executions/:id/extraction-history — what fal did with this execution's exact image (a read)
  *   POST   /template-executions/:id/resume         a stopped run read again from fal's saved request (no new call)
  *   POST   /template-executions/:id/opened         { runId } — the result was opened in the editor
  *
@@ -174,7 +177,11 @@ export function registerCreativeTemplateRoutes(router: Router, ctx: CreativeTemp
     catch (error) { next(error); }
   });
   router.post('/template-executions/:id/retry-extraction', express.json({ limit: '1kb' }), (req, res, next) => {
-    try { res.status(202).json(shown(service.retryExtraction(req.params.id, { plan: (req.body as Record<string, unknown> | undefined)?.plan }))); }
+    try { const b = req.body as Record<string, unknown> | undefined; res.status(202).json(shown(service.retryExtraction(req.params.id, { plan: b?.plan, confirmRepeat: b?.confirmRepeat }))); }
+    catch (error) { next(error); }
+  });
+  router.get('/template-executions/:id/extraction-history', (req, res, next) => {
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(service.extractionHistory(req.params.id)); }
     catch (error) { next(error); }
   });
   router.post('/template-executions/:id/opened', express.json({ limit: '1kb' }), (req, res, next) => {

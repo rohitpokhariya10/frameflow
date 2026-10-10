@@ -23,6 +23,17 @@ export function closestGenerationRatio(width: number, height: number): Generatio
     return Math.abs(Math.log(w / h) - aspect) < Math.abs(Math.log(b.width / b.height) - aspect) ? ratio : best;
   }, GENERATION_ASPECT_RATIOS[0]);
 }
+/**
+ * A canvas at an image's OWN aspect ratio, for edits of an existing creative (Feature 2): both sides divisible by 16,
+ * about `pixels` in area, the ratio held between 1:3 and 3:1 (what gpt-image-2 accepts). A creative edited on another
+ * ratio's canvas is padded, and the model composes across the padding: mapped back, its products come out larger and cut
+ * at the edges. Feature 1 composes new scenes and keeps its own ratio sizes (GENERATION_IMAGE_SIZES).
+ */
+export function editCanvasSize(width: number, height: number, pixels = 1024 * 1536): { width: number; height: number } {
+  const ratio = Math.min(3, Math.max(1 / 3, width / height)), snap = (v: number) => Math.max(256, Math.round(v / 16) * 16);
+  const w = snap(Math.sqrt(pixels * ratio));
+  return { width: w, height: snap(w / ratio) };
+}
 
 /**
  * The exact prompt of one aspect-ratio variant: the shared base prompt, the consistency sentence, and the framing

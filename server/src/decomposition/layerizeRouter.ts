@@ -215,7 +215,7 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   router.use(((error: unknown, _req, res, next) => {
     void next;
     const code = error instanceof RunError ? error.code : 'INTERNAL';
-    const conflict = ['BUSY', 'RUN_ACTIVE_OR_AMBIGUOUS', 'IDEMPOTENCY_CONFLICT', 'PLAN_DECISION_REQUIRED', 'REVIEW_REQUIRED', 'NOT_RETRYABLE', 'STALE_RESOLUTION', 'RESOLUTION_NEEDS_INPUT', 'ANALYSIS_NOT_READY', 'CUTOUT_REQUIRED', 'NOT_NEEDED'];
+    const conflict = ['BUSY', 'RUN_ACTIVE_OR_AMBIGUOUS', 'IDEMPOTENCY_CONFLICT', 'PLAN_DECISION_REQUIRED', 'REVIEW_REQUIRED', 'NOT_RETRYABLE', 'STALE_RESOLUTION', 'RESOLUTION_NEEDS_INPUT', 'ANALYSIS_NOT_READY', 'CUTOUT_REQUIRED', 'NOT_NEEDED', 'REPEAT_REQUIRES_CONFIRMATION'];
     const status = code === 'NOT_FOUND' || code === 'TEMPLATE_NOT_FOUND' ? 404 : conflict.includes(code) ? 409 : code === 'UPLOAD_TOO_LARGE' ? 413
       : code === 'SMART_EDIT_UNAVAILABLE' || code === 'VARIANTS_UNAVAILABLE' ? 503 : error instanceof RunError ? 400 : 500;
     res.status(status).json({ error: { code, message: error instanceof Error ? error.message : 'Unexpected error.', ...(error instanceof RunError ? error.details : {}) } });

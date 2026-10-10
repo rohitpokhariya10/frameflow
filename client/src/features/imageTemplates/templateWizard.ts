@@ -128,12 +128,13 @@ export function costRows(execution: ShownExecution | undefined, diagnostics: Run
   const extraction = [stage('seedream'), stage('residual')].flatMap(s => s?.calls ?? []).filter(call => call.kind === 'seedream').length, cleanup = stage('background')?.calls.length ?? 0;
   // A smart edit's analysis and resolution, or a creative variant's set, replace the saved template's free prompt planning.
   const smart = execution?.resolution ? [{ label: 'Image analysis', value: `${plural(execution.usage.analysisCalls ?? 0, 'call')} · shared by edits of this image` }, { label: 'Change resolution', value: plural(execution.usage.resolutionCalls ?? 0, 'call') }]
-    : execution?.variant ? [{ label: 'Creative variant', value: 'subject cutout and scene ideas made in its set' }] : [{ label: 'Prompt planning', value: '0 calls · ₹0' }];
+    : execution?.variant || execution?.variantSource ? [{ label: 'Creative variant', value: 'subject cutout and scene ideas made in its set' }] : [{ label: 'Prompt planning', value: '0 calls · ₹0' }];
   const rows = [
     { label: 'Structure analysis', value: plural(execution?.inspection?.calls ?? 0, 'call') },
     ...smart,
     { label: 'Image generation', value: `${plural(images, 'call')}${images ? ` · ${money(execution?.generationCost)}` : ''}` },
     ...(execution?.usage.verificationCalls ? [{ label: 'AI check of the result', value: plural(execution.usage.verificationCalls, 'call') }] : []),
+    ...(execution?.usage.qwenLayerCalls ? [{ label: 'Layer extraction (Qwen, alternative)', value: `${plural(execution.usage.qwenLayerCalls, 'call')} · about $${(execution.usage.qwenLayerCalls * AI_PRICING.qwenLayered.perRequest).toFixed(2)} (listed price)` }] : []),
     { label: 'Decomposition planner', value: plannerPending ? 'planning in progress' : `${plural(planner, plannerComplete || !planner ? 'call' : 'attempt')}${planner ? '' : ' · ₹0'}` },
   ];
   if (diagnostics) {
@@ -162,6 +163,15 @@ export function extractionEstimate(layers: number, width = 0, height = 0, fx: nu
   const perLayer = width * height > AI_PRICING.seedream.thresholdPixels ? AI_PRICING.seedream.high : AI_PRICING.seedream.low;
   return { seedreamInr: Math.max(1, layers) * perLayer * fx, plannerInr: avoidedPlannerCost(1, fx).inr ?? 0 };
 }
+/** The alternative provider's one request, at fal's listed price (an estimate, never a charge). */
+export const qwenEstimate = (fx: number = AI_PRICING.budgetUsdInr) => ({ usd: AI_PRICING.qwenLayered.perRequest as number, inr: AI_PRICING.qwenLayered.perRequest * fx });
+/** What the person confirms before the alternative provider is sent the image Seedream refused: the provider and its cost. */
+export const qwenConfirmation = (e = qwenEstimate()) => [
+  'Extract layers with the alternative provider?',
+  `Provider: Qwen-Image-Layered (${AI_PRICING.qwenLayered.model}), one fal request.`,
+  `Estimated cost: about $${e.usd.toFixed(2)} (₹${e.inr.toFixed(2)}), fal's listed price.`,
+  'Seedream stays your primary extractor: this is offered only because Seedream refused this image. Qwen chooses how objects are grouped (it may merge or split them), and areas hidden behind objects are AI-generated. Nothing is retried automatically.',
+].join('\n\n');
 export const PLAN_CHOICES: { plan: ExtractionPlan; title: string; detail: (estimate: ReturnType<typeof extractionEstimate>) => string }[] = [
   { plan: 'saved', title: 'Use saved plan', detail: () => 'Planner 0 · ₹0. Learned from the original products: the new product may be missed or merged with another layer.' },
   { plan: 'simple', title: 'Simpler grouping', detail: () => 'Planner 0 · ₹0. Fewer, larger layers: products together, decorations with the background.' },

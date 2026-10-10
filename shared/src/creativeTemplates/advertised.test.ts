@@ -48,6 +48,20 @@ describe('the advertised product or group, chosen automatically', () => {
     expect(chosen.reasons.jar_1).toBe('the same brand (Philips) as Blender');
   });
 
+  it('a product standing right against a kept one is kept (a purifier and its faucet, related only as next to); one apart from it is not', () => {
+    const raw = {
+      summary: 'A water purifier with its faucet, and a kettle further away.',
+      objects: [object('bg', 'scenery', 'background', 'background', box(0, 0, 1, 1)),
+        object('purifier', 'product', 'main', 'water purifier', box(0.43, 0.28, 0.17, 0.23)),
+        object('faucet', 'product', 'supporting', 'faucet', box(0.57, 0.37, 0.07, 0.15)),
+        object('kettle', 'product', 'supporting', 'kettle', box(0.8, 0.6, 0.1, 0.15))],
+      relations: [relation('faucet', 'next_to', 'purifier', 0.99), relation('kettle', 'next_to', 'purifier', 0.9)],
+      marks: [], text_overlays: [], lighting: light, main_candidates: ['purifier'], uncertainties: [],
+    };
+    const chosen = advertisedProducts(scene(raw));
+    expect([...chosen.ids].sort()).toEqual(['faucet_1', 'water_purifier_1']);
+    expect(chosen.reasons.faucet_1).toBe('part of the product set: right against Water purifier');
+  });
   it('a product\'s attached part goes inside its cutout, and a related product shown as part of the offer is kept', () => {
     const raw = {
       summary: 'A water purifier with its faucet and a control panel.',

@@ -60,6 +60,8 @@ export interface ResolutionRecord {
     reusedFrom?: string };
   /** The plan rules this resolution was made with (absent: before Step 4's rules); an older one is rebuilt, never sent. */
   rules?: string;
+  /** What the AI decided instead of asking (autoResolve), and the one-line summary of the user's intent. Older ones have none. */
+  auto?: { summary: string; intent: string; decisions: { id: string; question: string; choice: string }[] };
   error?: { code: string; message: string };
 }
 
@@ -107,11 +109,11 @@ export function fileSceneStore(root = DEFAULT_ANALYSES_DIR) {
     path: (id: string, file: string) => { if (!validFileName(file)) throw new RunError('NOT_FOUND', 'File not found.'); return join(dirOf(id), file); },
     writeFile: (id: string, file: string, value: Buffer | object) => { if (!validFileName(file)) throw new RunError('INVALID_REQUEST', 'Invalid file name.'); atomic(join(dirOf(id), file), value); },
     /** A resolution of this analysis for exactly this binding that is ready (reused: no second resolver call). */
-    findResolution(analysisId: string, binding: ResolutionRecord['binding']) {
+    findResolution(analysisId: string, binding: ResolutionRecord['binding'], state: ResolutionRecord['state'] = 'ready') {
       const dir = join(dirOf(analysisId), 'resolutions');
-      // The newest ready resolution for exactly these inputs (a rebuilt one follows the one it was rebuilt from).
+      // The newest ready (or, when asked, failed) resolution for exactly these inputs (a rebuilt one follows the one it was rebuilt from).
       return (existsSync(dir) ? readdirSync(dir) : []).filter(f => f.endsWith('.json')).sort().reverse().map(f => JSON.parse(readFileSync(join(dir, f), 'utf8')) as ResolutionRecord)
-        .find(r => r.state === 'ready' && JSON.stringify(r.binding) === JSON.stringify(binding));
+        .find(r => r.state === state && JSON.stringify(r.binding) === JSON.stringify(binding));
     },
     createResolution(analysisId: string, input: Omit<ResolutionRecord, 'id' | 'analysisId' | 'createdAt' | 'updatedAt' | 'state' | 'resolver'> & { referenceBytes?: Buffer; referenceExt?: string }): ResolutionRecord {
       const id = newRecordId(), now = new Date().toISOString(), { referenceBytes, referenceExt, ...rest } = input;

@@ -137,7 +137,9 @@ describe.skipIf(!replay)('the data you already saved, opened by this code (a clo
     expect(((await get(`/scene-analyses/lookup?imageSha256=${binding.imageSha256}&templateId=${binding.templateId}&templateVersion=${binding.templateVersion}`)).body as { analysis: { id: string } }).analysis.id).toBe(e.resolution!.analysisId);
     const analysis = json(join(dirs.analyses, e.resolution!.analysisId, 'analysis.json'));
     const form = new FormData();
-    for (const [k, v] of Object.entries({ mode: 'REUSE_TEMPLATE_WITH_EDIT', idempotencyKey: randomUUID(), templateId: e.template!.id, templateVersion: String(e.template!.version), reviewBeforeDecompose: 'true',
+    // Later sessions may have finished this same upload with another template; the fit warning that then raises is answered
+    // as the wizard's "use anyway" does, since this checks the old plan, not the fit.
+    for (const [k, v] of Object.entries({ mode: 'REUSE_TEMPLATE_WITH_EDIT', idempotencyKey: randomUUID(), templateId: e.template!.id, templateVersion: String(e.template!.version), reviewBeforeDecompose: 'true', allowMismatch: 'true',
       analysisId: e.resolution!.analysisId, resolutionId: e.resolution!.id, draft: JSON.stringify(old.draft) })) form.append(k, v);
     form.append('image', new Blob([new Uint8Array(readFileSync(join(dirs.analyses, analysis.id, analysis.upload.file)))], { type: analysis.upload.mimeType }), analysis.upload.originalName);
     const res = await fetch(`${base}/template-executions`, { method: 'POST', body: form }), started = await res.json() as TemplateExecution;

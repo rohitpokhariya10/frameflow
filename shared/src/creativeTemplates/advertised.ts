@@ -34,6 +34,8 @@ const LINK_WORDS: Record<(typeof LINKS)[number], string> = { accessory_of: 'an a
 const live = (o: SceneObject | undefined): o is SceneObject => !!o && !o.ignored && isForeground(o);
 const area = (o: SceneObject) => o.box.w * o.box.h;
 const sellable = (o: SceneObject) => o.kind === 'product' || o.kind === 'object';
+/** Two regions overlap (or meet within 1% of the image). */
+const touching = (a: SceneObject, b: SceneObject) => a.box.x < b.box.x + b.box.w + 0.01 && b.box.x < a.box.x + a.box.w + 0.01 && a.box.y < b.box.y + b.box.h + 0.01 && b.box.y < a.box.y + a.box.h + 0.01;
 
 export function advertisedProducts(scene: SceneDescription & { advertised?: string[] }): AdvertisedSelection {
   const byId = (id: string) => scene.objects.find(o => o.id === id);
@@ -62,6 +64,16 @@ export function advertisedProducts(scene: SceneDescription & { advertised?: stri
         const anchor = byId(to), other = byId(from);
         if (!kept.includes(to) || !live(other) || !sellable(other) || kept.includes(other.id)) continue;
         keep(other, `${LINK_WORDS[r.relation as (typeof LINKS)[number]]} ${anchor!.label}`); added = true;
+      }
+    }
+    // A product standing against a kept one (a purifier's faucet, a dock under a phone): a spatial relation the analysis
+    // is sure of, and their regions overlap. Only products: a prop or a lemon beside a product never qualifies.
+    for (const r of scene.relations) {
+      if (!['next_to', 'attached_to', 'on', 'in_front_of', 'behind'].includes(r.relation) || r.confidence < 0.7) continue;
+      for (const [from, to] of [[r.source, r.target], [r.target, r.source]]) {
+        const anchor = byId(to), other = byId(from);
+        if (!kept.includes(to) || !live(other) || other.kind !== 'product' || other.importance === 'decoration' || kept.includes(other.id) || !touching(other, anchor!)) continue;
+        keep(other, `part of the product set: right against ${anchor!.label}`); added = true;
       }
     }
     const brands = new Map(kept.map(byId).filter(live).filter(o => o.identity?.brand && o.identity.confidence >= 0.6).map(o => [o.identity!.brand.toLowerCase(), o.label]));

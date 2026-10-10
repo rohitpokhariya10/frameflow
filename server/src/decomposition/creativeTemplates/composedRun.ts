@@ -25,8 +25,13 @@ async function layerInfo(layer: VariantRunLayer, index: number, zIndex: number):
   return { index, file: layer.file, zIndex, name: layer.name, description: layer.description, pixelWidth: info.width, pixelHeight: info.height,
     opaquePercent: Math.round(1000 * opaque / Math.max(1, info.width * info.height)) / 10, placement: { kind: layer.kind, ...layer.placement }, semantic: { id: layer.semantic.id, type: layer.semantic.type, editableIndependently: true } };
 }
-/** A finished run made of these layers, back to front, over this composite (its original image). */
-export async function createComposedRun(runsDir: string, input: { composite: Buffer; layers: VariantRunLayer[]; origin: NonNullable<RunRecord['origin']>; templateExecution: RunTemplateExecution; variant: { setId: string; variantId: string } }) {
+/**
+ * A finished run made of these layers, back to front, over this composite (its original image). `source`: a creative
+ * variant's own layers, the whole image as one layer, products cut out of it, or the alternative provider's layers (the
+ * recovery options for an image Seedream refused).
+ */
+export async function createComposedRun(runsDir: string, input: { composite: Buffer; layers: VariantRunLayer[]; origin: NonNullable<RunRecord['origin']>; templateExecution: RunTemplateExecution; variant?: { setId: string; variantId: string };
+  source?: NonNullable<RunRecord['composed']>['source'] }) {
   const meta = await sharp(input.composite).metadata(), now = new Date().toISOString();
   const id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`, dir = join(runsDir, id);
   mkdirSync(dir, { recursive: true });
@@ -39,7 +44,7 @@ export async function createComposedRun(runsDir: string, input: { composite: Buf
     input: { file: 'original.png', mime: 'image/png', width: meta.width!, height: meta.height!, orientationNormalized: false },
     // Never submitted: no request id, no provider call.
     seedream: { endpoint: SEEDREAM_ENDPOINT }, timings: {}, warnings: [], canvas: { width: meta.width!, height: meta.height! }, layers, outputLayers, layerCount,
-    editorLayerFiles: layers.map(l => l.file), composed: { source: 'creative-variant', ...input.variant, layers: layers.map(l => l.file), extraction: 'none' } };
+    editorLayerFiles: layers.map(l => l.file), composed: { source: input.source ?? 'creative-variant', ...(input.variant ?? {}), layers: layers.map(l => l.file), extraction: input.source === 'product-cutouts' ? 'cutouts' : input.source === 'qwen-layers' ? 'qwen' : 'none' } };
   saveRunRecord(dir, run);
   return { dir, run };
 }

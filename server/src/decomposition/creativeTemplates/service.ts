@@ -12,22 +12,26 @@
  * generation is reached only in REUSE_TEMPLATE_WITH_EDIT. Every decision is logged: [TEMPLATE] [PLANNER] [GENERATION] [DECOMPOSE].
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import sharp from 'sharp';
 import { join } from 'node:path';
-import { sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExecutionImage, type ExtractionPlan, type GenerationReview, type SmartEditStrategyRecord, type TemplateEditOptions, type TemplateExecution, type TemplateStructure, type TemplateVersion, type TemplateInspection } from '@frameflow/shared';
+import { compileResolvedEdit, layeredPlans, SEEDREAM_PLANS, sameTemplateStructure, compileEditPrompt, compileSlotInstruction, compileTemplateEdit, GENERATE_UNCHANGED_INSTRUCTION, editInstructionProblems, EXECUTION_POLICY, EXTRACTION_PLANS, isExecutionMode, sanitizeEditInstruction, type CompiledTemplateEdit, type ExecutionMode, type ExecutionState, type ExecutionImage, type ExtractionPlan, type GenerationReview, type SmartEditStrategyRecord, type TemplateEditOptions, type TemplateExecution, type TemplateStructure, type TemplateVersion, type TemplateInspection, type SceneObject } from '@frameflow/shared';
 import type { GenerationConfig } from '../generationGroups.js';
 import { validateReferenceUpload } from '../imageTemplates.js';
-import { createRun, executeRun, saveRunRecord, PlannerNotAllowedError, readRun, resumeRun, RunError, type RunnerDeps, type RunRecord, type Stage } from '../layerizeExperiment.js';
+import { createRun, executeRun, saveRunRecord, PlannerNotAllowedError, readRun, resumeRun, RunError, SEEDREAM_ENDPOINT, type RunnerDeps, type RunRecord, type Stage } from '../layerizeExperiment.js';
 import type { Planner } from '../layerizePlanner.js';
 import { captureTemplateVersion } from './capture.js';
-import { compileSimpleTemplatePlan, compileTemplatePlan, templatePlanPrompt, templatePlanStrategy } from './compile.js';
+import { compileSimpleTemplatePlan, compileTemplatePlan, templatePlanPrompt, templatePlanStrategy, withoutSlots } from './compile.js';
+import { QWEN_ENDPOINT, qwenEditorLayers, requestQwenLayers, type QwenLayerLabel } from './qwenLayers.js';
 import { addVariantLayers, createComposedRun, type VariantRunLayer } from './composedRun.js';
 import type { SmartCreative } from './smartCreative.js';
 import { reviewGeneration } from './review.js';
 import type { ExecutionStore } from './executions.js';
 import { ImageEditError } from './imageEdit.js';
 import { smartEditImage } from './smartEditImage.js';
-import type { VariantSubject } from './variantCompose.js';
+import { maskPose } from './slotPose.js';
+import { continueScenery, maskBox, refineEdges, sourceRaster, type VariantSubject } from './variantCompose.js';
+import { classifySeedreamRejection } from '../providerImage.js';
 import type { TemplateStore } from './store.js';
 import type { StructureInspector } from './inspect.js';
 
@@ -201,7 +205,12 @@ export function createTemplateExecutions(services: TemplateServices) {
     if (run.stage !== 'done') return failed(id, run.error?.code ?? 'DECOMPOSITION_FAILED', run.error?.message ?? 'The decomposition did not finish.', run.error?.stage === 'planning' ? 'planning' : 'decomposing', started);
     // A layer the plan asked for that the editor does not get is a quality issue the user sees, never a silent success.
     const lostLayers = run.warnings.filter(w => w.startsWith('PLANNED_LAYER_'));
-    if (execution.variant) {
+    if (run.composed?.source === 'single-layer' || run.composed?.source === 'product-cutouts' || run.composed?.source === 'qwen-layers') {
+      // A recovery without Seedream: its layers are what it says, not the template's plan (no coverage or count check applies).
+      execution = executions.update(id, (x) => { x.warnings = [run.composed!.source === 'single-layer' ? 'LAYERS_NOT_SPLIT: a flat preview, not a decomposition: the creative is one image layer and no objects were separated.'
+        : run.composed!.source === 'qwen-layers' ? 'LAYERS_QWEN: extracted with the alternative provider (Qwen-Image-Layered) after Seedream refused the image. The model chose how objects are grouped; what is visible is the creative\'s own pixels, and what was hidden behind objects is AI-generated.'
+        : 'LAYERS_CUTOUTS_ONLY: only the products were cut out (SAM-3 masks); everything else is one background layer whose areas behind the products are a local fill, not a reconstruction.'] });
+    } else if (execution.variant) {
       // A variant's layers are its own: the template's saved plan and layer counts do not describe its new scenery.
       execution = executions.update(id, (x) => { x.warnings = [...lostLayers]; });
     } else if (execution.mode === 'CREATE_TEMPLATE') {
@@ -247,6 +256,86 @@ export function createTemplateExecutions(services: TemplateServices) {
     return executions.update(id, (x) => { x.state = 'done'; x.finishedAt = new Date().toISOString(); x.usage.timings.totalMs = Date.now() - started; delete x.error; });
   };
 
+  /** The image an execution extracts: its approved generated creative, or its upload. */
+  const imageShaOf = (e: TemplateExecution) => e.edit?.image?.sha256 ?? e.upload.sha256;
+  /**
+   * Every Seedream request fal received for this exact image (by sha256), accepted or refused by fal's own category,
+   * from the saved runs: what a retry can expect is read from evidence, never assumed.
+   */
+  function extractionHistory(execution: TemplateExecution) {
+    const sha = imageShaOf(execution), attempts: { runId: string; at: string; accepted: boolean; category?: string; plan?: string; billableUnits?: string }[] = [];
+    for (const runId of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
+      let r: RunRecord;
+      try { r = readRun(join(runsDir, runId)); } catch { continue; }
+      if (!r.seedream?.requestId || (r.templateExecution?.input?.sha256 !== sha && r.providerImage?.source.sha256 !== sha)) continue;
+      const accepted = r.stage === 'done', rejection = r.rejection ?? (r.error?.provider ? classifySeedreamRejection(r.error.provider, { endpoint: SEEDREAM_ENDPOINT }) : undefined);
+      if (!accepted && !rejection && r.stage !== 'failed') continue; // still running
+      attempts.push({ runId: r.id, at: r.createdAt, accepted, ...(accepted ? {} : { category: rejection?.category ?? r.error?.code ?? 'unknown' }), ...(r.templateExecution?.plan ? { plan: r.templateExecution.plan } : {}),
+        ...(rejection?.billableUnits ? { billableUnits: rejection.billableUnits } : {}) });
+    }
+    const refused: Record<string, number> = {};
+    for (const a of attempts) if (!a.accepted) refused[a.category!] = (refused[a.category!] ?? 0) + 1;
+    return { imageSha256: sha, attempts, accepted: attempts.filter(a => a.accepted).length, refused, billedZero: attempts.filter(a => !a.accepted && a.billableUnits === '0').length };
+  }
+  /** The products of a smart edit, cut out of the image it made (SAM-3, one mask request each), over a background filled locally. */
+  async function productCutoutLayers(id: string, execution: TemplateExecution, png: Buffer): Promise<VariantRunLayer[] | { failure: string }> {
+    if (!execution.resolution || !services.smart) return { failure: 'Products can be cut out only from a creative made from its image analysis.' };
+    const { scene, plan } = services.smart.reviewInputs(execution);
+    const removed = new Set(plan.entries.filter(e => e.operation === 'remove').map(e => e.targetId));
+    const ids = scene.objects.filter(o => !o.ignored && !removed.has(o.id) && (o.kind === 'product' || (o.kind === 'object' && o.importance === 'main'))).map(o => o.id);
+    if (!ids.length) return { failure: 'No product was found in this creative to cut out.' };
+    const cut = await services.smart.editCutout({ scene, protectIds: ids, image: png, save: (file, value) => executions.writeFile(id, `recovery-${file}`, value) });
+    executions.update(id, x => { x.usage.segmentationCalls = (x.usage.segmentationCalls ?? 0) + cut.calls; if (cut.provider) x.usage.segmentationProvider = cut.provider; });
+    if ('failure' in cut) return { failure: cut.failure };
+    const source = await sourceRaster(png), { width: W, height: H } = source, refined = refineEdges(source, cut.subjects.map(x => x.mask));
+    // Behind the products: the surrounding scene continued into their area (a local fill, said so in the layer's name).
+    const hole = new Uint8Array(W * H);
+    for (const m of refined.masks) for (let i = 0; i < hole.length; i++) if (m[i] >= 24) hole[i] = 1;
+    const plate = await sharp(continueScenery(source.rgb, hole, W, H), { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
+    const layers: VariantRunLayer[] = [{ file: 'layer-1-background.png', name: 'Background (filled locally behind the products)', description: 'The creative without its products; the areas behind them are a local fill', png: plate, kind: 'full-canvas', placement: { x: 0, y: 0, width: W, height: H }, semantic: { id: 'background', type: 'background' } }];
+    for (const [k, subject] of cut.subjects.entries()) {
+      const box = maskBox(refined.masks[k], W, H, 8).box;
+      if (!box) continue;
+      const rgba = Buffer.alloc(box.width * box.height * 4);
+      for (let y = 0; y < box.height; y++) for (let x = 0; x < box.width; x++) {
+        const s = (box.y + y) * W + box.x + x, i = (y * box.width + x) * 4;
+        for (let c = 0; c < 3; c++) rgba[i + c] = refined.reference.rgb[s * 3 + c];
+        rgba[i + 3] = refined.masks[k][s];
+      }
+      layers.push({ file: `layer-${k + 2}-product-${k + 1}.png`, name: `${subject.label} (cut out)`, description: `${subject.label}, cut out of the creative with its SAM-3 mask`, png: await sharp(rgba, { raw: { width: box.width, height: box.height, channels: 4 } }).png().toBuffer(),
+        kind: 'bbox-crop', placement: box, semantic: { id: `product_${k + 1}`, type: 'product' } });
+    }
+    return layers;
+  }
+  /**
+   * What a Qwen request is told about this creative, from its analysis when it has one: the kinds of objects that remain
+   * (category words, never brands or text), a layer count for them plus the background, and their regions to name the
+   * layers by. Without an analysis, a plain caption and Qwen's default of four layers.
+   */
+  function qwenRequestFor(execution: TemplateExecution, width: number, height: number): { caption: string; numLayers: number; labels: QwenLayerLabel[] } {
+    let objects: SceneObject[] = [];
+    try {
+      if (execution.resolution && services.smart) {
+        const { scene, plan } = services.smart.reviewInputs(execution), removed = new Set(plan.entries.filter(e => e.operation === 'remove').map(e => e.targetId));
+        objects = scene.objects.filter(o => !o.ignored && !removed.has(o.id) && o.kind !== 'scenery' && o.importance !== 'background');
+      }
+    } catch { objects = []; }
+    const counts = new Map<string, number>();
+    for (const o of objects) counts.set(o.category, (counts.get(o.category) ?? 0) + 1);
+    const kinds = [...counts].map(([category, n]) => n > 1 ? `${category} (×${n})` : category);
+    return { caption: kinds.length ? `An advertising image: ${kinds.join(', ')}, in front of a background.` : 'An advertising image: its objects in front of a background.',
+      numLayers: Math.min(6, Math.max(4, objects.length + 1)),
+      labels: objects.map(o => ({ label: o.label, box: { x: o.box.x * width, y: o.box.y * height, width: o.box.w * width, height: o.box.h * height } })) };
+  }
+  /** Template slots this execution's edit removed: the saved plan's layers for them have nothing left to extract. */
+  function removedSlots(execution: TemplateExecution, version: TemplateVersion): string[] {
+    try {
+      if (execution.resolution && services.smart) return services.smart.reviewInputs(execution).plan.entries.filter(e => e.operation === 'remove' && e.slotId).map(e => e.slotId!);
+      if (execution.slotValues) return compileEdit(version, execution.slotValues, execution.editOptions ?? {}, !!execution.edit?.reference).changes.filter(c => c.operation === 'remove').map(c => c.slotId);
+    } catch { /* an edit that no longer compiles leaves the saved plan as it is */ }
+    return [];
+  }
+
   /** Everything an execution does, in its mode's order. A failure at any step is recorded, never thrown. */
   const run = async (id: string): Promise<TemplateExecution> => {
     const started = Date.now();
@@ -283,7 +372,7 @@ export function createTemplateExecutions(services: TemplateServices) {
           const referenceBytes = reference ? readFileSync(executions.path(id, reference.file)) : undefined;
           if (reference && sha(referenceBytes!) !== reference.sha256) throw new RunError('INPUT_IDENTITY_MISMATCH', 'The saved product reference image has changed. Upload it again.');
           const save = (file: string, value: Buffer | object) => executions.writeFile(id, file, value);
-          let edited: { image: ExecutionImage; bytes: Buffer; size: string; requestFile: string; responseFile: string; durationMs: number }, scope: SmartEditStrategyRecord['regions'] | undefined, fallback: string | undefined;
+          let edited: { image: ExecutionImage; bytes: Buffer; size: string; requestFile: string; responseFile: string; durationMs: number }, scope: SmartEditStrategyRecord['regions'] | undefined, fallback: string | undefined, edgeContact: string[] = [];
           if (smart) {
             // A smart edit is made the way its plan's strategy says: only the changed regions, the background around the
             // products it keeps (cut out first), or the whole image; always at the source's own size.
@@ -292,19 +381,30 @@ export function createTemplateExecutions(services: TemplateServices) {
               if (!execution.edit?.regenerate) return failed(id, 'NO_CHANGES', 'Nothing changes in this smart edit: use the original image (no image request).', 'generating', started);
               strategy = { ...strategy, kind: 'global', reasons: ['Nothing changes, and you asked for a new image anyway: the whole image is regenerated, at its own size.'] };
             }
-            if (strategy.kind === 'background') {
+            let editPrompt: string | { background: string; objects: string } = prompt;
+            if (strategy.kind === 'background' || strategy.kind === 'layered') {
               const cut = await services.smart!.editCutout({ scene: smart.scene, protectIds: strategy.protectIds, image: bytes, save });
               executions.update(id, x => { x.usage.segmentationCalls = (x.usage.segmentationCalls ?? 0) + cut.calls; if (cut.provider) x.usage.segmentationProvider = cut.provider; });
-              if ('failure' in cut) { fallback = `${cut.failure} The whole image was edited instead, so the products may have been redrawn: check them.`; strategy = { ...strategy, kind: 'global', protectIds: [] }; }
-              else { subjects = cut.subjects; cut.masks.forEach((m, k) => save(`edit-cutout-${k + 1}.png`, m)); }
+              if ('failure' in cut) { fallback = `${cut.failure} The whole image was edited instead, so the products may have been redrawn or moved: check them and the layout.`; strategy = { ...strategy, kind: 'global', protectIds: [] }; }
+              else {
+                subjects = cut.subjects; cut.masks.forEach((m, k) => save(`edit-cutout-${k + 1}.png`, m));
+                if (strategy.kind === 'layered') {
+                  // Two passes of the same plan: the background around every product (kept in place), then each changed
+                  // object in its own slot, its tilt read from its own cutout where the shape shows one clearly.
+                  const passes = layeredPlans(smart.scene, smart.plan), poses: Record<string, string> = {};
+                  for (const x of cut.subjects) { const pose = maskPose(x.mask, execution.upload.width, execution.upload.height); if (pose) poses[x.id] = pose; }
+                  editPrompt = { background: compileResolvedEdit(smart.scene, passes.background).text, objects: compileResolvedEdit(smart.scene, { ...passes.objects, poses }, { productReference: !!reference }).text };
+                }
+              }
             }
             const record: SmartEditStrategyRecord = { kind: strategy.kind as SmartEditStrategyRecord['kind'], regions: strategy.regions, areaPercent: strategy.areaPercent, protectIds: strategy.protectIds, reasons: strategy.reasons, ...(fallback ? { fallback } : {}) };
             execution = executions.update(id, x => { x.edit = { ...x.edit!, strategy: record }; });
             log(`[GENERATION] smart edit strategy=${record.kind}${record.kind === 'local' ? ` regions=${record.regions.length} area=${record.areaPercent}%` : ''}${fallback ? ' (cutout failed: whole image)' : ''} execution=${id}`);
-            const made = await smartEditImage(config, { bytes, file: execution.upload.file }, prompt, strategy, save, { ...(reference ? { reference: { bytes: referenceBytes!, file: reference.file } } : {}), ...(subjects ? { subjects } : {}) });
-            edited = made;
-            if (record.kind === 'local') scope = record.regions;
-            execution = executions.update(id, (x) => { x.edit = { ...x.edit!, size: made.size, image: made.image, generated: made.generated, preservation: made.preservation, requestFile: made.requestFile, responseFile: made.responseFile, durationMs: made.durationMs }; x.usage.timings.generationMs = made.durationMs; });
+            const made = await smartEditImage(config, { bytes, file: execution.upload.file }, editPrompt, strategy, save, { ...(reference ? { reference: { bytes: referenceBytes!, file: reference.file } } : {}), ...(subjects ? { subjects } : {}) });
+            edited = made; edgeContact = made.edgeContact;
+            if (record.kind === 'local' || record.kind === 'layered') scope = record.regions;
+            execution = executions.update(id, (x) => { x.edit = { ...x.edit!, size: made.size, image: made.image, generated: made.generated, preservation: made.preservation, requestFile: made.requestFile, responseFile: made.responseFile, durationMs: made.durationMs };
+              x.usage.timings.generationMs = made.durationMs; x.usage.imageGenerationCalls = made.calls; });
           } else {
             // Template fields without an image analysis: one whole-image edit, contained in the model's canvas and mapped
             // back, so the result keeps the source's own size and aspect.
@@ -321,6 +421,8 @@ export function createTemplateExecutions(services: TemplateServices) {
             try { review = await reviewGeneration({ source: readFileSync(executions.path(id, execution.upload.file)), generated: edited.bytes, version: version!, changes, sourceRunDir: sourceRunFor(version!, execution.upload.sha256), ...(smart ? { regions: smart.regions } : {}), ...(scope ? { scope: scope.map(r => r.box) } : {}) }); }
             catch (error) { review = { method: 'whole-image', checks: [{ id: 'region-unknown', severity: 'info', message: `The local review could not run (${error instanceof Error ? error.message : String(error)}).`, evidence: {} }], requiresAcknowledgement: false, note: 'Review the image before using it.' }; }
             if (fallback) review = { ...review, checks: [...review.checks, { id: 'cutout-limitation', severity: 'warning', message: fallback, evidence: {} }], requiresAcknowledgement: true };
+            // A new object that runs into its slot's edge may be cut there: the layout held, but a person looks at it.
+            if (edgeContact.length) review = { ...review, checks: [...review.checks, ...edgeContact.map(label => ({ id: 'slot-edge' as const, severity: 'warning' as const, message: `${label}: the new content reaches the edge of its slot and may be cut there. Check it before using the image.`, evidence: {} }))], requiresAcknowledgement: true };
             // A replaced or removed object can never be confirmed by pixels: a person checks it, whatever the review found.
             const objectChange = compiled ? compiled.changes.some(c => c.operation === 'replace' || c.operation === 'remove') : smart!.objectChange;
             if (objectChange) review = { ...review, requiresAcknowledgement: true };
@@ -346,6 +448,43 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (sha(bytes) !== input.sha256) return failed(id, 'INPUT_IDENTITY_MISMATCH', `The image to decompose is not the ${input.source === 'approved-generated' ? 'approved generated creative' : 'uploaded image'} on record; nothing was sent. Generate or upload it again.`, 'decomposing', started);
       // 3. The decomposition run: the planner when a template is created, or when the user chose to refresh the plan.
       const choice: ExtractionPlan = policy.planner ? 'refresh' : execution.planDecision?.choice ?? (execution.variant ? 'composed' : 'saved');
+      if (choice === 'flat' || choice === 'cutouts') {
+        // Recovery without Seedream, chosen explicitly: the whole image as one layer (no request), or its products cut out
+        // with SAM-3 masks (one mask request each) over a background filled locally behind them. Never a crude crop.
+        const origin = { kind: 'template-execution' as const, generationId: id }, own = { executionId: id, mode: execution.mode, ...(execution.template ? { template: execution.template } : {}), plan: choice, input };
+        const png = await sharp(bytes).rotate().png().toBuffer();
+        const layers = choice === 'flat' ? [{ file: 'layer-1-creative.png', name: 'Flat preview (not split into layers)', description: 'The whole creative as one flat image: no objects were separated', png, kind: 'full-canvas' as const,
+          placement: { x: 0, y: 0, width: (await sharp(png).metadata()).width!, height: (await sharp(png).metadata()).height! }, semantic: { id: 'creative', type: 'background' } }] : await productCutoutLayers(id, execution, png);
+        if (!Array.isArray(layers)) return failed(id, 'CUTOUT_FAILED', `${layers.failure} The creative is kept; nothing else was sent.`, 'decomposing', started);
+        const created = await createComposedRun(runsDir, { composite: png, layers, origin, templateExecution: own, source: choice === 'flat' ? 'single-layer' : 'product-cutouts' });
+        log(`[DECOMPOSE] recovery without Seedream (${choice}) run=${created.run.id}`);
+        execution = executions.update(id, (x) => { x.runId = created.run.id; x.state = 'decomposing'; });
+        return finish(id, created.run, started, Date.now());
+      }
+      if (choice === 'qwen') {
+        // The alternative provider, chosen by a person after Seedream refused this image (retryExtraction): one
+        // Qwen-Image-Layered request, its layers placed on the creative's own canvas (qwenLayers.ts). Never retried.
+        const origin = { kind: 'template-execution' as const, generationId: id }, own = { executionId: id, mode: execution.mode, ...(execution.template ? { template: execution.template } : {}), plan: choice, input };
+        const png = await sharp(bytes).rotate().png().toBuffer(), meta = await sharp(png).metadata(), ask = qwenRequestFor(execution, meta.width!, meta.height!), deps = services.deps();
+        execution = executions.update(id, (x) => { x.state = 'decomposing'; });
+        const decompositionStarted = Date.now();
+        try {
+          const qwen = await requestQwenLayers(deps.transport(), png, { caption: ask.caption, numLayers: ask.numLayers, sleep: deps.sleep, save: (file, value) => executions.writeFile(id, `qwen-${file}`, value),
+            onSubmitted: () => executions.update(id, x => { x.usage.qwenLayerCalls = (x.usage.qwenLayerCalls ?? 0) + 1; }) });
+          qwen.images.forEach((layer, i) => executions.writeFile(id, `qwen-layer-${i}.png`, layer));
+          const { layers, report } = await qwenEditorLayers(png, qwen.images, { labels: ask.labels });
+          const created = await createComposedRun(runsDir, { composite: png, layers, origin, templateExecution: own, source: 'qwen-layers' });
+          writeFileSync(join(created.dir, 'qwen-layers.json'), JSON.stringify({ endpoint: QWEN_ENDPOINT, requestId: qwen.requestId, seed: qwen.seed, caption: ask.caption, numLayers: ask.numLayers, ...report }, null, 2));
+          log(`[DECOMPOSE] alternative provider Qwen-Image-Layered request=${qwen.requestId} run=${created.run.id} layers=${layers.length}`);
+          execution = executions.update(id, (x) => { x.runId = created.run.id; });
+          return finish(id, created.run, started, decompositionStarted);
+        } catch (error) {
+          // The refused Seedream run is the execution's run again, so every other choice stays open.
+          const refused = execution.extractionAttempts?.at(-1)?.runId;
+          if (refused) executions.update(id, (x) => { x.runId = refused; });
+          return failed(id, 'QWEN_LAYERS_FAILED', `${error instanceof Error ? error.message : String(error)} The creative is kept; nothing was retried.`, 'decomposing', started);
+        }
+      }
       if (execution.variant) {
         const origin = { kind: 'template-execution' as const, generationId: id }, variant = { setId: execution.variant.setId, variantId: execution.variant.variantId }, plateSize = execution.variant.layers.plate;
         const own = { executionId: id, mode: execution.mode, ...(execution.template ? { template: execution.template } : {}), plan: choice };
@@ -370,10 +509,13 @@ export function createTemplateExecutions(services: TemplateServices) {
       }
       const origin = { kind: 'template-execution' as const, generationId: id }, templateExecution = { executionId: id, mode: execution.mode, inspection: execution.inspection, plannerReason: execution.plannerReason,
         ...(execution.template ? { template: execution.template } : {}), plan: choice, ...(choice === 'refresh' && !policy.planner ? { planRefresh: true } : {}), input };
+      // The saved plan never asks for the layers of objects this edit removed (Seedream has refused plans that did).
+      const removed = policy.planner || choice === 'refresh' ? [] : removedSlots(execution, version!), planVersion = removed.length ? withoutSlots(version!, removed) : version!;
+      if (planVersion !== version) log(`[PLANNER] saved plan without the layers of removed objects: ${removed.join(', ')} (${version!.plan.recommendedLayers} → ${planVersion.plan.recommendedLayers} layers)`);
       const created = policy.planner
         ? await createRun(runsDir, bytes, { mode: 'generated' }, { refinement: true, origin, templateExecution, templateCapture: true })
         : choice === 'refresh' ? await createRun(runsDir, bytes, { mode: 'generated' }, { refinement: true, origin, templateExecution })
-        : await createRun(runsDir, bytes, choice === 'simple' ? compileSimpleTemplatePlan(version!) : compileTemplatePlan(version!), { refinement: version!.decomposition.refinement, origin, templateExecution });
+        : await createRun(runsDir, bytes, choice === 'simple' ? compileSimpleTemplatePlan(planVersion) : compileTemplatePlan(planVersion), { refinement: version!.decomposition.refinement, origin, templateExecution });
       if (choice === 'refresh' && !policy.planner) executions.update(id, x => { x.usage.decompositionPlanSource = 'planner'; });
       log(policy.planner ? `[PLANNER] invoked: template creation (one call: decomposition plan + reusable template) run=${created.run.id}` : choice === 'refresh' ? `[PLANNER] invoked: user chose to refresh the decomposition plan run=${created.run.id}` : `[PLANNER] skipped: existing reusable plan template=${version!.templateId} v${version!.version} run=${created.run.id}`);
       log(`[DECOMPOSE] using ${policy.decomposes === 'upload' ? 'original uploaded image' : 'edited image'} run=${created.run.id}`);
@@ -507,6 +649,7 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (request.plan !== undefined && !EXTRACTION_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'Choose the saved plan, a simpler grouping or a refreshed plan.');
       if (request.plan !== undefined && execution.variant && !VARIANT_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'A creative variant has new scenery that the saved plan does not describe: use its own layers, or split only the new scenery.');
       if (request.plan === 'composed' && !execution.variant) throw new RunError('INVALID_REQUEST', 'Only a creative variant has its own composed layers.');
+      if (request.plan === 'qwen') throw new RunError('INVALID_REQUEST', 'Seedream extracts the layers first; Qwen layers are an alternative offered only after Seedream refuses the image.');
       if (request.acknowledgeReview !== undefined && typeof request.acknowledgeReview !== 'boolean') throw new RunError('INVALID_REQUEST', 'acknowledgeReview is true or false.');
       // Explicit decisions, never assumed: a creative whose review needs a person, and a plan that may no longer fit.
       const review = execution.edit.review;
@@ -545,7 +688,9 @@ export function createTemplateExecutions(services: TemplateServices) {
      * the same persisted image — never regenerated — with the saved plan, a simpler grouping, or a refreshed plan. Each is
      * a new Seedream request (refresh: one planner call too); never sent automatically.
      */
-    retryExtraction(id: string, request: { plan?: unknown } = {}): TemplateExecution {
+    /** What fal did with this execution's exact image so far (a read; no call). */
+    extractionHistory: (id: string) => extractionHistory(executions.get(id)),
+    retryExtraction(id: string, request: { plan?: unknown; confirmRepeat?: unknown } = {}): TemplateExecution {
       const execution = executions.get(id);
       if (active.has(id)) throw new RunError('BUSY', 'This execution is already being extracted.');
       if (!EXTRACTION_PLANS.includes(request.plan as ExtractionPlan)) throw new RunError('INVALID_REQUEST', 'Choose the saved plan, a simpler grouping or a refreshed plan.');
@@ -554,6 +699,24 @@ export function createTemplateExecutions(services: TemplateServices) {
       if (execution.state !== 'failed' || !execution.runId || !execution.error || execution.error.state === 'generating') throw new RunError('NOT_RETRYABLE', 'Only a failed extraction of a saved image can be retried.');
       if (!execution.template || !usableVersion(execution.template.id, execution.template.version)) throw new RunError('STALE_TEMPLATE_VERSION', 'This saved template version is unavailable. Choose another template.');
       const plan = request.plan as ExtractionPlan;
+      if ((plan === 'flat' || plan === 'cutouts' || plan === 'qwen') && execution.variant) throw new RunError('INVALID_REQUEST', 'A creative variant already has its own layers: use them instead.');
+      if (plan === 'qwen') {
+        // The alternative provider only for an image Seedream refused; a Qwen attempt that failed is repeated only when confirmed.
+        const h = extractionHistory(execution);
+        if (!Object.keys(h.refused).length) throw new RunError('INVALID_REQUEST', 'Qwen layers are an alternative only for an image Seedream refused.');
+        if ((execution.error?.code === 'QWEN_LAYERS_FAILED' || execution.extractionAttempts?.some(a => a.plan === 'qwen')) && request.confirmRepeat !== true)
+          throw new RunError('REPEAT_REQUIRES_CONFIRMATION', 'A Qwen extraction of this image already failed. Another try is one more fal request (about $0.05) and may fail the same way.', { history: h });
+      }
+      if (plan === 'cutouts' && !execution.resolution) throw new RunError('INVALID_REQUEST', 'Products can be cut out only from a creative made from its image analysis.');
+      // A repeat fal has already refused is never sent without an explicit confirmation: the same plan on the same image,
+      // or an image fal's partner check refused at least twice and never accepted. (Refusals so far were billed 0 units.)
+      if (SEEDREAM_PLANS.includes(plan) && request.confirmRepeat !== true) {
+        const h = extractionHistory(execution), partner = h.refused['partner-content'] ?? 0;
+        const same = (plan === 'saved' || plan === 'simple') && h.attempts.some(a => !a.accepted && a.plan === plan);
+        if (same || (partner >= 2 && h.accepted === 0)) throw new RunError('REPEAT_REQUIRES_CONFIRMATION', same
+          ? `fal already refused this exact request (this image with the ${plan === 'saved' ? 'saved plan' : 'simpler grouping'}). Another try may be refused again; it is billed only if fal accepts it.`
+          : `fal's partner check has refused this exact image ${partner} times and never accepted it; its reason is not disclosed. Another try sends the same image and may be refused again; it is billed only if fal accepts it.`, { history: h });
+      }
       const retried = executions.update(id, x => {
         const now = new Date().toISOString();
         x.extractionAttempts = [...(x.extractionAttempts ?? []), { runId: x.runId!, plan: x.planDecision?.choice ?? 'saved', ...(x.error ? { error: { code: x.error.code, message: x.error.message } } : {}), at: now }];

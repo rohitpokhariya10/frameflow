@@ -64,10 +64,12 @@ export interface ExecutionUsage {
   verifierModel?: string;
   /** A smart edit that restyles the background: the mask requests that cut out the products it keeps. */
   segmentationCalls?: number; segmentationProvider?: string;
+  /** Layer extraction with the alternative provider (Qwen-Image-Layered), after Seedream refused the image. */
+  qwenLayerCalls?: number;
 }
 /** How a smart edit's image was made (editStrategy), and what the result kept of the source. */
 export interface SmartEditStrategyRecord {
-  kind: 'none' | 'local' | 'background' | 'global';
+  kind: 'none' | 'local' | 'background' | 'layered' | 'global';
   /** The regions the model could paint (local), as fractions of the image. */
   regions: { targetId: string; label: string; box: { x: number; y: number; w: number; h: number } }[];
   areaPercent: number; protectIds: string[]; reasons: string[];
@@ -90,7 +92,7 @@ export interface ExecutionImage { file: string; mimeType: string; width: number;
  * judgment. A check can show that a region still looks like the original; none can confirm that a new product is right.
  */
 export interface GenerationReviewCheck {
-  id: 'object-unchanged' | 'unrequested-change' | 'image-unchanged' | 'region-unknown' | 'semantic' | 'cutout-limitation';
+  id: 'object-unchanged' | 'unrequested-change' | 'image-unchanged' | 'region-unknown' | 'semantic' | 'cutout-limitation' | 'slot-edge';
   slotId?: string; label?: string; severity: 'warning' | 'info'; message: string; evidence: Record<string, number>;
 }
 export interface GenerationReview {
@@ -112,8 +114,16 @@ export interface GenerationReview {
  * planner call). A creative variant also has its own composed layers (no extraction at all), and its simple and
  * refreshed plans split only the new scenery, never its exact subject.
  */
-export type ExtractionPlan = 'saved' | 'simple' | 'refresh' | 'composed';
-export const EXTRACTION_PLANS: readonly ExtractionPlan[] = ['saved', 'simple', 'refresh', 'composed'];
+/**
+ * flat: the whole image as one editor layer (no extraction, no request); cutouts: its products cut out with SAM-3 masks
+ * over a background filled locally behind them (no Seedream). Both are explicit recovery choices for an image Seedream refused.
+ * qwen: an alternative provider (Qwen-Image-Layered, one fal request) for an image Seedream refused, chosen by a person
+ * after that refusal only; Seedream stays the provider of every first extraction.
+ */
+export type ExtractionPlan = 'saved' | 'simple' | 'refresh' | 'composed' | 'flat' | 'cutouts' | 'qwen';
+export const EXTRACTION_PLANS: readonly ExtractionPlan[] = ['saved', 'simple', 'refresh', 'composed', 'flat', 'cutouts', 'qwen'];
+/** Plans that send the image to Seedream (the others need no layer-decomposition request). */
+export const SEEDREAM_PLANS: readonly ExtractionPlan[] = ['saved', 'simple', 'refresh'];
 export interface TemplateExecution {
   id: string;
   /** The original submission was automatic inspection; remains stable for retry deduplication. */
@@ -168,6 +178,11 @@ export interface TemplateExecution {
   variant?: { setId: string; variantId: string; layers: { scenery: ExecutionImage; plate: ExecutionImage; shadow?: VariantLayer; subject: VariantLayer; subjects?: VariantSubjectLayer[]; shadows?: VariantSubjectLayer[] }; protectedLabels: string[];
     /** A variant composed on its own aspect-ratio canvas, and the scale its products were placed at (≤ 1). */
     aspectRatio?: string; scale?: number };
+  /**
+   * A chosen integrated creative variant (one rendered image, no exact layers): the set it came from. It is reviewed,
+   * planned and decomposed like any other generated creative.
+   */
+  variantSource?: { setId: string; variantId: string };
 }
 
 /** What a decomposition run records about the execution it belongs to (run.json `templateExecution`). */

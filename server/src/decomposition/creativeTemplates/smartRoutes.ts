@@ -8,7 +8,8 @@
  *   GET    /scene-analyses/:id/image                            the analyzed image
  *   POST   /scene-analyses/:id/resolutions                      multipart draft (JSON), productReference?, rulesOnly? → a resolution
  *   GET    /scene-analyses/:id/resolutions/:resolutionId        a resolution
- *   POST   /creative-variant-sets                               { analysisId, templateId, templateVersion, count?, aspectRatio?, protectedIds? (automatic when absent), corrections?, direction?, surprise?, verify?, idempotencyKey }
+ *   POST   /creative-variant-sets                               { analysisId, templateId, templateVersion, count?, aspectRatio?, protectedIds? (automatic when absent), corrections?, direction?, surprise?, verify?,
+ *                                                                rendering? ('integrated' | 'exact', default exact), products? ({ [objectId]: { name?, brand? } }, integrated only), idempotencyKey }
  *   GET    /creative-variant-sets/:id                           a set: cutout, concepts, variants and their status
  *   GET    /creative-variant-sets/:id/files/:file               a set's image
  *   POST   /creative-variant-sets/:id/cutout                    multipart cutout (PNG exported from the same image)
@@ -82,7 +83,7 @@ export function registerSmartCreativeRoutes(router: Router, ctx: { smart: SmartC
   router.post('/creative-variant-sets', express.json({ limit: '16kb' }), async (req, res, next) => {
     try {
       const b = body(req);
-      only(b, ['analysisId', 'templateId', 'templateVersion', 'protectedIds', 'aspectRatio', 'corrections', 'direction', 'surprise', 'count', 'verify', 'idempotencyKey'], 'A variant set');
+      only(b, ['analysisId', 'templateId', 'templateVersion', 'protectedIds', 'aspectRatio', 'corrections', 'direction', 'surprise', 'count', 'verify', 'rendering', 'products', 'idempotencyKey'], 'A variant set');
       const { set, created } = await smart.startVariants(b as Parameters<SmartCreative['startVariants']>[0]);
       res.status(created ? 202 : 200).json(set);
     } catch (error) { next(error); }

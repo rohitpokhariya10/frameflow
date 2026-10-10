@@ -40,7 +40,7 @@ export type NewExecution = {
    * generated image, waiting for the user's approval like any other.
    */
   prepared?: { image: { bytes: Buffer; ext: string; mimeType: string; width: number; height: number }; prompt: string; model: string; size: string; review: GenerationReview; files: Record<string, Buffer | object>;
-    requestFile?: string; responseFile?: string; durationMs?: number; variant: NonNullable<TemplateExecution['variant']>; verificationCalls: number; verifierModel?: string } };
+    requestFile?: string; responseFile?: string; durationMs?: number; variant?: NonNullable<TemplateExecution['variant']>; variantSource?: TemplateExecution['variantSource']; verificationCalls: number; verifierModel?: string } };
 export interface ExecutionStore {
   /** A new execution, or the one this submission already started (created: false). */
   create(input: NewExecution): { execution: TemplateExecution; created: boolean };
@@ -88,7 +88,7 @@ export function fileExecutionStore(root = DEFAULT_EXECUTIONS_DIR): ExecutionStor
         ...(input.upload.originalName ? { originalName: input.upload.originalName.slice(0, 200) } : {}) };
       const prepared = input.prepared, preparedImage = prepared ? { file: `edited.${prepared.image.ext}`, mimeType: prepared.image.mimeType, width: prepared.image.width, height: prepared.image.height, bytes: prepared.image.bytes.length, sha256: createHash('sha256').update(prepared.image.bytes).digest('hex') } : undefined;
       const execution: TemplateExecution = { id, automatic: !!input.inspect, mode: input.mode, plannerReason: input.plannerReason, ...(input.updatesTemplate ? { updatesTemplate: input.updatesTemplate } : {}), idempotencyKey: input.idempotencyKey, state: input.inspect ? 'detecting' : prepared ? 'generated' : 'queued', createdAt: now, updatedAt: now, ...(input.template ? { template: input.template } : {}), upload,
-        ...(input.resolution ? { resolution: input.resolution } : {}), ...(prepared ? { variant: prepared.variant } : {}),
+        ...(input.resolution ? { resolution: input.resolution } : {}), ...(prepared?.variant ? { variant: prepared.variant } : {}), ...(prepared?.variantSource ? { variantSource: prepared.variantSource } : {}),
         ...(input.reviewBeforeDecompose ? { reviewBeforeDecompose: true } : {}), ...(input.slotValues ? { slotValues: input.slotValues } : {}),
         ...(input.editOptions ? { editOptions: input.editOptions } : {}), ...(input.compatibility ? { compatibility: input.compatibility } : {}),
         ...(input.editInstruction ? { edit: { instruction: input.editInstruction, prompt: prepared?.prompt ?? input.editPrompt ?? '', model: prepared?.model ?? '', size: prepared?.size ?? '', ...(input.editIntent ? { [input.editIntent]: true } : {}),

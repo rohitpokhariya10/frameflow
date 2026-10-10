@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { CANVAS_LIMITS, type DesignVariant } from '@frameflow/shared';
 import { readRun } from '../../../../server/src/decomposition/layerizeExperiment';
 import { createComposedRun, type VariantRunLayer } from '../../../../server/src/decomposition/creativeTemplates/composedRun';
+import { qwenEditorLayers } from '../../../../server/src/decomposition/creativeTemplates/qwenLayers';
 import { editorLayersOf, experimentToVariant, type ExperimentRun } from './layerizeExperiment';
 
 // The editor import of both features' runs, through the editor's own import (experimentToVariant): what reaches Konva is
@@ -68,6 +69,64 @@ describe('Feature 1: a creative variant\'s own layers in the editor', () => {
     const drawn = await sharp(await render(variant, assets)).removeAlpha().raw().toBuffer(), truth = await sharp(composite).removeAlpha().raw().toBuffer();
     let worst = 0; for (let i = 0; i < truth.length; i++) worst = Math.max(worst, Math.abs(drawn[i] - truth[i]));
     expect(worst).toBeLessThanOrEqual(1); // the editor shows the creative as composed (rounding of soft shadow edges only)
+  });
+});
+
+describe('Seedream-free recovery runs in the editor (a creative Seedream refused)', () => {
+  const W = 900, H = 1600, solid = (w: number, h: number, rgba: [number, number, number, number]) => sharp({ create: { width: w, height: h, channels: 4, background: { r: rgba[0], g: rgba[1], b: rgba[2], alpha: rgba[3] / 255 } } }).png().toBuffer();
+  const make = async (layers: VariantRunLayer[], composite: Buffer, source: 'single-layer' | 'product-cutouts') => {
+    const runs = mkdtempSync(join(tmpdir(), 'editor-recovery-'));
+    return (await createComposedRun(runs, { composite, layers, origin: { kind: 'template-execution', generationId: 'e1' } as never, templateExecution: { executionId: 'e1', mode: 'REUSE_TEMPLATE_WITH_EDIT', plan: source === 'single-layer' ? 'flat' : 'cutouts' } as never, source })).dir;
+  };
+  it('a flat preview imports as exactly one full-canvas layer that redraws the creative, named as a flat preview', async () => {
+    const creative = await sharp(await solid(W, H, [210, 60, 70, 255])).composite([{ input: await solid(300, 500, [20, 30, 160, 255]), left: 300, top: 600 }]).png().toBuffer();
+    const dir = await make([{ file: 'layer-1-creative.png', name: 'Flat preview (not split into layers)', description: 'flat', png: creative, kind: 'full-canvas', placement: { x: 0, y: 0, width: W, height: H }, semantic: { id: 'creative', type: 'background' } }], creative, 'single-layer');
+    const { run, variant, assets } = await imported(dir);
+    expectFaithful(run, variant);
+    expect(variant.layers!.map(l => l.name)).toEqual(['Flat preview (not split into layers) (z0)']);
+    const drawn = await sharp(await render(variant, assets)).removeAlpha().raw().toBuffer(), truth = await sharp(creative).removeAlpha().raw().toBuffer();
+    expect(drawn.equals(truth)).toBe(true);
+  });
+  it('products cut out over a background import back to front at their places, and redraw the creative where the products are', async () => {
+    const background = await solid(W, H, [210, 60, 70, 255]), product = await solid(300, 500, [20, 30, 160, 255]), at = { x: 300, y: 600, width: 300, height: 500 };
+    const composite = await sharp(background).composite([{ input: product, left: at.x, top: at.y }]).png().toBuffer();
+    const dir = await make([{ file: 'layer-1-background.png', name: 'Background (filled locally behind the products)', description: 'bg', png: background, kind: 'full-canvas', placement: { x: 0, y: 0, width: W, height: H }, semantic: { id: 'background', type: 'background' } },
+      { file: 'layer-2-product-1.png', name: 'Smartphone (cut out)', description: 'p', png: product, kind: 'bbox-crop', placement: at, semantic: { id: 'product_1', type: 'product' } }], composite, 'product-cutouts');
+    const { run, variant, assets } = await imported(dir);
+    expectFaithful(run, variant);
+    expect(variant.layers!.map(l => l.name)).toEqual(['Background (filled locally behind the products) (z0)', 'Smartphone (cut out) (z1)']);
+    const drawn = await sharp(await render(variant, assets)).removeAlpha().raw().toBuffer(), truth = await sharp(composite).removeAlpha().raw().toBuffer();
+    expect(drawn.equals(truth)).toBe(true);
+  });
+});
+
+describe('Qwen layers (the alternative provider for a creative Seedream refused) in the editor', () => {
+  it('import back to front at their places, redraw the creative, and a moved product leaves the background behind it, not a copy of itself', async () => {
+    const W = 900, H = 1600, product = { x: 300, y: 600, width: 300, height: 520 };
+    const sceneAt = (x: number, y: number) => [40 + Math.round(150 * x / W), 60 + Math.round(120 * y / H), 170];
+    const draw = (pixel: (x: number, y: number) => number[], channels: 3 | 4) => {
+      const data = Buffer.alloc(W * H * channels);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) data.set(pixel(x, y), (y * W + x) * channels);
+      return sharp(data, { raw: { width: W, height: H, channels } }).png().toBuffer();
+    };
+    const inProduct = (x: number, y: number) => x >= product.x && x < product.x + product.width && y >= product.y && y < product.y + product.height;
+    const creative = await draw((x, y) => inProduct(x, y) ? [30, 70, 210] : sceneAt(x, y), 3);
+    // As Qwen answers for a 900×1600 creative: 480×864 layers, the creative stretched to that size.
+    const qwen = async (png: Buffer) => sharp(png).resize(480, 864, { fit: 'fill' }).png().toBuffer();
+    const outputs = [await qwen(await draw(sceneAt, 3)), await qwen(await draw((x, y) => inProduct(x, y) ? [30, 70, 210, 255] : [0, 0, 0, 0], 4))];
+    const { layers } = await qwenEditorLayers(creative, outputs, { labels: [{ label: 'Smartphone', box: product }] });
+    const runs = mkdtempSync(join(tmpdir(), 'editor-qwen-'));
+    const { dir } = await createComposedRun(runs, { composite: creative, layers, origin: { kind: 'template-execution', generationId: 'e1' } as never, templateExecution: { executionId: 'e1', mode: 'REUSE_TEMPLATE_WITH_EDIT', plan: 'qwen' } as never, source: 'qwen-layers' });
+    const { run, variant, assets } = await imported(dir);
+    expectFaithful(run, variant);
+    expect(variant.layers!.map(l => l.name)).toEqual([expect.stringMatching(/^Background \(Qwen; [\d.]+% hidden behind objects is AI-generated\) \(z0\)$/), 'Smartphone (z1)']);
+    const drawn = await sharp(await render(variant, assets)).removeAlpha().raw().toBuffer(), truth = await sharp(creative).removeAlpha().raw().toBuffer();
+    let sum = 0; for (let i = 0; i < truth.length; i++) sum += Math.abs(drawn[i] - truth[i]);
+    expect(sum / truth.length).toBeLessThan(1); // the editor shows the creative (soft product edges only)
+    // The product moved 200 px right: where it was, the scene continues.
+    const moved = { ...variant, layers: variant.layers!.map((l, i) => i === 1 ? { ...l, x: l.x + 200 } : l) };
+    const after = await sharp(await render(moved, assets)).removeAlpha().raw().toBuffer(), cx = product.x + 60, cy = product.y + 260, k = (cy * W + cx) * 3;
+    expect(Math.max(...[0, 1, 2].map(c => Math.abs(after[k + c] - sceneAt(cx, cy)[c])))).toBeLessThan(12);
   });
 });
 

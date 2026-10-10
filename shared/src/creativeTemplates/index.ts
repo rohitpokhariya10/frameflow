@@ -13,3 +13,5 @@ export * from './advertised.js';
 export * from './brands.js';
 export * from './editStrategy.js';
 export * from './fieldsDraft.js';
+export * from './creativeDirections.js';
+export * from './autoResolve.js';

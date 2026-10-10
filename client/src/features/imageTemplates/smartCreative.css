@@ -97,6 +97,7 @@ fieldset.cv-choice legend { float: left; padding: 6px 8px 6px 4px; font-size: 12
 .cv-badge { font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 999px; background: var(--color-chrome); color: var(--color-muted); }
 .cv-badge.is-done { background: #d9ecdf; color: #1f5631; }
 .cv-badge.is-failed { background: #f8e1d8; color: #a14a2a; }
+.cv-badge.is-warn { background: #f6ecd0; color: #7a5a12; }
 .cv-prompt { font-size: 11px !important; overflow-wrap: anywhere; }
 .cv-history { display: flex; flex-wrap: wrap; gap: 6px; }
 .cv-history img { width: 64px; height: 80px; object-fit: cover; border-radius: 8px; border: 1px solid var(--color-line); }
@@ -112,3 +113,32 @@ fieldset.cv-choice legend { float: left; padding: 6px 8px 6px 4px; font-size: 12
   .sm-detected div { grid-template-columns: 1fr; gap: 0; }
   .sm-start .ws-btn { flex: 1 1 100%; justify-content: center; }
 }
+
+/* Feature 2 · Customize your creative: one optional field per thing in the image, with its own thumbnail. */
+.cz-panel { display: flex; flex-direction: column; gap: 16px; }
+.cz-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cz-toolbar p { margin: 0; }
+.cz-group h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--color-muted); }
+.cz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.cz-card { display: flex; gap: 12px; align-items: flex-start; padding: 10px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); transition: border-color .15s, box-shadow .15s; }
+.cz-card:focus-within { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-selected); }
+.cz-card.is-changed { border-color: var(--color-primary); background: var(--color-selected); }
+.cz-thumb { width: 64px; height: 64px; flex-shrink: 0; border-radius: 9px; overflow: hidden; display: grid; place-items: center; background: #f3f3ef; color: var(--color-muted); border: 1px solid var(--color-line); }
+.cz-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cz-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.cz-title { display: flex; flex-direction: column; gap: 1px; font-size: 13px; font-weight: 600; color: var(--color-ink); }
+.cz-title small { font-size: 11px; font-weight: 400; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cz-input { position: relative; }
+.cz-input input, .cz-brand { width: 100%; min-height: 34px; border: 1px solid var(--color-line); border-radius: 8px; padding: 0 30px 0 10px; font: inherit; font-size: 12px; background: var(--color-panel); color: var(--color-ink); }
+.cz-brand { padding-right: 10px; }
+.cz-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--color-muted); cursor: pointer; }
+.cz-clear:hover { background: var(--color-chrome); color: var(--color-ink); }
+.cz-summary { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-chrome); }
+.cz-summary h3 { margin: 0; font-size: 14px; }
+.cz-summary p { margin: 0; font-size: 13px; line-height: 1.45; }
+.cz-summary ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--color-muted); display: flex; flex-direction: column; gap: 3px; }
+.cz-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cz-cost { font-size: 11px; color: var(--color-muted); }
+.cz-detect { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 12px 14px; border: 1px dashed var(--color-line); border-radius: 12px; }
+.cz-detect p { margin: 0; font-size: 12px; }
+@media (max-width: 640px) { .cz-grid { grid-template-columns: 1fr; } }

@@ -54,8 +54,8 @@ describe('template fields through the image\'s analysis (the normal Generate)', 
     const { fields, plan: p } = plan(s, offer, { values: { main_product: 'Xiaomi phone', background: 'warm sunset gradient' }, answers: { earbuds_1: { action: 'keep' }, smartphone_1: { action: 'keep' } } });
     expect(fields.draft.edits).toEqual({ smartphone_1: { action: 'replace', value: 'Xiaomi phone' }, background_1: { action: 'modify', value: 'warm sunset gradient' }, earbuds_1: { action: 'keep' } });
     expect(p.status).toBe('clear');
-    // A restyled background around a replaced phone: the earbuds that stay are cut out and kept as their own pixels.
-    expect(editStrategy(s, p)).toMatchObject({ kind: 'background', protectIds: ['earbuds_1'] });
+    // A restyled background around a replaced phone: every product stays in place for the background pass, then the phone is repainted in its own slot.
+    expect(editStrategy(s, p)).toMatchObject({ kind: 'layered', protectIds: ['earbuds_1', 'smartphone_1'] });
     clean(s, p);
     // "Keep the original supporting products" keeps them explicitly; the brand field is the product's brand.
     const kept = plan(s, offer, { values: { main_product: 'speaker' }, mainProduct: { brand: 'boAt', keepSupporting: true } });

@@ -7,9 +7,10 @@ import { SlotPrompt } from './SlotPrompt';
 import { SmartEditPanel, smartFieldId } from './SmartEditPanel';
 import { SmartPromptPanel } from './SmartPromptPanel';
 import { CreativeVariants } from './CreativeVariants';
+import { ChangesSummary, CustomizePanel, customizeFields } from './CustomizePanel';
 import { answerConflict, correctedScene, hasDraftChanges, resolutionKey, resolutionStatus, resolvedPreview, semanticLabel, setEdit, strategyResult, type Resolution, type SceneAnalysis, type SmartFeatures } from './smartEdit';
 import { experimentApi, type ExperimentRun } from '../decomposition/layerizeExperiment';
-import { costRows, decompositionProgress, draftStep, extractionEstimate, extractionRecovery, fieldGroups, hasContentChanges, inGenerationPhase, isResting, mainProductOptions, money, needsPlanDecision, needsReviewAcknowledgement, PLAN_CHOICES, plural, readWizardDraft, reopenStep, templateSlotBadges, VARIANT_PLAN_CHOICES, wizardPrimary, WIZARD_STEPS, writeWizardDraft, type MainProductOptions, type ShownExecution, type WizardStep } from './templateWizard';
+import { costRows, decompositionProgress, draftStep, extractionEstimate, extractionRecovery, fieldGroups, hasContentChanges, inGenerationPhase, isResting, mainProductOptions, money, needsPlanDecision, needsReviewAcknowledgement, PLAN_CHOICES, plural, qwenConfirmation, qwenEstimate, readWizardDraft, reopenStep, templateSlotBadges, VARIANT_PLAN_CHOICES, wizardPrimary, WIZARD_STEPS, writeWizardDraft, type MainProductOptions, type ShownExecution, type WizardStep } from './templateWizard';
 import './templateWizard.css';
 import './smartCreative.css';
 
@@ -29,6 +30,9 @@ export async function templateRequest<T>(path: string, init?: RequestInit): Prom
 const readable = (warning: string) => warning.replace(/^[A-Z_]+: /, '');
 const fieldId = (slotId: string) => `tw-field-${slotId}`;
 const OPERATION: Record<EditOperation, string> = { replace: 'Replace', details: 'Change details', restyle: 'Restyle', text: 'Exact text', remove: 'Remove' };
+/** What fal did with one image so far (GET …/extraction-history). */
+type ExtractionHistory = { imageSha256: string; attempts: { runId: string; accepted: boolean; category?: string; plan?: string }[]; accepted: number; refused: Record<string, number>; billedZero: number };
+const REFUSAL_WORDS: Record<string, string> = { 'partner-content': 'partner content check', 'unprocessable-image': '"could not be processed for layer decomposition"', 'image-url': 'could not read the upload', 'invalid-request': 'invalid request', temporary: 'temporarily unavailable' };
 const reducedMotion = () => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
 /** One saved execution, with an explicit review pause between image generation and the existing decomposition. */
 export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }: { onRun: (id: string) => void; onOpen: (e: ShownExecution) => Promise<void>; requestedExecution?: { id: string } }) {
@@ -47,7 +51,8 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const [missingUpload, setMissingUpload] = useState(draft.uploadName ?? '');
   const [fitWarning, setFitWarning] = useState<string[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [run, setRun] = useState<ExperimentRun>(), [diagnostics, setDiagnostics] = useState<RunDiagnostics>();
-  const pending = useRef(false), submission = useRef<string | undefined>(undefined), warningIntent = useRef<'generate' | 'decompose' | 'fresh' | 'smart' | 'fields'>('decompose'), mismatchAccepted = useRef(false);
+  const [extractionHistory, setExtractionHistory] = useState<{ id: string; history: ExtractionHistory }>();
+  const pending = useRef(false), submission = useRef<string | undefined>(undefined), warningIntent = useRef<'generate' | 'decompose' | 'fresh' | 'original' | 'smart' | 'fields'>('decompose'), mismatchAccepted = useRef(false);
   // Smart edits and "Generate creative template": the server says what is available; every paid call is an explicit click.
   const [features, setFeatures] = useState<SmartFeatures>(), [analysis, setAnalysisState] = useState<SceneAnalysis>(), analysisRef = useRef<SceneAnalysis | undefined>(undefined);
   const [smartDraft, setSmartDraft] = useState<SceneDraft>(() => draft.smart?.draft ?? emptyDraft()), draftFor = useRef<string | undefined>(draft.smart?.analysisId);
@@ -56,7 +61,8 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const [rulesOnly, setRulesOnly] = useState(!!draft.smart?.rulesOnly), [restoreNote, setRestoreNote] = useState('');
   // Normal Generate from the template fields: the user's answers to the engine's questions, and (without an analysis) their text decisions.
   const [fieldAnswers, setFieldAnswers] = useState<SceneDraft['edits']>({}), [textDecisions, setTextDecisions] = useState<Record<string, 'keep' | 'remove'>>({});
-  const [useFields, setUseFields] = useState(true), [studio, setStudio] = useState(!!draft.studio), [variantSetId, setVariantSetId] = useState<string | undefined>(draft.variantSetId);
+  // The image's own objects are the default way to customize once it is analyzed; the template's saved fields remain one click away.
+  const [useFields, setUseFields] = useState(false), [detailed, setDetailed] = useState(false), [studio, setStudio] = useState(!!draft.studio), [variantSetId, setVariantSetId] = useState<string | undefined>(draft.variantSetId);
   /** A new analysis id starts a new draft (a draft names the items of one analysis); the same id keeps it, and its resolution. */
   const setAnalysis = useCallback((next?: SceneAnalysis) => {
     analysisRef.current = next; setAnalysisState(next);
@@ -169,7 +175,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   };
   const clearResult = () => { setExecution(undefined); setPrevious(undefined); setFitWarning([]); setError(''); submission.current = undefined; };
   const chooseProductReference = (next?: File) => { setProductReference(next); setProductReferenceUrl(next ? URL.createObjectURL(next) : ''); };
-  const resetSmart = () => { setAnalysis(undefined); lookupKey.current = ''; setResolution(undefined); setStudio(false); setVariantSetId(undefined); setUseFields(true); };
+  const resetSmart = () => { setAnalysis(undefined); lookupKey.current = ''; setResolution(undefined); setStudio(false); setVariantSetId(undefined); setUseFields(false); setDetailed(false); };
   const choose = (id: string) => { clearResult(); setSelected(id); setCreating(!id); setValues({}); setMainOptions({}); setTextDecisions({}); chooseProductReference(undefined); setReferenceFile(undefined); setMissingUpload(''); setReferenceExecution(''); mismatchAccepted.current = false; resetSmart(); };
   const reference = file ? fileUrl : referenceExecution ? imageUrl(referenceExecution) : version ? imageUrl(version.source.executionId) : '';
   const hasReference = !!file || !missingUpload && !!reference;
@@ -182,12 +188,16 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const replacingMain = mainFilled && (options.mode ?? 'replace') === 'replace', sendReference = replacingMain && !!productReference;
   // The one compiler the server uses: the preview is the prompt that is sent.
   let compiled: CompiledTemplateEdit | undefined, previewError = '';
-  const editOptions = { ...(Object.keys(options).length ? { mainProduct: options } : {}), ...(Object.keys(textDecisions).length ? { textDecisions } : {}) };
+  // Without an image analysis, old text and logos that may name a replaced product are removed unless the user keeps one: never a blocking question.
+  let openText: { slotId: string; label: string }[] = [];
+  if (version) try { openText = compileTemplateEdit(version, fields, { ...(Object.keys(options).length ? { mainProduct: options } : {}), productReference: replacingMain && !!productReference }).questions; } catch { openText = []; }
+  const decided = { ...Object.fromEntries(openText.map(q => [q.slotId, 'remove' as const])), ...textDecisions };
+  const editOptions = { ...(Object.keys(options).length ? { mainProduct: options } : {}), ...(Object.keys(decided).length ? { textDecisions: decided } : {}) };
   if (version) try { compiled = compileTemplateEdit(version, fields, { ...editOptions, productReference: sendReference }); } catch (e) { previewError = (e as Error).message; }
   const preview = compiled?.text ?? '';
   // Every text decision a product change needs (answered or not), so an answer can still be changed.
   const allDecisions = () => { try { return compileTemplateEdit(version!, fields, { ...(Object.keys(options).length ? { mainProduct: options } : {}), productReference: sendReference }).questions; } catch { return []; } };
-  const decisionsNeeded: { slotId: string; label: string }[] = version && Object.keys(textDecisions).length ? allDecisions() : compiled?.questions ?? [];
+  const decisionsNeeded: { slotId: string; label: string }[] = version && Object.keys(decided).length ? allDecisions() : compiled?.questions ?? [];
   /** Leads from a prompt part or a listed change to its field (opening Advanced elements when it is there). */
   const pickField = (slotId: string) => {
     if (groups?.advanced.some(s => s.id === slotId)) setAdvancedOpen(true);
@@ -268,12 +278,12 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   };
   const resolve = (onlyRules?: boolean) => void act(async () => { setRulesOnly(!!onlyRules); await resolveNow(!!onlyRules); });
   /** Generate one resolved draft: resolve first when needed; stop for questions; the server checks the binding again. */
-  const submitResolved = async (analysisId: string, target: SceneDraft, allowMismatch: boolean) => {
+  const submitResolved = async (analysisId: string, target: SceneDraft, allowMismatch: boolean, regenerate = false) => {
     const key = resolutionKey(analysisId, target, target.referenceFor ? fileKey(productReference) : undefined);
     const r = resolution?.key === key && resolutionStatus(resolution, key) === 'ready' ? resolution : await resolveNow(rulesOnly, { analysisId, draft: target });
     if (!r) return;
     const status = resolutionStatus(r, key);
-    if (status !== 'ready') { setStep(1); setError(status === 'needs-input' ? 'Answer the questions about your changes first (Resolved plan, on the right).' : r.error?.message ?? 'The changes could not be resolved.'); return; }
+    if (status !== 'ready') { setStep(1); setError(status === 'needs-input' ? 'AI could not plan these changes on its own. Try describing the product a little differently.' : r.error?.message ?? 'The changes could not be planned.'); return; }
     const replacing = execution?.state === 'generated' ? execution : undefined;
     if (replacing) submission.current = undefined;
     const body = new FormData(); submission.current ??= crypto.randomUUID();
@@ -282,12 +292,14 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
     body.append('analysisId', analysisId); body.append('resolutionId', r.id); body.append('draft', JSON.stringify(target));
     if (target.referenceFor && productReference) body.append('productReference', productReference);
     if (allowMismatch) body.append('allowMismatch', 'true');
+    if (regenerate) body.append('regenerateUnchanged', 'true');
     const next = await templateRequest<ShownExecution>('/template-executions', { method: 'POST', body });
     if (allowMismatch) mismatchAccepted.current = true;
     setPrevious(replacing && next.id !== replacing.id ? replacing : undefined);
     setExecution(next); setReferenceExecution(next.id); setFitWarning([]); submission.current = undefined; setStep(2);
   };
-  const generateSmart = (allowMismatch = mismatchAccepted.current) => { warningIntent.current = 'smart'; void act(() => submitResolved(analysis!.id, smartDraft, allowMismatch)); };
+  /** Generate Creative: the changes, or with none a fresh version of the creative (one image request). */
+  const generateSmart = (allowMismatch = mismatchAccepted.current) => { warningIntent.current = 'smart'; void act(() => submitResolved(analysis!.id, smartDraft, allowMismatch, !hasDraftChanges(smartDraft))); };
   /**
    * The image's analysis for this image and template version: the one on screen, a saved one (a read by the image's
    * sha256, no call), or one new analysis call made now (an explicit Generate or Plan click), waited for. The template
@@ -316,7 +328,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
    */
   const generateFromFields = (allowMismatch = mismatchAccepted.current) => {
     warningIntent.current = 'fields';
-    if (!hasChanges) { start('generate', allowMismatch); return; }
+    if (!hasChanges) { start('generate', allowMismatch, true); return; }
     void act(async () => {
       const a = await ensureAnalysis();
       if (a.state !== 'ready' || !a.scene) { setStep(1); setError(`${a.error?.message ?? 'The image analysis failed.'} Without it, Generate uses the template's own prompt: check the decisions on the right, then generate again.`); return; }
@@ -360,10 +372,19 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
     else { const { referenceFor: _drop, ...rest } = smartDraft; void _drop; onSmartDraft(rest); }
   };
   const openStudio = () => { setStudio(true); if (!analysis || analysis.state === 'failed') analyze(); };
+  /** A replacement typed in the template's Main product field starts as the creatives' product (by the analysis' field mapping). */
+  const studioProducts = (): Record<string, string> | undefined => {
+    const value = mainSlot ? values[mainSlot.id]?.trim() : '', brand = mainOptions.brand?.trim();
+    const objectId = mainSlot && Object.entries(analysis?.mapping?.slots ?? {}).find(([, slot]) => slot === mainSlot.id)?.[0];
+    if (!value || !objectId || (mainOptions.mode ?? 'replace') !== 'replace') return undefined;
+    return { [objectId]: brand && !value.toLowerCase().includes(brand.toLowerCase()) ? `${brand} ${value}` : value };
+  };
   /** regenerate: nothing changes, and the user explicitly asks for a new image anyway (one paid request). */
-  const start = (intent: 'generate' | 'decompose' | 'fresh', allowMismatch = mismatchAccepted.current, regenerate = false) => {
+  /** original: the image as it is, for review (no changes are sent, so there is no image request whatever the fields say). */
+  const start = (intent: 'generate' | 'decompose' | 'fresh' | 'original', allowMismatch = mismatchAccepted.current, regenerate = false) => {
     warningIntent.current = intent;
-    const mode: ExecutionMode = creating || intent === 'fresh' ? 'CREATE_TEMPLATE' : intent === 'generate' ? 'REUSE_TEMPLATE_WITH_EDIT' : 'REUSE_TEMPLATE_ORIGINAL';
+    const mode: ExecutionMode = creating || intent === 'fresh' ? 'CREATE_TEMPLATE' : intent === 'generate' || intent === 'original' ? 'REUSE_TEMPLATE_WITH_EDIT' : 'REUSE_TEMPLATE_ORIGINAL';
+    const original = intent === 'original';
     const replacing = intent === 'generate' && execution?.state === 'generated' ? execution : undefined;
     if (replacing) submission.current = undefined;
     void act(async () => {
@@ -371,10 +392,10 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       body.append('mode', mode); body.append('idempotencyKey', submission.current); body.append('image', await upload());
       if (mode !== 'CREATE_TEMPLATE') { body.append('templateId', selected); body.append('templateVersion', String(versionNumber)); }
       if (mode === 'REUSE_TEMPLATE_WITH_EDIT') {
-        body.append('values', JSON.stringify(fields)); body.append('reviewBeforeDecompose', 'true');
-        if (Object.keys(editOptions).length) body.append('options', JSON.stringify(editOptions));
-        if (regenerate) body.append('regenerateUnchanged', 'true');
-        if (sendReference) body.append('productReference', productReference!);
+        body.append('values', JSON.stringify(original ? {} : fields)); body.append('reviewBeforeDecompose', 'true');
+        if (!original && Object.keys(editOptions).length) body.append('options', JSON.stringify(editOptions));
+        if (regenerate && !original) body.append('regenerateUnchanged', 'true');
+        if (sendReference && !original) body.append('productReference', productReference!);
       }
       if (intent === 'fresh') body.append('planFresh', 'true');
       if (allowMismatch) body.append('allowMismatch', 'true');
@@ -382,7 +403,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       if (allowMismatch) mismatchAccepted.current = true;
       setPrevious(replacing && next.id !== replacing.id ? replacing : undefined);
       setExecution(next); setCreating(next.mode === 'CREATE_TEMPLATE'); setReferenceExecution(next.id); setFitWarning([]); submission.current = undefined;
-      setStep(intent === 'generate' ? 2 : 3);
+      setStep(intent === 'generate' || intent === 'original' ? 2 : 3);
     });
   };
   // Decomposition of a generated image carries the user's explicit decisions: that they looked, and which plan.
@@ -391,8 +412,15 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
     setExecution(await templateRequest<ShownExecution>(`/template-executions/${accepted.id}/decompose`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(decision) })); setStep(3);
   });
   /** One explicit new extraction of the saved image after a failed one; nothing is regenerated. */
-  const retryExtraction = (id: string, plan: ExtractionPlan) => void act(async () => {
-    setExecution(await templateRequest<ShownExecution>(`/template-executions/${id}/retry-extraction`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) }));
+  const retryExtraction = (id: string, plan: ExtractionPlan, confirmFirst?: string) => void act(async () => {
+    if (confirmFirst && !window.confirm(confirmFirst)) return;
+    const send =(confirmRepeat: boolean) => templateRequest<ShownExecution>(`/template-executions/${id}/retry-extraction`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, ...(confirmRepeat ? { confirmRepeat } : {}) }) });
+    try { setExecution(await send(false)); }
+    catch (e) {
+      // A request fal already refused is resent only when the person says so, knowing it may be refused again.
+      if (!(e instanceof TemplateRequestError && e.code === 'REPEAT_REQUIRES_CONFIRMATION')) throw e;
+      if (window.confirm(`${e.message}\n\nSend it again anyway?`)) setExecution(await send(true));
+    }
   });
   const detect = () => {
     if (!window.confirm('Run the optional automatic-layout experiment? This may make a paid structure-analysis request.')) return;
@@ -410,10 +438,18 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   const reviewing = execution?.state === 'generated' && execution.edit?.image ? execution : undefined, review = reviewing?.edit?.review;
   const warnings = review?.checks.filter(c => c.severity === 'warning') ?? [], hints = review?.checks.filter(c => c.severity === 'info') ?? [];
   const recovering = extractionRecovery(execution) ? execution : undefined, rejectedRun = recovering && currentRun?.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' ? currentRun : undefined;
+  // What fal did with this exact image so far (a read): shown beside the retry choices.
+  const recoveringId = recovering?.id, recoveringRun = recovering?.runId;
+  useEffect(() => {
+    if (!recoveringId) return;
+    let live = true;
+    void templateRequest<ExtractionHistory>(`/template-executions/${recoveringId}/extraction-history`).then(history => { if (live) setExtractionHistory({ id: recoveringId, history }); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [recoveringId, recoveringRun]);
   // A layer the plan asked for that the editor did not get: a quality issue, shown as one, never as a plain note.
   const layerIssues = execution?.warnings.filter(w => /^(PLANNED_LAYER_|TEMPLATE_PLAN_INCOMPLETE|TEMPLATE_LAYERS_MISSING)/.test(w)) ?? [];
   const extracted = execution?.edit?.image ?? execution?.upload, estimate = extractionEstimate(version?.structure.layers.filter(l => l.independent).length ?? slots.length, extracted?.width, extracted?.height);
-  const stepTitle = ['Choose a template', creating ? 'Add your reference creative' : 'Make it your own', creating ? 'Confirm your reference' : 'Review your creative', ready ? execution.mode === 'CREATE_TEMPLATE' ? 'Your template is ready' : 'Your creative is ready' : 'Turn your creative into layers'][step];
+  const stepTitle = ['Choose a template', creating ? 'Add your reference creative' : 'Customize your creative', creating ? 'Confirm your reference' : 'Review your creative', ready ? execution.mode === 'CREATE_TEMPLATE' ? 'Your template is ready' : 'Your creative is ready' : 'Turn your creative into layers'][step];
   const templateName = execution?.template?.name ?? chosen?.name ?? 'Saved template', templateVersion = execution?.template?.version ?? versionNumber ?? 1;
   const progress = decompositionProgress(execution, currentRun, execution?.mode === 'CREATE_TEMPLATE');
   const footerNext = () => {
@@ -426,11 +462,11 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
   return <section className="tw-workspace" aria-label="Creative template wizard">
     <nav className="tw-steps" aria-label="Creation steps"><ol>{WIZARD_STEPS.map((label, index) => <li key={label} aria-current={step === index ? 'step' : undefined} className={step === index ? 'is-current' : index < step ? 'is-complete' : ''}><span>{index < step ? <Check size={13} /> : index + 1}</span>{label}</li>)}</ol></nav>
     <div className="tw-content" key={step}>
-      <header className="tw-heading"><div><p className="ff-lab-kicker">STEP {step + 1} OF 4</p><h2>{stepTitle}</h2><p>{step === 0 ? 'Pick a saved composition. Change the content, keep the layout.' : creating ? 'One planner call learns a reusable template from your image.' : `${templateName} · v${templateVersion}`}</p></div>
+      <header className="tw-heading"><div><p className="ff-lab-kicker">STEP {step + 1} OF 4</p><h2>{stepTitle}</h2><p>{step === 0 ? 'Pick a saved composition. Change the content, keep the layout.' : creating ? 'One planner call learns a reusable template from your image.' : step === 1 ? `Change anything you like. AI will handle the rest. · ${templateName} v${templateVersion}` : `${templateName} · v${templateVersion}`}</p></div>
         {step === 0 && <button className="ws-btn ws-btn-primary" disabled={locked} onClick={() => { choose(''); setStep(1); }}><Plus size={16} /> Create New Template</button>}
       </header>
       {error && <p role="alert" className="tw-alert">{error}</p>}
-      {fitWarning.length > 0 && <div role="alert" className="tw-alert"><strong>Selected template may not fit this image.</strong>{fitWarning.map(w => <p key={w}>{readable(w)}</p>)}<p>Your template has not changed. No planner or structure analysis was started.</p><div className="tw-actions"><button className="ws-btn" onClick={() => warningIntent.current === 'smart' ? generateSmart(true) : warningIntent.current === 'fields' ? generateFromFields(true) : start(warningIntent.current as 'generate' | 'decompose' | 'fresh', true)} disabled={locked}>Continue with selected template</button><button className="ws-btn" onClick={() => { setFitWarning([]); setStep(0); }}>Choose another template</button><button className="ws-btn" onClick={() => { clearResult(); setCreating(true); setStep(1); }}>Create New Template</button></div></div>}
+      {fitWarning.length > 0 && <div role="alert" className="tw-alert"><strong>Selected template may not fit this image.</strong>{fitWarning.map(w => <p key={w}>{readable(w)}</p>)}<p>Your template has not changed. No planner or structure analysis was started.</p><div className="tw-actions"><button className="ws-btn" onClick={() => warningIntent.current === 'smart' ? generateSmart(true) : warningIntent.current === 'fields' ? generateFromFields(true) : start(warningIntent.current as 'generate' | 'decompose' | 'fresh' | 'original', true)} disabled={locked}>Continue with selected template</button><button className="ws-btn" onClick={() => { setFitWarning([]); setStep(0); }}>Choose another template</button><button className="ws-btn" onClick={() => { clearResult(); setCreating(true); setStep(1); }}>Create New Template</button></div></div>}
 
       {step === 0 && libraryNote && <p role="status" className="tw-saved">{libraryNote}</p>}
       {step === 0 && detailsOf && <TemplateDetails id={detailsOf} request={templateRequest} onBack={() => setDetailsOf(undefined)} onChanged={() => void refreshLibrary().catch((e: Error) => setError(e.message))}
@@ -448,7 +484,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
         </article>;
       })}</div>}
 
-      {step === 1 && studio && version && analysis?.state === 'ready' && scene && features && <CreativeVariants analysis={analysis} scene={scene} draft={smartDraft} version={version} features={features} request={templateRequest}
+      {step === 1 && studio && version && analysis?.state === 'ready' && scene && features && <CreativeVariants analysis={analysis} scene={scene} draft={smartDraft} version={version} features={features} request={templateRequest} initialProducts={studioProducts()}
         setId={variantSetId} onSetId={setVariantSetId} onBack={() => setStudio(false)} onChosen={e => { setStudio(false); loadExecution(e, 2); }} />}
       {step === 1 && !(studio && analysis?.state === 'ready' && scene) && <div className="tw-customize"><section className="tw-pane" aria-label={creating ? 'Reference creative' : 'Template content'}>
         <div className="tw-reference"><div className="tw-reference-image">{hasReference && reference ? <img src={reference} alt="Reference creative" /> : <ImagePlus size={28} />}</div>
@@ -457,15 +493,17 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
         {missingUpload && <p role="alert" className="tw-alert">Reselect {missingUpload} to continue. The browser cannot keep image files across a refresh; your other choices are saved.</p>}
         {!creating && version && features && <div className="sm-start" aria-label="Smart creative tools">
           {smartAvailable ? analysis?.state === 'analyzing' ? <p role="status" className="tw-muted"><LoaderCircle size={15} className="ws-spin" aria-hidden="true" /> Analyzing your image… (1 AI call)</p>
-            : analysis?.state === 'ready' && scene ? <button type="button" className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => setUseFields(f => !f)}>{useFields ? 'Edit what\'s in the image' : 'Use template fields instead'}</button>
-            : <button type="button" className="ws-btn" disabled={locked || !hasReference} onClick={() => analyze(analysis?.state === 'failed')}><ScanSearch size={15} /> Analyze image · 1 AI call</button>
+            : analysis?.state === 'ready' && scene ? <span className="cz-actions"><button type="button" className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => { setUseFields(f => !f); setDetailed(false); }}>{useFields ? 'Customize what\'s in the image' : 'Use the template\'s saved fields'}</button>
+              {!useFields && <button type="button" className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => setDetailed(d => !d)}>{detailed ? 'Simple fields' : 'Detailed editing'}</button>}</span>
+            : <div className="cz-detect"><p>Find the products and scene in this image to customize each one.</p><button type="button" className="ws-btn" disabled={locked || !hasReference} onClick={() => analyze(analysis?.state === 'failed')}><ScanSearch size={15} /> Detect objects · 1 AI call</button></div>
             : <p className="tw-muted">Smart edits are unavailable: {features.smartEdit.reason}</p>}
           {features.variants.available ? <button type="button" className="ws-btn ws-btn-primary" disabled={locked || !hasReference || analysis?.state === 'analyzing'} onClick={openStudio}><Wand2 size={15} /> Generate creative template</button>
             : <p className="tw-muted">Generate creative template is unavailable: {features.variants.reason}</p>}
           {analysis?.state === 'failed' && <p role="alert" className="tw-alert">{analysis.error?.message ?? 'The analysis failed.'}</p>}
           {studio && analysis?.state === 'analyzing' && <p className="tw-muted">Generate creative template opens once the analysis is ready.</p>}
         </div>}
-        {smartActive && analysis && scene ? <SmartEditPanel analysis={analysis} scene={scene} mapping={analysis.mapping} draft={smartDraft} onDraft={onSmartDraft} locked={locked} linked={linked} onLink={setLinked}
+        {smartActive && analysis && scene && !detailed ? <CustomizePanel scene={scene} draft={smartDraft} onDraft={onSmartDraft} referenceUrl={hasReference ? reference : ''} locked={locked} />
+        : smartActive && analysis && scene ? <SmartEditPanel analysis={analysis} scene={scene} mapping={analysis.mapping} draft={smartDraft} onDraft={onSmartDraft} locked={locked} linked={linked} onLink={setLinked}
           slotLabels={Object.fromEntries(describeTemplateSlots(version!).map(s => [s.id, s.label]))} productReference={productReference} productReferenceUrl={productReferenceUrl} onProductReference={smartProductReference}
           onReanalyze={() => { if (window.confirm('Analyze this image again? This makes one new paid analysis call; your current changes are cleared.')) analyze(true); }} />
         : !creating && version && groups ? <><h3>Customize content</h3><p className="tw-muted">Empty fields keep the reference content. Layout, positions and layer grouping stay the same.</p>
@@ -494,20 +532,26 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
           {!slots.length && <p className="tw-muted">This template has no editable content fields. Use the original image or generate a fresh version.</p>}</>
           : !creating ? <p role="status">Loading template…</p>
           : <div className="tw-note"><h3>One image, a reusable starting point</h3><p>We learn its composition, save its content fields and base prompt, and prepare editable layers. The new template appears in your library.</p><span className="tw-badge">1 planner call · no image generation</span></div>}
-      </section><aside className="tw-pane tw-prompt-pane" aria-label="Generation prompts">{planScene && analysis && version ? <>{fieldsDraft && fieldsDraft.problems.map(p => <p key={p} className="tw-alert" role="alert">{p}</p>)}
-        {!smartActive && <details className="tw-prompt" open><summary>Base template prompt</summary>
+      </section><aside className="tw-pane tw-prompt-pane" aria-label="Your changes">{planScene && analysis && version ? <>{fieldsDraft && fieldsDraft.problems.map(p => <p key={p} className="tw-alert" role="alert">{p}</p>)}
+        <ChangesSummary scene={planScene} draft={activeDraft} slots={analysis.mapping?.slots} fields={smartActive ? customizeFields(planScene) : []} planningCached={rStatus === 'ready'} cutout={features?.variants.cutout} busy={busy}
+          disabled={locked || !hasReference || (smartActive ? !!smartPreviewError : !!previewError || !!fieldsDraft?.problems.length)}
+          onGenerate={() => smartActive ? generateSmart() : generateFromFields()} onOriginal={() => start('original')} />
+        <details className="tw-prompt"><summary>Technical details · how AI planned it</summary>
+        {!smartActive && <details className="tw-prompt"><summary>Base template prompt</summary>
           <p className="tw-legend"><span className="tw-slot-chip is-sample">{'{Field}'}</span> comes from your fields · <Lock size={11} aria-hidden="true" /> the rest are locked layout rules</p>
           <SlotPrompt label="Base template prompt" segments={baseTemplatePrompt(version)} linked={linked} onLink={setLinked} onPick={pickField} controlsId={fieldId} /></details>}
         <SmartPromptPanel showBase={smartActive} version={version} scene={planScene} mapping={analysis.mapping} draft={activeDraft}
           resolution={resolution} status={rStatus} preview={smartPreview} busy={busy} locked={locked} linked={linked} onLink={setLinked} onPick={pickPlanned} onResolve={smartActive ? resolve : planFields} onAnswer={answer} onUndoInferred={undoInferred}
-          analysisCalls={analysis.calls} verifyAvailable={!!features?.verification.available} cutout={features?.variants.cutout} /></>
+          analysisCalls={analysis.calls} verifyAvailable={!!features?.verification.available} cutout={features?.variants.cutout} /></details></>
         : !creating && version ? <>
-        {fieldsSmart && <section className="sm-resolution is-none" aria-label="Resolved changes"><h3>How your changes are planned</h3>
-          <p className="tw-muted">{hasChanges ? 'Generate first reads your image once (1 AI call, reused for every later edit of it), finds what each filled field changes and what depends on it (its brand marks, offers about it, other copies of it, a hand holding it), and asks only what is unclear. Nothing else is touched.' : 'No field changes anything: Generate shows your original image for review, with no image request.'}</p>
-          {hasChanges && <button type="button" className="ws-btn" disabled={locked || busy || !hasReference} onClick={() => planFields()}><Sparkles size={15} /> Plan changes · 1 AI call</button>}</section>}
-        {!fieldsSmart && decisionsNeeded.length > 0 && <fieldset className="sm-conflicts tw-decisions-text" aria-label="Text and logos to decide"><legend>Without an image analysis, decide what happens to text and logos that may name the old product</legend>
-          {decisionsNeeded.map(q => <div key={q.slotId} className="tw-modes" role="radiogroup" aria-label={q.label}><span>{q.label}</span>{(['keep', 'remove'] as const).map(choice => <label key={choice} className={textDecisions[q.slotId] === choice ? 'is-on' : ''}>
-            <input type="radio" name={`tw-text-${q.slotId}`} checked={textDecisions[q.slotId] === choice} disabled={locked} onChange={() => { setTextDecisions(d => ({ ...d, [q.slotId]: choice })); clearResult(); }} />{choice === 'keep' ? 'Keep' : 'Remove'}</label>)}</div>)}</fieldset>}
+        <section className="cz-summary" aria-label="Your changes"><h3>Your changes</h3>
+          <p>{hasChanges ? fieldsSmart ? 'AI reads your image once (1 AI call, saved for later), then updates everything related to your changes: brand logos, offers about a replaced product, other copies of it, a hand holding it.' : 'Your changes are applied to the template. Old text and logos that may name a replaced product are removed.' : 'No changes: Generate Creative makes a fresh version of this creative.'}</p>
+          <div className="cz-actions"><button type="button" className="ws-btn ws-btn-primary" disabled={locked || !hasReference || !!previewError} onClick={() => fieldsSmart ? generateFromFields() : start('generate', mismatchAccepted.current, !hasChanges)}>{busy ? <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /> : <Sparkles size={16} />} Generate Creative</button>
+            <button type="button" className="ws-btn ws-btn-quiet" disabled={locked || !hasReference} onClick={() => start('original')} title="Review your original image as it is: no image request">Use original · free</button></div>
+          <p className="cz-cost">Generate Creative uses 1 image request{fieldsSmart && hasChanges && analysis?.state !== 'ready' ? ' + 1 image analysis' : ''}. Nothing is charged until you click.</p></section>
+        {!fieldsSmart && decisionsNeeded.length > 0 && <fieldset className="sm-conflicts tw-decisions-text" aria-label="Text and logos to decide"><legend>Old text and logos that may name the old product · AI removes them unless you keep one</legend>
+          {decisionsNeeded.map(q => <div key={q.slotId} className="tw-modes" role="radiogroup" aria-label={q.label}><span>{q.label}</span>{(['keep', 'remove'] as const).map(choice => <label key={choice} className={decided[q.slotId] === choice ? 'is-on' : ''}>
+            <input type="radio" name={`tw-text-${q.slotId}`} checked={decided[q.slotId] === choice} disabled={locked} onChange={() => { setTextDecisions(d => ({ ...d, [q.slotId]: choice })); clearResult(); }} />{choice === 'keep' ? 'Keep' : 'Remove'}</label>)}</div>)}</fieldset>}
         {fieldsSmart ? <section className="tw-changes" aria-label="What will change"><h3>Your changes</h3>
           {Object.keys(fields).length ? <ul>{templateSlots.filter(s => fields[s.id]).map(s => <li key={s.id}><button type="button" className={`tw-change${linked === s.id ? ' is-linked' : ''}`} onClick={() => pickField(s.id)} onMouseEnter={() => setLinked(s.id)} onMouseLeave={() => setLinked('')}>
             <b className="tw-op tw-op-details">{s.label}</b> <q>{s.id === mainSlot?.id && options.brand && !fields[s.id].toLowerCase().includes(options.brand.toLowerCase()) ? `${options.brand} ${fields[s.id]}` : fields[s.id]}</q></button></li>)}</ul> : <p className="tw-muted">Nothing yet. Empty fields keep your image as it is.</p>}</section>
@@ -518,7 +562,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
           {compiled?.compatibility.status === 'structural-change' && <p className="tw-note-warn" role="note">This changes the objects your saved decomposition plan was learned from. After you review the image, you choose: the saved plan (₹0), a simpler grouping (₹0), or a refreshed plan (one planner call, about ₹{estimate.plannerInr.toFixed(2)}).</p>}
           {previewError && <p className="tw-alert" role="alert">{previewError}</p>}
         </section>}
-        <details className="tw-prompt" open><summary>Base template prompt</summary>
+        <details className="tw-prompt"><summary>Technical details · base template prompt</summary>
           <p className="tw-legend"><span className="tw-slot-chip is-sample">{'{Field}'}</span> comes from your fields · <Lock size={11} aria-hidden="true" /> the rest are locked layout rules</p>
           <SlotPrompt label="Base template prompt" segments={baseTemplatePrompt(version)} linked={linked} onLink={setLinked} onPick={pickField} controlsId={fieldId} /></details>
         {!fieldsSmart && <details className="tw-prompt"><summary>Final prompt · exactly what is sent</summary>
@@ -531,14 +575,14 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
 
       {step === 2 && <div className="tw-generation"><div className={`tw-previews${creating ? ' is-single' : ''}`}><figure><figcaption>{creating ? 'Your reference creative' : 'Original / reference'}</figcaption>{reference && hasReference ? <img src={reference} alt="Original reference creative" /> : <div className="tw-empty"><ImagePlus size={30} /><p>Go back and choose an image.</p></div>}</figure>
         {!creating && <figure className={!candidate ? 'tw-generated-placeholder' : ''}><figcaption>Generated creative</figcaption>{candidate ? <div className="tw-candidate"><img src={imageUrl(candidate.id, 'edited')} alt="Generated creative" />{regenerating && <div className="tw-candidate-overlay" role="status"><LoaderCircle size={18} className="ws-spin" aria-hidden="true" />Generating a new version…</div>}</div> : <div className="tw-empty"><Sparkles size={34} /><h3>{active ? 'Creating your image…' : 'Ready to generate'}</h3><p>{active ? 'One image request is in progress. Decomposition waits for your approval.' : 'Your saved prompt and content changes become a new image.'}</p></div>}</figure>}</div>
-        <div className="tw-generation-bar"><div><strong>{creating ? 'New template' : `Template · ${templateName} v${templateVersion}`}</strong>{creating ? <><p>Decomposition planner: <b>1 call</b> · learns the reusable template</p><p>Image generation: <b>0 calls</b> · uses your upload</p></> : <>{candidate?.variant || execution?.variant ? <p>Scene: <b>creative variant</b> · the subject is your image's own pixels</p> : smartActive || candidate?.resolution ? <p>Image analysis: <b>{plural(analysis?.calls ?? candidate?.usage.analysisCalls ?? 0, 'call')}</b> · Change resolution: <b>{plural((resolution?.resolver.called ? 1 : 0) || (candidate?.usage.resolutionCalls ?? 0), 'call')}</b></p> : <p>Prompt planning: <b>0 calls · ₹0</b></p>}<p>Image generation: <b>{plural(candidate?.usage.imageGenerationCalls ?? 0, 'call')}</b>{candidate?.usage.imageGenerationCalls ? ` · ${money(candidate.generationCost)}` : ' · no charge yet'}</p><small>{smartActive || candidate?.resolution ? 'Your image analyzed + changes resolved before generation' : 'Saved template + local edits'}</small></>}</div>
+        <div className="tw-generation-bar"><div><strong>{creating ? 'New template' : `Template · ${templateName} v${templateVersion}`}</strong>{creating ? <><p>Decomposition planner: <b>1 call</b> · learns the reusable template</p><p>Image generation: <b>0 calls</b> · uses your upload</p></> : <>{candidate?.variant || execution?.variant ? <p>Scene: <b>creative variant</b> · the subject is your image's own pixels</p> : candidate?.variantSource || execution?.variantSource ? <p>Scene: <b>creative variant</b> · products rendered into a new creative</p> : smartActive || candidate?.resolution ? <p>Image analysis: <b>{plural(analysis?.calls ?? candidate?.usage.analysisCalls ?? 0, 'call')}</b> · Change resolution: <b>{plural((resolution?.resolver.called ? 1 : 0) || (candidate?.usage.resolutionCalls ?? 0), 'call')}</b></p> : <p>Prompt planning: <b>0 calls · ₹0</b></p>}<p>Image generation: <b>{plural(candidate?.usage.imageGenerationCalls ?? 0, 'call')}</b>{candidate?.usage.imageGenerationCalls ? ` · ${money(candidate.generationCost)}` : ' · no charge yet'}</p><small>{smartActive || candidate?.resolution ? 'Your image analyzed + changes resolved before generation' : 'Saved template + local edits'}</small></>}</div>
           {/* The same buttons in the same places while a reopened smart edit loads: a paid Regenerate never appears under a click meant for Edit changes. */}
-          {!creating && execution?.resolution && !smartActive && !fieldsSmart && !execution.variant ? <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled><Sparkles size={16} />{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button><small className="tw-muted">{analysis?.state === 'ready' ? 'Regenerate this smart edit from Customize.' : 'Loading this smart edit\'s analysis…'}</small></div>
-          : !creating && (execution?.variant ? <div className="tw-actions"><button className="ws-btn" disabled={locked} onClick={() => { setStep(1); setStudio(true); }}>Back to creative variants</button></div> : <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled={locked || !hasReference || !version || (smartActive ? !!smartPreviewError : fieldsSmart ? !!previewError || !!fieldsDraft?.problems.length : !!previewError || !!compiled?.questions.length)}
-            onClick={() => smartActive ? generateSmart() : fieldsSmart ? generateFromFields() : start('generate')}>{active ? <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /> : <Sparkles size={16} />}{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button>
-            {noChanges && <button className="ws-btn ws-btn-quiet" disabled={locked || !hasReference || !version} onClick={() => start('generate', mismatchAccepted.current, true)}>Regenerate anyway · 1 image request</button>}</div>)}</div>
+          {!creating && execution?.resolution && !smartActive && !fieldsSmart && !execution.variant && !execution.variantSource ? <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled><Sparkles size={16} />{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button><small className="tw-muted">{analysis?.state === 'ready' ? 'Regenerate this smart edit from Customize.' : 'Loading this smart edit\'s analysis…'}</small></div>
+          : !creating && (execution?.variant || execution?.variantSource ? <div className="tw-actions"><button className="ws-btn" disabled={locked} onClick={() => { setStep(1); setStudio(true); }}>Back to creative variants</button></div> : <div className="tw-actions"><button className="ws-btn ws-btn-primary" disabled={locked || !hasReference || !version || (smartActive ? !!smartPreviewError : fieldsSmart ? !!previewError || !!fieldsDraft?.problems.length : !!previewError || !!compiled?.questions.length)}
+            onClick={() => smartActive ? generateSmart() : fieldsSmart ? generateFromFields() : start('generate', mismatchAccepted.current, noChanges)}>{active ? <LoaderCircle size={16} className="ws-spin" aria-hidden="true" /> : <Sparkles size={16} />}{candidate ? 'Regenerate' : 'Generate Creative'}</button><button className="ws-btn" disabled={locked} onClick={() => setStep(1)}>Edit changes</button>
+            {noChanges && <button className="ws-btn ws-btn-quiet" disabled={locked || !hasReference || !version} onClick={() => start('original')}>Use original · free</button>}</div>)}</div>
         {!creating && <p className="tw-muted" role="note">{candidate ? 'Regenerate makes one more paid image request. Decomposition starts only when you choose Use this image.' : !noChanges ? 'Your changes need a generated image before decomposition. Choose Generate Creative.'
-          : 'No changes: Generate Creative shows your original image for review, with no image request (the image model could only redraw it). Regenerate anyway makes one paid image request.'}</p>}
+          : 'No changes: Generate Creative makes a fresh version of this creative (one image request). Use original reviews your image as it is, for free.'}</p>}
         {restoreNote && smartActive && <p className="tw-note-warn" role="note">{restoreNote}</p>}
         {reviewing && (review || needsPlanDecision(reviewing)) && <div className="tw-decisions">
           {review && <section className={`tw-review${warnings.length ? ' has-warnings' : ''}`} aria-label="Image review"><h3>{warnings.length ? 'Check the generated image' : 'Review the generated image'}</h3>
@@ -563,14 +607,21 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
       {step === 3 && <div className="tw-decompose"><figure className="tw-result-image"><figcaption>{execution?.edit?.image ? 'Generated creative' : 'Your creative'}</figcaption>{(execution?.edit?.image || reference) && <img src={execution?.edit?.image ? imageUrl(execution.id, 'edited') : reference} alt="Creative to decompose" />}</figure>
         <section className="tw-pane" aria-label="Decomposition progress"><h3>{ready ? execution.mode === 'CREATE_TEMPLATE' ? 'Template saved to your library' : 'Editor-ready layers' : execution?.state === 'failed' ? 'Decomposition stopped' : 'A few steps to editable layers'}</h3>
           {recovering && <section className="tw-recovery" aria-label="Extraction recovery">
+            {extractionHistory?.id === recovering.id && extractionHistory.history.attempts.length > 0 && <p className="tw-muted" role="note">This exact image (sha256 {extractionHistory.history.imageSha256.slice(0, 10)}…): fal received it {extractionHistory.history.attempts.length} time{extractionHistory.history.attempts.length === 1 ? '' : 's'}, accepted {extractionHistory.history.accepted}{Object.entries(extractionHistory.history.refused).map(([k, n]) => `, refused ${n}× (${REFUSAL_WORDS[k] ?? k})`).join('')}{extractionHistory.history.billedZero ? ` · ${extractionHistory.history.billedZero} refusal${extractionHistory.history.billedZero === 1 ? '' : 's'} billed 0 units` : ''}.</p>}
             <p className="tw-alert" role="alert"><strong>Layer extraction failed. Your generated creative is kept.</strong> {rejectedRun ? `fal rejected the extraction request (HTTP ${rejectedRun.error?.provider?.status ?? 422}).` : 'The extraction did not finish.'} Image generation succeeded and is not repeated. Nothing was retried automatically.</p>
             {rejectedRun && <p className="tw-muted">Resume would return the same stored answer. fal request <code>{rejectedRun.error?.provider?.requestId ?? rejectedRun.seedream.requestId}</code>{rejectedRun.error?.provider?.billableUnits === '0' ? ' · billed 0 units' : ''}</p>}
+            {rejectedRun?.error?.provider?.messages.some(m => m.reason === 'partner_validation_failed' && /image/.test(m.loc ?? '')) && <p className="tw-note-warn" role="note">fal's partner check rejected this image itself (it named the image, not the layer plan) and charged nothing. A retry sends the same image with another plan, so it may be rejected again; each retry is one extraction request and never a new image.</p>}
             <div className="tw-actions">
               <button className="ws-btn ws-btn-primary" disabled={locked} onClick={() => retryExtraction(recovering.id, 'simple')}>Retry with simpler grouping · 1 Seedream request</button>
               <button className="ws-btn" disabled={locked} onClick={() => retryExtraction(recovering.id, recovering.planDecision?.choice ?? 'saved')}>Retry with the same plan · 1 Seedream request</button>
               <button className="ws-btn" disabled={locked} onClick={() => retryExtraction(recovering.id, 'refresh')}>Refresh plan and retry · 1 planner + 1 Seedream request</button>
             </div>
-            <p className="tw-muted">Estimates: Seedream about ₹{estimate.seedreamInr.toFixed(2)} per extraction (billed by the layers returned); a planner call about ₹{estimate.plannerInr.toFixed(2)}. A simpler grouping sends a different, shorter layer request.</p>
+            {!recovering.variant && <><p className="tw-muted">Without Seedream (your creative is kept as it is):</p><div className="tw-actions">
+              {rejectedRun && <button className="ws-btn" disabled={locked} onClick={() => retryExtraction(recovering.id, 'qwen', qwenConfirmation())} title="Qwen-Image-Layered (fal) splits the creative into transparent layers with a background rebuilt behind the objects. It chooses the grouping itself; hidden areas are AI-generated.">Extract with Qwen layers (alternative provider) · 1 fal request · about ${qwenEstimate().usd.toFixed(2)} (₹{qwenEstimate().inr.toFixed(2)})</button>}
+              {recovering.resolution && <button className="ws-btn" disabled={locked} onClick={() => retryExtraction(recovering.id, 'cutouts')} title="SAM-3 masks cut each product out as its own transparent layer; the background behind them is a local fill, not a reconstruction.">Cut out the products only · 1 SAM-3 mask request per product</button>}
+              <button className="ws-btn ws-btn-quiet" disabled={locked} onClick={() => retryExtraction(recovering.id, 'flat')} title="A flat preview: the editor gets the whole creative as one image layer. No objects are separated.">Open as a flat preview · not split into layers · no request</button>
+            </div></>}
+            <p className="tw-muted">Estimates: Seedream about ₹{estimate.seedreamInr.toFixed(2)} per extraction (billed by the layers returned); a planner call about ₹{estimate.plannerInr.toFixed(2)}. Every retry sends the same image; fal has refused valid images and accepted the identical bytes on a later try, and its refusals so far were billed 0 units. Its reasons are not disclosed.</p>
             <details><summary>Provider details</summary><p className="tw-muted">{execution!.error!.message}</p></details>
           </section>}
           <ol className="tw-progress">{progress.map(({ label, complete }, index) => <li key={label} className={complete ? 'is-complete' : ''}><span>{complete ? <Check size={15} /> : index + 1}</span>{label}{active && !complete && (index === 0 || progress[index - 1].complete) && <small>In progress…</small>}</li>)}</ol>
@@ -590,7 +641,7 @@ export function CreativeTemplateWorkspace({ onRun, onOpen, requestedExecution }:
           {execution?.inspection && <details className="tw-advanced"><summary>Advanced detection result</summary><p>{execution.inspection.reason}</p>{execution.state === 'ready' && <button className="ws-btn" disabled={locked} onClick={() => { if (window.confirm('Start the detected plan? It may require a planner call, plus extraction.')) void act(async () => setExecution(await templateRequest(`/template-executions/${execution.id}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }))); }}>Start detected plan</button>}</details>}
         </section></div>}
     </div>
-    <footer className="tw-footer"><button className="ws-btn" disabled={locked || step === 0} onClick={() => setStep(s => Math.max(0, s - 1) as WizardStep)}><ArrowLeft size={15} /> Back</button><span>{step === 0 ? 'Your saved compositions' : creating ? 'Create once. Reuse whenever you need.' : smartActive ? 'Your image analyzed · changes resolved · layout reused' : 'Saved prompt + saved layout · planning ₹0'}</span><button className="ws-btn ws-btn-primary" disabled={primary.disabled} onClick={footerNext}>{locked ? active ? 'Working…' : 'Please wait…' : primary.label}<ArrowRight size={15} /></button></footer>
+    <footer className="tw-footer"><button className="ws-btn" disabled={locked || step === 0} onClick={() => setStep(s => Math.max(0, s - 1) as WizardStep)}><ArrowLeft size={15} /> Back</button><span>{step === 0 ? 'Your saved compositions' : creating ? 'Create once. Reuse whenever you need.' : smartActive ? 'AI plans related changes when you generate · layout reused' : 'Saved prompt + saved layout · planning ₹0'}</span><button className="ws-btn ws-btn-primary" disabled={primary.disabled} onClick={footerNext}>{locked ? active ? 'Working…' : 'Please wait…' : primary.label}<ArrowRight size={15} /></button></footer>
   </section>;
 }
 

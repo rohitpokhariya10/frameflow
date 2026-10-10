@@ -69,10 +69,10 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
         ...(usage.resolutionCalls ? [recordedCall('text', editDir?.('resolution.openai-response.json') ?? {}, editDir?.('resolution.openai-request.json') ?? {})] : [])];
       add('reference', 'Image analysis & change resolution', 'Complete', calls, `${usage.analysisCalls ?? 0} analysis call(s) of this image (shared) · ${usage.resolutionCalls ?? 0} resolution call · prompt compiled locally`);
       notes.push('The image analysis is shared by every smart edit made from that image; its full retained charge is included here. Do not sum run totals as an account bill.');
-    } else if (execution?.variant) {
+    } else if (execution?.variant || execution?.variantSource) {
       const concepts = editDir?.('concepts.openai-response.json') ?? {};
       add('reference', 'Subject cutout & scene concepts', 'Complete', Object.keys(concepts).length ? [recordedCall('text', concepts, editDir?.('concepts.openai-request.json') ?? {})] : [], 'Made in the creative variant set: the subject mask (fal, priced by fal) and the scene concepts (shared by the set\'s variants)', false);
-      notes.push('This creative variant came from a set: its subject mask requests and scene concepts are shared by the set\'s variants. The subject layer is the reference\'s own pixels.');
+      notes.push(`This creative variant came from a set: its subject mask requests and scene concepts are shared by the set's variants. ${execution.variant ? 'The subject layer is the reference\'s own pixels.' : 'Its products were rendered into the scene from their cutouts.'}`);
     } else if (inspection?.calls) {
       const response = editDir?.(inspection.responseFile) ?? {}, request = editDir?.(inspection.requestFile) ?? {};
       add('reference', 'Structure analysis', inspection.outcome === 'uncertain' ? 'Warning' : 'Complete', padCalls([recordedCall('text', response, request, { model: inspection.model })], inspection.calls, 'text'), inspection.reason);
@@ -80,7 +80,10 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
     } else add('reference', 'Structure analysis', 'Skipped', [], inspection?.reason ?? (mode === 'CREATE_TEMPLATE' ? 'No separate analysis: the planner call also returned the reusable template' : 'Saved template reused · no analysis call'));
     if (edit && execution?.usage.imageGenerationCalled) {
       const response = editDir?.(edit.responseFile) ?? {}, request = editDir?.(edit.requestFile) ?? {}, call = recordedCall('image', response, request, { model: edit.model });
-      add('generation', 'Generate image', edit.image ? 'Complete' : 'Failed', [call], edit.image ? `1 image edit of the upload · ${call.quality ?? 'quality not recorded'}` : 'The image edit failed');
+      // A layered smart edit made two image requests: the background pass first, then the objects in their slots.
+      const pass1 = editDir?.('edit-pass1.openai-response.json') ?? {}, layered = Object.keys(pass1).length > 0;
+      const calls = layered ? [recordedCall('image', pass1, editDir?.('edit-pass1.openai-request.json') ?? {}, { model: edit.model }), call] : [call];
+      add('generation', 'Generate image', edit.image ? 'Complete' : 'Failed', calls, edit.image ? `${layered ? '2 image edits (background, then each changed object in its own slot)' : '1 image edit of the upload'} · ${call.quality ?? 'quality not recorded'}` : 'The image edit failed');
       prompts.push({ label: 'Image edit prompt (saved template + instruction)', text: edit.prompt, model: edit.model, inputTokens: call.usage?.inputTokens });
       sourceTime += edit.durationMs ?? 0; sourceTimeKnown &&= edit.durationMs !== undefined;
     } else add('generation', 'Generate image', 'Skipped', [], 'Original upload used unchanged · no image generation');

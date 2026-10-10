@@ -6,9 +6,9 @@
  * contradiction stops the result from being treated as ready until a person decides.
  */
 import { holderOf, isForeground, type SceneDescription } from './scene.js';
-import { markPhrase, objectPhrase, type ChangePlan } from './changePlan.js';
+import { markPhrase, objectPhrase, overlayPhrase, type ChangePlan } from './changePlan.js';
 
-export const SEMANTIC_CHECKS = ['replacement-done', 'brand-consistent', 'old-references-absent', 'protected-kept', 'subject-count', 'relationships', 'no-added-text', 'no-duplicates', 'interactions-intact'] as const;
+export const SEMANTIC_CHECKS = ['replacement-done', 'brand-consistent', 'old-references-absent', 'protected-kept', 'subject-count', 'relationships', 'no-added-text', 'no-duplicates', 'interactions-intact', 'layout-kept'] as const;
 export type SemanticCheckId = typeof SEMANTIC_CHECKS[number];
 export interface SemanticExpectation { id: SemanticCheckId; expectation: string }
 export interface SemanticCheck { id: SemanticCheckId; status: 'pass' | 'fail' | 'uncertain'; message: string }
@@ -37,7 +37,7 @@ export function planExpectations(scene: SceneDescription, plan: ChangePlan): Sem
   const branded = replaced.filter(e => e.brand);
   if (branded.length) out.push({ id: 'brand-consistent', expectation: branded.map(e => `the new product shows only ${e.brand} branding, if any, and no other brand's logo or name`).join('; ') });
   const goneMarks = removed.filter(e => e.targetType !== 'object');
-  if (goneMarks.length) out.push({ id: 'old-references-absent', expectation: `these are absent: ${goneMarks.map(e => e.targetType === 'mark' ? markPhrase(scene, scene.marks.find(m => m.id === e.targetId)!) : `the overlaid text block that was ${scene.overlays.find(t => t.id === e.targetId)?.zone ?? 'there'}`).join('; ')}` });
+  if (goneMarks.length) out.push({ id: 'old-references-absent', expectation: `these are absent: ${goneMarks.map(e => e.targetType === 'mark' ? markPhrase(scene, scene.marks.find(m => m.id === e.targetId)!) : (scene.overlays.find(t => t.id === e.targetId) ? overlayPhrase(scene.overlays.find(t => t.id === e.targetId)!, scene) : 'that text block')).join('; ')}` });
   const touched = new Set(changed.map(e => e.targetId));
   const keptMarks = scene.marks.filter(m => !touched.has(m.id)), keptObjects = scene.objects.filter(o => !o.ignored && isForeground(o) && !touched.has(o.id));
   if (keptMarks.length || keptObjects.length) out.push({ id: 'protected-kept', expectation: `these are still present and unchanged: ${[...keptObjects.map(o => objectPhrase(scene, o)), ...keptMarks.map(m => markPhrase(scene, m))].join('; ')}` });
@@ -47,6 +47,10 @@ export function planExpectations(scene: SceneDescription, plan: ChangePlan): Sem
   if (held.length) out.push({ id: 'interactions-intact', expectation: held.map(o => `${objectPhrase(scene, scene.objects.find(h => h.id === holderOf(scene, o.id))!)} still holds or wears ${replaced.some(e => e.targetId === o.id) ? 'the new object' : objectPhrase(scene, o)} naturally, with an intact hand`).join('; ') });
   out.push({ id: 'no-added-text', expectation: 'no new text, letters, numbers, prices, badges with lettering or watermarks were added (text that was already there and kept does not count)' });
   out.push({ id: 'no-duplicates', expectation: 'no object, product or person appears twice by mistake' });
+  // Feature 2 keeps the template's structure: a re-composed result is a failure, not a style choice.
+  const objectChanges = changed.some(e => e.targetType === 'object' && (e.operation === 'replace' || e.operation === 'modify'));
+  if (plan.intent) out.push({ id: 'layout-kept', expectation: 'the new product sits in the area the original products occupied and is fully inside the image (not cut off by any edge), and the rest of the layout (text areas, logos, decorations, framing) is where it was' });
+  else if (objectChanges || changed.some(e => e.targetType === 'object')) out.push({ id: 'layout-kept', expectation: 'every product and object is in the same place as in the original, at the same size, with the same tilt and front-to-back order (the original arrangement is kept), and nothing is cut off by the image edge or enlarged; the canvas framing is unchanged' });
   return out;
 }
 /** What to check for a new creative variant: its protected subjects appear once, intact, with no added text. */

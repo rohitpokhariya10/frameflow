@@ -684,8 +684,8 @@ describe('product replacement, plan decisions and extraction recovery (offline f
     t.failures.result = [rejection422('req-422')];
     t.service.decompose(recolor.id, { acknowledgeReview: true });
     const failed = await t.settled(recolor.id);
-    expect(failed).toMatchObject({ state: 'failed', error: { code: 'PROVIDER_DECOMPOSITION_REJECTED', state: 'decomposing', message: expect.stringContaining('layer-extraction failure, not an image-generation failure: any generated creative is kept') } });
-    expect(failed.error!.message).toContain('Seedream did not produce a valid decomposition'); expect(failed.error!.message).not.toContain('at intake');
+    expect(failed).toMatchObject({ state: 'failed', error: { code: 'PROVIDER_DECOMPOSITION_REJECTED', state: 'decomposing', message: expect.stringContaining('layer-extraction failure, not an image-generation failure: the creative is kept') } });
+    expect(failed.error!.message).toContain('could not be processed for layer decomposition'); expect(failed.error!.message).not.toContain('at intake');
     expect(t.runOf(failed).error).toMatchObject({ provider: { requestId: 'req-422', billableUnits: '0' } });
     // The generated creative is untouched, nothing ran again, and Resume cannot repeat the stored answer.
     expect(failed.edit!.image).toEqual(recolor.edit!.image);

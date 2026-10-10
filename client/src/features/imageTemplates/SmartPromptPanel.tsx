@@ -34,7 +34,7 @@ export function SmartPromptPanel({ version, scene, mapping, draft, resolution, s
         <b className={`tw-op tw-op-${c.action === 'modify' ? 'details' : c.action}`}>{OPERATION[c.action]}</b> {c.label}: {c.text}</button></li>)}</ul>
         : <p className="tw-muted">Nothing yet. Everything is kept as detected: with no changes, use the original image (no image request).</p>}
     </section>
-    <section className={`sm-resolution is-${status}`} aria-label="Resolved changes" aria-live="polite"><h3>Resolved plan</h3>
+    <section className={`sm-resolution is-${status}`} aria-label="Resolved changes" aria-live="polite"><h3>AI plan</h3>
       {status === 'none' && <p className="tw-muted">Resolve your changes to see what else they affect. Rules run first; an AI call is made only when your words or a photo name a product or brand.</p>}
       {status === 'stale' && <p className="tw-note-warn" role="note">Your changes are different from the last resolved plan. Resolve again before generating.</p>}
       {status === 'failed' && <div className="tw-alert" role="alert"><p>{resolution?.error?.message ?? 'The changes could not be resolved.'}</p>
@@ -50,8 +50,8 @@ export function SmartPromptPanel({ version, scene, mapping, draft, resolution, s
       {plan && <p className="tw-muted">{kept.length} detected item{kept.length === 1 ? '' : 's'} inherited unchanged{kept.some(e => e.source === 'explicit') ? ` (${kept.filter(e => e.source === 'explicit').length} kept by you)` : ''}.</p>}
       {plan && plan.notes.map(n => <p key={n} className="tw-muted">{n}</p>)}
       {how && <p className={`sm-strategy is-${how.kind}`} role="note"><b>How it is made:</b> {how.text}{how.extra ? <small> {how.extra}</small> : null}</p>}
-      {plan && !!resolution?.rejected?.length && <details><summary>Suggestions not used ({resolution.rejected.length})</summary><ul>{resolution.rejected.map(r => <li key={r}>{r}</li>)}</ul></details>}
-      {(status === 'none' || status === 'stale') && <button type="button" className="ws-btn" disabled={locked || busy} onClick={() => onResolve()}>{busy ? <LoaderCircle size={15} className="ws-spin" aria-hidden="true" /> : <Sparkles size={15} />} Resolve changes</button>}
+      {plan && !!resolution?.rejected?.length && <details><summary>AI suggestions not used ({resolution.rejected.length})</summary><ul>{resolution.rejected.map(r => <li key={r}>{r}</li>)}</ul></details>}
+      {(status === 'none' || status === 'stale') && <button type="button" className="ws-btn" disabled={locked || busy} onClick={() => onResolve()}>{busy ? <LoaderCircle size={15} className="ws-spin" aria-hidden="true" /> : <Sparkles size={15} />} Preview the AI plan</button>}
     </section>
     <details className="tw-prompt" open={!!preview}><summary>Final prompt · exactly what is sent</summary>
       {preview ? <><SlotPrompt label="Resolved final prompt" segments={preview.segments} linked={linked} onLink={onLink} onPick={onPick} sentences controlsId={smartFieldId} />
