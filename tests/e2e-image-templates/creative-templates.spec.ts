@@ -4,7 +4,7 @@ import { describeTemplateSlots, type TemplateVersion } from '@frameflow/shared';
 import { API, executionOf as execution, expectEditorLayers, imageCalls, openWizard, ownImage, runOf, started, writesOf, enableLegacyTemplates } from './wizard.helpers';
 // Every provider count here is this test's own (a unique prompt token, its page's requests, its executions' records):
 // other specs may use the shared fixture server at the same time.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 // The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
 test.beforeEach(({ page }) => enableLegacyTemplates(page));
 /** A saved template made through the API, as an earlier session would have left it. */

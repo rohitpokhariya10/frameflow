@@ -4,7 +4,7 @@ import { API, createTemplate, executionOf, fixture, openWizard, reuseOriginal, r
 // Offline fixture server, fake providers. The panel creative is a person in front of a rounded orange panel on a white
 // canvas, the live case where the panel was folded into the background: the base, the panel and the person must be
 // three editor layers, and hiding or moving the panel must show the white base, never a copy of the panel.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 // The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
 test.beforeEach(({ page }) => enableLegacyTemplates(page));
 test.describe.configure({ mode: 'serial' });

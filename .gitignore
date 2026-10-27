@@ -30,3 +30,11 @@ test-results/
 /artifacts/template-studio/
 # Source archive of the Generator app, kept locally only
 /generator.zip
+
+# Client reference creatives, the provider answers and artwork recorded from them, and their hand-made manifest:
+# confidential client material, kept on the local machine only (the tests that replay them skip without them)
+/Ganesh-Chaturthi.png
+/Reuse_Template.png
+/Tent-Card.png
+/tests/fixtures/recorded/
+/tests/fixtures/ganeshHandmade.fixture.ts

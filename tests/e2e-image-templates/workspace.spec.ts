@@ -57,11 +57,14 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
   const tab = (name: string) => panel.getByRole('tab', { name, exact: true });
-  await expect(panel.getByRole('tab')).toHaveText(['Overview', 'Template Studio', 'Decompose/Test', 'Saved Runs', 'Legacy Templates']);
+  await expect(panel.getByRole('tab')).toHaveText(['Overview', 'Offer Templates', 'Template Studio', 'Decompose/Test', 'Protected Templates', 'Saved Runs', 'Legacy Templates']);
   await expect(panel.getByRole('heading', { name: 'Start with a creative' })).toBeVisible();
   await expect(panel.getByRole('tabpanel')).toHaveCount(1);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('workspace-overview.png') });
   await tab('Overview').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Offer Templates')).toBeFocused();
+  await expect(panel.getByRole('heading', { name: 'Saved templates', exact: true })).toBeVisible();
   await page.keyboard.press('ArrowRight');
   await expect(tab('Template Studio')).toBeFocused();
   await expect(tab('Template Studio')).toHaveAttribute('aria-selected', 'true');
@@ -88,7 +91,7 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await expect(panel.getByRole('button', { name: 'Run decomposition' })).toBeEnabled();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const name of ['Overview', 'Template Studio', 'Decompose/Test', 'Saved Runs', 'Legacy Templates']) {
+  for (const name of ['Overview', 'Offer Templates', 'Template Studio', 'Decompose/Test', 'Saved Runs', 'Legacy Templates']) {
     await tab(name).click();
     // Template Studio's own sections are a tab panel inside its panel.
     await expect(panel.getByRole('tabpanel')).toHaveCount(name === 'Template Studio' ? 2 : 1);

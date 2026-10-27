@@ -5,7 +5,7 @@ import { API, createTemplate, fixture, openWizard, reuseOriginal, runDetails, ru
 // bank and leaves every product baked into its base; one residual pass finds both (plus a duplicate of the headphones),
 // and the plain gradient behind them is continued locally, so no background edit is needed. Template creation learns
 // the plan with one planner call; reusing the saved template repeats the recursion with none.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 // The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
 test.beforeEach(({ page }) => enableLegacyTemplates(page));
 const OBJECTS = ['Display pedestal', 'Gift box', 'Bluetooth speaker', 'Power bank', 'Wireless headphones', 'Earbuds', 'Smartwatch', 'Confetti', 'MEGA SALE headline'];

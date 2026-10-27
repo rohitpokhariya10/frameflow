@@ -3,7 +3,7 @@ import type { Stage } from 'konva/lib/Stage';
 import type { Text } from 'konva/lib/shapes/Text';
 import { fixture, ownImage, runOf } from './wizard.helpers';
 
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 
 // The client journey on the offline fixture: Template Studio (MOCKED OpenAI answers, synthetic images) → FrameFlow's own
 // decomposition (fake planner and Seedream) → the editor. Nothing leaves this machine; no image shown is a real generation.
@@ -30,11 +30,12 @@ test('create a template, generate a Match Reference image, decompose it with Fra
   const panel = await openStudio(page);
   const name = `Blue studio ${crypto.randomUUID().slice(0, 6)}`;
   // The decomposition tabs are FrameFlow's own, beside the studio.
-  // The client sees four tabs: Template Studio in the place of the earlier wizard, the decomposition tabs as they were.
-  await expect(panel.getByRole('tablist', { name: 'Test sections' }).getByRole('tab')).toHaveText(['Overview', 'Template Studio', 'Decompose/Test', /^Saved Runs/]);
+  // The client sees five tabs: Template Studio in the place of the earlier wizard, the decomposition tabs as they were, and Protected Templates.
+  await expect(panel.getByRole('tablist', { name: 'Test sections' }).getByRole('tab')).toHaveText(['Overview', 'Offer Templates', 'Template Studio', 'Decompose/Test', 'Protected Templates', /^Saved Runs/]);
 
-  // Scene 1: create a template from a reference poster.
+  // Scene 1: create a template from a reference poster (Create Template asks for the type first: Product + Text).
   await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('button', { name: /Product \+ Text/ }).click();
   await expect(panel.getByText('AI style analysis: up to')).toBeVisible();
   await panel.getByLabel('Upload reference posters').setInputFiles(upload('blue-studio.png', await ownImage(await fixture(request, '/__test__/studio-reference.png'))));
   await expect(panel.getByRole('list', { name: 'reference posters library' }).getByRole('button', { pressed: true })).toHaveCount(1);
@@ -124,6 +125,7 @@ test('an unrelated scene in Match mode is reported, not regenerated', async ({ p
   {
     const panel = await openStudio(page);
     await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+    await panel.getByRole('button', { name: /Product \+ Text/ }).click();
     await panel.getByLabel('Upload reference posters').setInputFiles(upload('drift.png', await ownImage(await fixture(request, '/__test__/studio-reference.png'))));
     await panel.getByLabel('Template name').fill(`Drift ${crypto.randomUUID().slice(0, 6)}`);
     await panel.getByRole('button', { name: /Create template & analyse/ }).click();
@@ -144,7 +146,7 @@ test('an unrelated scene in Match mode is reported, not regenerated', async ({ p
 
 test('every Template Studio section opens, and the decomposition tabs keep their content', async ({ page }) => {
   const panel = await openStudio(page);
-  for (const [tab, heading] of [['Templates', 'Templates'], ['Create Template', 'Create a template'], ['Generate Image', 'Generate image'], ['Generation History', 'Generation history'], ['Assets', 'Assets'], ['Brand Kits', 'Brand kits'], ['Setup & Usage', 'Setup & usage']] as const) {
+  for (const [tab, heading] of [['Templates', 'Templates'], ['Create Template', 'What kind of template is it?'], ['Generate Image', 'Generate image'], ['Generation History', 'Generation history'], ['Assets', 'Assets'], ['Brand Kits', 'Brand kits'], ['Setup & Usage', 'Setup & usage']] as const) {
     await panel.getByRole('tab', { name: tab, exact: true }).click();
     await expect(panel.getByRole('heading', { name: heading, exact: true })).toBeVisible();
   }

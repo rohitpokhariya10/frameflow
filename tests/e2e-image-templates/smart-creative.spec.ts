@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import { API, executionOf as execution, expectEditorLayers, imageCalls, openWizard, ownImage, runOf, started, writesOf } from './wizard.helpers';
 // Smart edits and "Generate creative template" against the offline fixture: every model and fal call is faked and
 // counted; a test's own counts use its own prompt token. These prove control flow and bindings, not image quality.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 
 async function bootstrapTemplate(request: APIRequestContext) {
   const bytes = await (await request.get('/__test__/reference.png')).body();

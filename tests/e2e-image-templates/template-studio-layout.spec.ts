@@ -3,7 +3,7 @@ import { fixture, ownImage } from './wizard.helpers';
 
 // Every Template Studio screen with real saved data (made through the API with the offline fixture's MOCKED provider),
 // at desktop and phone widths: nothing overflows sideways, and each screen is captured for review.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 const API = '/api/template-studio';
 const SHOTS = process.env.STUDIO_SCREENSHOTS;
 
@@ -46,7 +46,7 @@ test('every Template Studio screen fits desktop and phone widths with saved data
     await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
     const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
     await panel.getByRole('tab', { name: 'Template Studio', exact: true }).click();
-    const sections = [['Templates', 'Templates'], ['Create Template', 'Create a template'], ['Generate Image', 'Generate image'], ['Generation History', 'Generation history'], ['Assets', 'Assets'], ['Brand Kits', 'Brand kits'], ['Setup & Usage', 'Setup & usage']] as const;
+    const sections = [['Templates', 'Templates'], ['Create Template', 'What kind of template is it?'], ['Generate Image', 'Generate image'], ['Generation History', 'Generation history'], ['Assets', 'Assets'], ['Brand Kits', 'Brand kits'], ['Setup & Usage', 'Setup & usage']] as const;
     for (const [tab, heading] of sections) {
       await panel.getByRole('tab', { name: tab, exact: true }).click();
       await expect(panel.getByRole('heading', { name: heading, exact: true })).toBeVisible();
