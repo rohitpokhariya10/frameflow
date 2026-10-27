@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { selectActiveVariant, useAppSelector } from '../../store';
 import { downloadPng, exportFilename, exportPng } from './exportPng';
+import { masterApi } from '../masterTemplates/api';
 
 export function ExportButton() {
   const variant = useAppSelector(selectActiveVariant);
@@ -12,7 +13,16 @@ export function ExportButton() {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError('');
     // Redux's immutable value is the active design at the instant of the click.
-    try { downloadPng(await exportPng(variant), exportFilename(variant.canvas)); }
+    // A creative of a master template, or a design opened smaller than its source, exports at its source's own size (its
+    // editor canvas is that size scaled down).
+    const source = variant.creative ?? (variant.sourceSize ? { scale: variant.sourceSize.scale, size: { width: variant.sourceSize.width, height: variant.sourceSize.height } } : undefined);
+    const ratio = source ? 1 / source.scale : 1;
+    try {
+      const size = source?.size ?? { width: Math.round(variant.canvas.width * ratio), height: Math.round(variant.canvas.height * ratio) };
+      const png = await exportPng(variant, ratio, source ? size : undefined);
+      downloadPng(png, exportFilename(size));
+      if (variant.creative && !variant.creative.product) void masterApi.recordExport({ masterId: variant.creative.masterId, id: variant.creative.creativeId }, size.width, size.height).catch(() => undefined);
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not export the PNG. Please retry.'); }
     finally { pending.current = false; setBusy(false); }
   }

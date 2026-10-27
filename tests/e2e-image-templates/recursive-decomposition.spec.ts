@@ -1,11 +1,13 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { API, createTemplate, fixture, openWizard, reuseOriginal, runDetails, runOf } from './wizard.helpers';
+import { API, createTemplate, fixture, openWizard, reuseOriginal, runDetails, runOf, enableLegacyTemplates } from './wizard.helpers';
 
 // Offline fixture server, injected local providers. The complex offer's first Seedream pass misses the speaker and power
 // bank and leaves every product baked into its base; one residual pass finds both (plus a duplicate of the headphones),
 // and the plain gradient behind them is continued locally, so no background edit is needed. Template creation learns
 // the plan with one planner call; reusing the saved template repeats the recursion with none.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
+// The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
+test.beforeEach(({ page }) => enableLegacyTemplates(page));
 const OBJECTS = ['Display pedestal', 'Gift box', 'Bluetooth speaker', 'Power bank', 'Wireless headphones', 'Earbuds', 'Smartwatch', 'Confetti', 'MEGA SALE headline'];
 
 /** One run's recursion: each object once, the two missed ones from residual pass 1, one clean background, every artifact. */
@@ -47,7 +49,7 @@ test('recursive decomposition of a complex offer: missed products found once, on
   await page.screenshot({ path: testInfo.outputPath('1-created-run.png'), fullPage: true });
 
   // Reuse the saved template on the same creative: planner 0, and the recursion still finds the missed products.
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   const reused = await reuseOriginal(page, panel, request, created.template);
   expect(reused).toMatchObject({ mode: 'REUSE_TEMPLATE_ORIGINAL', template: created.template, usage: { plannerCalls: 0, imageGenerationCalls: 0 } });
   await recursed(request, reused.runId, 0);

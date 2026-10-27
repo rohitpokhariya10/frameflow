@@ -74,7 +74,13 @@ test('flag off: the template review flow and Create Own Template open as before'
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  // Template Studio replaced the earlier wizard's tab; the wizard itself is unchanged and still opens behind its flag.
+  await expect(panel.getByRole('tab', { name: 'Template Studio', exact: true })).toBeVisible();
+  await page.evaluate(() => window.localStorage.setItem('frameflow.legacyCreativeTemplates', '1'));
+  await panel.getByRole('button', { name: 'Close' }).click();
+  await page.reload();
+  await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   // The tab is the manual-template wizard: the saved-template library and its Create New Template action.
   await expect(panel.getByRole('region', { name: 'Template library', exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: 'Create New Template', exact: true }).first()).toBeVisible();

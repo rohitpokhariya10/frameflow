@@ -4,6 +4,10 @@ import '@fontsource/inter/latin-700.css';
 import '@fontsource/lora/latin-400.css';
 import '@fontsource/lora/latin-600.css';
 import '@fontsource/lora/latin-700.css';
+// Lora's italics: offer templates set italic serif words in them (loaded on first use).
+import '@fontsource/lora/latin-400-italic.css';
+import '@fontsource/lora/latin-600-italic.css';
+import '@fontsource/lora/latin-700-italic.css';
 import { TEXT_FONTS, TEXT_WEIGHTS } from '@frameflow/shared';
 
 export async function loadEditorFonts() {

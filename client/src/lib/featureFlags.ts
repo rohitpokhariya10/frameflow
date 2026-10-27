@@ -13,3 +13,14 @@
  */
 export const flagOn = (value: unknown) => typeof value === 'string' && /^(?:1|true|on|yes)$/i.test(value.trim());
 export const LEGACY_IMAGE_TO_LAYERS = flagOn(import.meta.env.VITE_LEGACY_IMAGE_TO_LAYERS);
+
+/**
+ * LEGACY_CREATIVE_TEMPLATES: the earlier creative-template wizard of the OpenAI + Seedream workspace, replaced by
+ * Template Studio. Its code, API, saved executions and decomposition-plan reuse are untouched, and a saved execution
+ * still opens from Saved Runs; only its own tab is hidden. Shown with VITE_LEGACY_CREATIVE_TEMPLATES at build time, or
+ * in one browser with localStorage "frameflow.legacyCreativeTemplates" = "1" (its regression tests use that).
+ */
+export function legacyCreativeTemplates(): boolean {
+  if (flagOn(import.meta.env.VITE_LEGACY_CREATIVE_TEMPLATES)) return true;
+  try { return flagOn(window.localStorage.getItem('frameflow.legacyCreativeTemplates') ?? ''); } catch { return false; }
+}

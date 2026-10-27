@@ -1,10 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { API, createTemplate, executionOf, fixture, openWizard, reuseOriginal, runOf, writesOf } from './wizard.helpers';
+import { API, createTemplate, executionOf, fixture, openWizard, reuseOriginal, runOf, writesOf, enableLegacyTemplates } from './wizard.helpers';
 
 // Offline fixture server, fake providers. The panel creative is a person in front of a rounded orange panel on a white
 // canvas, the live case where the panel was folded into the background: the base, the panel and the person must be
 // three editor layers, and hiding or moving the panel must show the white base, never a copy of the panel.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
+// The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
+test.beforeEach(({ page }) => enableLegacyTemplates(page));
 test.describe.configure({ mode: 'serial' });
 
 /** The editor stage's colour at a design point (its own coordinates, whatever the zoom). */
@@ -115,7 +117,7 @@ test('template CRUD: view details, rename with validation, save plan settings as
 
   // Persisted: after a reload the library card shows the new name and version.
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   const card = panel.getByRole('article', { name: 'Presenter on orange panel v2', exact: true });
   await expect(card).toBeVisible();
   const template = (await (await request.get(`${API}/templates`)).json()).templates.find((t: { name: string }) => t.name === 'Presenter on orange panel');
@@ -138,7 +140,7 @@ test('template CRUD: view details, rename with validation, save plan settings as
   await expect(panel.getByRole('article', { name: /Presenter on orange panel/ })).toHaveCount(0);
   expect((await request.get(`${API}/templates/${template.id}`)).status()).toBe(404);
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await expect(panel.getByRole('article', { name: /Presenter on orange panel/ })).toHaveCount(0);
   // The saved runs still open, with their layers, from Saved Runs.
   for (const e of history) expect(await executionOf(request, e.id)).toMatchObject({ state: 'done', template: { id: template.id, version: 1 } });

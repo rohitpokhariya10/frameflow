@@ -1,10 +1,12 @@
 import { expect, test, type APIRequestContext, type Locator } from '@playwright/test';
 import sharp from 'sharp';
 import { describeTemplateSlots, type TemplateVersion } from '@frameflow/shared';
-import { API, executionOf as execution, expectEditorLayers, imageCalls, openWizard, ownImage, runOf, started, writesOf } from './wizard.helpers';
+import { API, executionOf as execution, expectEditorLayers, imageCalls, openWizard, ownImage, runOf, started, writesOf, enableLegacyTemplates } from './wizard.helpers';
 // Every provider count here is this test's own (a unique prompt token, its page's requests, its executions' records):
 // other specs may use the shared fixture server at the same time.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
+// The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
+test.beforeEach(({ page }) => enableLegacyTemplates(page));
 /** A saved template made through the API, as an earlier session would have left it. */
 async function bootstrapTemplate(request: APIRequestContext) {
   const bytes = await (await request.get('/__test__/reference.png')).body();
@@ -40,7 +42,7 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   await expect(panel.getByText('first.png', { exact: true })).toBeVisible();
   // A refresh cannot keep file bytes: the step and choice survive, and the user is asked for the file again.
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await expect(panel.getByRole('alert')).toContainText('Reselect first.png');
   await expect(panel.getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
   await panel.getByLabel('Creative image', { exact: true }).setInputFiles({ name: 'first.png', mimeType: 'image/png', buffer: bytes });
@@ -92,10 +94,10 @@ test('Journeys C + A: create a template card → customize its saved slots → o
   expect(await panel.locator('.ws-body').evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
   await next(); await back();
   await expect(panel.getByLabel('Main product content', { exact: true })).toHaveValue(phone);
-  await panel.getByRole('tab', { name: 'Saved Runs', exact: true }).click(); await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Saved Runs', exact: true }).click(); await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await expect(panel.getByLabel('Background content', { exact: true })).toHaveValue('Warm studio backdrop');
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await expect(panel.getByRole('heading', { name: 'Make it your own' })).toBeVisible();
   await expect(panel.getByLabel('Main product content', { exact: true })).toHaveValue(phone);
   await expect(panel.getByRole('radio', { name: 'Change details', exact: true })).toBeChecked();
@@ -143,7 +145,7 @@ test('Journeys C + A: create a template card → customize its saved slots → o
 
   // Refresh reopens the persisted review, without another image or decomposition request.
   await page.reload(); await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await expect(useImage).toBeEnabled();
   await expect.poll(() => loaded(panel.getByRole('img', { name: 'Generated creative', exact: true })), { timeout: 15_000 }).toBe(true);
   // Saved Runs reopens the same review step.

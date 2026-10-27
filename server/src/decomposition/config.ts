@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
 import type { DecompositionOptions } from '@frameflow/shared';
 import { DecompositionError } from './errors.js';
+import { appOrigin, decompositionDataDir } from '../deployment.js';
 export interface DecompositionConfig {
   providerMode: 'mock' | 'live'; enabled: boolean; production: boolean; dataDir: string; falKey?: string; authMode: 'local-operator' | 'development'; passwordHash?: string;
   allowedOrigins: string[]; analysisMaxSide: number; maxObjects: number; maxHiddenObjects: number; jobConcurrency: number; modelConcurrency: number;
@@ -23,13 +24,14 @@ export function readDecompositionConfig(env = process.env): DecompositionConfig 
   if (!['qwen','none'].includes(discoveryFallback)) throw new Error('DECOMP_DISCOVERY_FALLBACK must be qwen or none.');
   const authMode = env.DECOMP_AUTH_MODE ?? 'local-operator';
   if (authMode !== 'local-operator' && authMode !== 'development') throw new Error('DECOMP_AUTH_MODE must be local-operator or development.');
-  if (enabled && production && (!env.DECOMP_DATA_DIR || authMode === 'development')) throw new Error('Production decomposition requires DECOMP_DATA_DIR and local-operator authentication.');
-  const dataDir = resolve(serverRoot, env.DECOMP_DATA_DIR ?? 'data/decomposition');
+  const persistentDir = env.DECOMP_DATA_DIR ?? decompositionDataDir(env);
+  if (enabled && production && (!persistentDir || authMode === 'development')) throw new Error('Production decomposition requires DECOMP_DATA_DIR (or FRAMEFLOW_DATA_DIR) and local-operator authentication.');
+  const dataDir = resolve(serverRoot, persistentDir ?? 'data/decomposition');
   let passwordHash = env.DECOMP_OPERATOR_PASSWORD_HASH?.trim();
   const credentialFile = resolve(dataDir, 'operator.json');
   if (!passwordHash && existsSync(credentialFile)) { const stored = JSON.parse(readFileSync(credentialFile, 'utf8')) as { passwordHash?: string }; passwordHash = stored.passwordHash; }
   if (enabled && production && !passwordHash) throw new Error('Run decomp:setup or configure DECOMP_OPERATOR_PASSWORD_HASH before enabling production decomposition.');
-  const origins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3001', 'http://127.0.0.1:3001', ...(env.CLIENT_ORIGIN ? [env.CLIENT_ORIGIN.replace(/\/$/, '')] : [])];
+  const own = appOrigin(env), origins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3001', 'http://127.0.0.1:3001', ...(own ? [own] : [])];
   return { providerMode: providerMode as 'mock' | 'live', enabled, production, dataDir, falKey: env.FAL_KEY?.trim() || undefined, authMode, passwordHash, allowedOrigins: origins,
     analysisMaxSide: number('DECOMP_ANALYSIS_MAX_SIDE',1024,256,2048), maxObjects: number('DECOMP_MAX_OBJECTS',6,1,12), maxHiddenObjects: number('DECOMP_MAX_HIDDEN_OBJECTS',2,0,2),
     jobConcurrency: number('DECOMP_JOB_CONCURRENCY',1,1,1), modelConcurrency: number('DECOMP_MODEL_CONCURRENCY',2,1,2), maxCallsPerJob: number('DECOMP_MAX_CALLS_PER_JOB',20,1,100), maxAccountCalls: number('DECOMP_MAX_ACCOUNT_CALLS',1000,1,100000),

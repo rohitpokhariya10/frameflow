@@ -1,5 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { enableLegacyTemplates } from './wizard.helpers';
 import { AI_PRICING, sumCosts } from '@frameflow/shared';
+// The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
+test.beforeEach(({ page }) => enableLegacyTemplates(page));
 
 test('a final Seedream rejection explains the provider response and never offers a useless resume', async ({ page, request }, testInfo) => {
   const image = await (await request.get('/__test__/reference.png')).body();
@@ -54,14 +57,20 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
   const tab = (name: string) => panel.getByRole('tab', { name, exact: true });
-  await expect(panel.getByRole('tab')).toHaveText(['Overview', 'Create Template', 'Decompose/Test', 'Saved Runs']);
+  await expect(panel.getByRole('tab')).toHaveText(['Overview', 'Offer Templates', 'Template Studio', 'Decompose/Test', 'Protected Templates', 'Saved Runs', 'Legacy Templates']);
   await expect(panel.getByRole('heading', { name: 'Start with a creative' })).toBeVisible();
   await expect(panel.getByRole('tabpanel')).toHaveCount(1);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('workspace-overview.png') });
   await tab('Overview').focus();
   await page.keyboard.press('ArrowRight');
-  await expect(tab('Create Template')).toBeFocused();
-  await expect(tab('Create Template')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Offer Templates')).toBeFocused();
+  await expect(panel.getByRole('heading', { name: 'Saved templates', exact: true })).toBeVisible();
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Template Studio')).toBeFocused();
+  await expect(tab('Template Studio')).toHaveAttribute('aria-selected', 'true');
+  await expect(panel.getByRole('heading', { name: 'Templates', exact: true })).toBeVisible();
+  await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('workspace-studio.png') });
+  await tab('Legacy Templates').click();
   await expect(panel.getByRole('button', { name: 'Create New Template', exact: true })).toBeVisible();
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('workspace-create.png') });
   await panel.getByRole('button', { name: 'Create New Template', exact: true }).click();
@@ -74,7 +83,7 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await panel.getByRole('checkbox', { name: /Recursive cleanup/ }).uncheck();
   await tab('Saved Runs').click();
   await expect(panel.getByRole('heading', { name: 'Your results will appear here' })).toBeVisible();
-  await tab('Create Template').click();
+  await tab('Legacy Templates').click();
   await expect(panel.getByText('family-draft.png', { exact: true })).toBeVisible();
   await tab('Decompose/Test').click();
   await expect(panel.getByRole('checkbox', { name: /Recursive cleanup/ })).not.toBeChecked();
@@ -82,9 +91,10 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await expect(panel.getByRole('button', { name: 'Run decomposition' })).toBeEnabled();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const name of ['Overview', 'Create Template', 'Decompose/Test', 'Saved Runs']) {
+  for (const name of ['Overview', 'Offer Templates', 'Template Studio', 'Decompose/Test', 'Saved Runs', 'Legacy Templates']) {
     await tab(name).click();
-    await expect(panel.getByRole('tabpanel')).toHaveCount(1);
+    // Template Studio's own sections are a tab panel inside its panel.
+    await expect(panel.getByRole('tabpanel')).toHaveCount(name === 'Template Studio' ? 2 : 1);
     expect(await panel.locator('.ws-body').evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${name} fits mobile`).toBe(true);
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`workspace-mobile-${name.replaceAll('/', '-')}.png`) });
   }
@@ -92,7 +102,7 @@ test('test workspace tabs guide a first visit and keep unfinished forms on deskt
   await page.keyboard.press('Home');
   await expect(tab('Overview')).toBeFocused();
   await page.keyboard.press('End');
-  await expect(tab('Saved Runs')).toBeFocused();
+  await expect(tab('Legacy Templates')).toBeFocused();
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

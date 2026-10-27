@@ -10,3 +10,13 @@
 .decomp-review-image{max-height:65vh;position:relative;overflow:hidden;margin:14px auto;cursor:crosshair}.decomp-review-image img,.decomp-review-image svg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}.decomp-mask-overlay{position:absolute;inset:0;pointer-events:none;background:#00d9ff;opacity:.65;mask-mode:luminance;mask-size:100% 100%;mask-repeat:no-repeat}.decomp-panel details{margin:22px 0}.decomp-panel summary{cursor:pointer;font-weight:600}
 
 .decomp-inline .decomp-panel{width:100%;max-height:none;padding:12px;box-shadow:none;border-radius:0;font-size:12px}.decomp-inline .decomp-layer-grid{grid-template-columns:1fr}.decomp-inline input:not([type=checkbox]){max-width:100%}.decomp-inline .decomp-row{gap:8px}.decomp-inline h2{font-size:17px}.decomp-inline h3{font-size:14px}
+
+/* Create Offer Creative: the client's launcher (primary), the developer launchers beside it (hidden on phones). */
+.decomp-launch.ff-create-launch{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;border-color:var(--color-primary,#285443);background:var(--color-primary,#285443);color:#fff;font-weight:650;font-size:14px;box-shadow:0 8px 22px rgba(40,84,67,.32);cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
+.decomp-launch.ff-create-launch:hover{transform:translateY(-1px);box-shadow:0 10px 26px rgba(40,84,67,.4)}
+.decomp-launch.ff-create-launch:focus-visible{outline:3px solid #9cc5b3;outline-offset:2px}
+.ff-launchers{position:fixed;bottom:18px;right:22px;z-index:20;display:flex;align-items:center;gap:10px}
+.ff-launchers .decomp-launch{position:static}
+.ff-launchers .decomp-launch.ff-dev-launch{font-size:13px;padding:8px 12px;cursor:pointer}
+@media (max-width:640px){.decomp-launch.ff-dev-launch{display:none}.ff-launchers{right:12px;bottom:12px}}
+@media (prefers-reduced-motion:reduce){.decomp-launch.ff-create-launch,.decomp-launch.ff-create-launch:hover{transition:none;transform:none}}

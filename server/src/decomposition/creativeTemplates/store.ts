@@ -11,11 +11,10 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { CreativeTemplate, TemplateVersion } from '@frameflow/shared';
+import { ARTIFACTS_DIR } from '../../deployment.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_TEMPLATES_DIR = resolve(here, '../../../../artifacts/decomposition/creative-templates');
+export const DEFAULT_TEMPLATES_DIR = resolve(ARTIFACTS_DIR, 'decomposition/creative-templates');
 
 const TEMPLATE_ID = /^tpl-[a-f0-9]{12}$/;
 export const validTemplateId = (id: string) => TEMPLATE_ID.test(id);

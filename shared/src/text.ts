@@ -8,7 +8,8 @@ export const TEXT_LIMITS = {
 export const TEXT_FONTS = ['Inter', 'Lora'] as const;
 export const TEXT_WEIGHTS = [400, 600, 700] as const;
 export type TextKind = 'heading' | 'subheading' | 'body';
-export type TextChanges = Partial<Pick<TextElement, 'text' | 'fontFamily' | 'fontSize' | 'fontWeight' | 'fill' | 'align'>>;
+export type TextChanges = Partial<Pick<TextElement, 'text' | 'fontFamily' | 'fontSize' | 'fontWeight' | 'fill' | 'align' | 'locked' | 'fontStyle' | 'opacity' | 'rotation' | 'letterSpacing' | 'lineHeight'>>;
+export const TEXT_STYLE_LIMITS = { minLineHeight: 0.5, maxLineHeight: 4, maxLetterSpacing: 200 } as const;
 export const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 export function createTextElement(kind: TextKind, canvas: CanvasSize, id: string, count = 0): TextElement {
@@ -47,6 +48,12 @@ export function validTextChanges(changes: TextChanges): boolean {
       case 'fontWeight': return TEXT_WEIGHTS.some((weight) => weight === value);
       case 'fill': return typeof value === 'string' && /^#[\da-f]{6}$/i.test(value);
       case 'align': return value === 'left' || value === 'center' || value === 'right';
+      case 'locked': return value === true || value === false;
+      case 'fontStyle': return value === 'normal' || value === 'italic';
+      case 'opacity': return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+      case 'rotation': return typeof value === 'number' && Number.isFinite(value) && value >= -360 && value <= 360;
+      case 'letterSpacing': return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= TEXT_STYLE_LIMITS.maxLetterSpacing;
+      case 'lineHeight': return typeof value === 'number' && Number.isFinite(value) && value >= TEXT_STYLE_LIMITS.minLineHeight && value <= TEXT_STYLE_LIMITS.maxLineHeight;
       default: return false;
     }
   });

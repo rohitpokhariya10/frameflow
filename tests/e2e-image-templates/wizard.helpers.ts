@@ -10,13 +10,19 @@ export const fixture = async (request: APIRequestContext, path: string) => (awai
 /** Image requests whose prompt carries `token`: exact while other specs share the server. */
 export const imageCalls = async (request: APIRequestContext, token: string) => ((await (await request.get(`/__test__/image-calls?contains=${encodeURIComponent(token)}`)).json()) as { count: number }).count;
 
-/** The OpenAI + Seedream test panel on its Create Template tab. Nothing leaves this machine. */
+/**
+ * The earlier creative-template wizard's own tab, hidden in the client UI since Template Studio replaced it: its
+ * regression tests turn it on for their page (lib/featureFlags.ts, LEGACY_CREATIVE_TEMPLATES).
+ */
+export const enableLegacyTemplates = (page: Page) => page.addInitScript(() => { try { window.localStorage.setItem('frameflow.legacyCreativeTemplates', '1'); } catch { /* storage blocked */ } });
+/** The OpenAI + Seedream test panel on its Legacy Templates tab (the earlier creative-template wizard). Nothing leaves this machine. */
 export async function openWizard(page: Page): Promise<Locator> {
+  await enableLegacyTemplates(page);
   await page.route(url => /^https?:$/.test(url.protocol) && url.hostname !== '127.0.0.1', route => route.abort());
   await page.goto('/');
   await page.getByRole('button', { name: 'OpenAI + Seedream test' }).click();
   const panel = page.getByRole('dialog', { name: 'OpenAI + Seedream test' });
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   return panel;
 }
 /** Every non-GET request the page makes from now on: everything it could have spent or changed. */

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Copy, Eye, EyeOff, GripVertical, ImageUp, Lock, Trash2, Type, Unlock } from 'lucide-react';
-import { clamp, hasExplicitOrder, TEXT_LIMITS, type DesignLayer, type DesignVariant, type TextElement } from '@frameflow/shared';
+import { ArrowDown, ArrowUp, Copy, Eye, EyeOff, GripVertical, ImageUp, Lock, ShieldCheck, Trash2, Type, Unlock } from 'lucide-react';
+import { clamp, hasExplicitOrder, PROTECTED_KIND_LABELS, TEXT_LIMITS, type DesignLayer, type DesignVariant, type TextElement } from '@frameflow/shared';
 import { useAppDispatch } from '../../store';
 import { layerConvertedToText, layerDeleted, layerDuplicated, layerImageReplaced, layerReordered, layerUpdated, type LayerChanges } from '../../store/editorSlice';
 import { assets } from '../../lib/assets/runtimeAssets';
@@ -89,7 +89,7 @@ export function LayerInspector({ variant, layer }: { variant: DesignVariant; lay
     if (layer.type !== 'image' || !layer.textSuggestion) return;
     const s = layer.textSuggestion;
     const element: TextElement = {
-      id: `text-${crypto.randomUUID()}`, type: 'text', role: 'custom', text: s.text || 'Edit this text',
+      id: `text-${crypto.randomUUID()}`, type: 'text', role: 'custom', text: s.text || 'Edit this text', ...(layer.rotation ? { rotation: layer.rotation } : {}),
       x: layer.x, y: layer.y, width: clamp(Math.round(layer.width), TEXT_LIMITS.minWidth, TEXT_LIMITS.maxWidth),
       fontFamily: 'Inter', fontSize: clamp(s.fontSize ?? Math.round(layer.height * 0.8), TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
       fontWeight: s.fontWeight ?? 600, fill: s.fill ?? '#111111', align: 'left', lineHeight: 1.2, letterSpacing: 0,
@@ -99,6 +99,7 @@ export function LayerInspector({ variant, layer }: { variant: DesignVariant; lay
   };
   return <div className="layer-inspector">
     <div className="panel-heading"><h2>Layer</h2><span className="subtle-label">{kindLabel(layer)}</span></div>
+    {layer.protectedSlot && <p className="inspector-hint protected-slot-note" data-testid="protected-slot"><ShieldCheck size={13} aria-hidden="true" /> Protected {PROTECTED_KIND_LABELS[layer.protectedSlot.kind].toLowerCase()} slot{layer.protectedSlot.representation === 'raster' ? ': the original pixels of the creative (a visual copy, not editable text)' : layer.protectedSlot.representation === 'source-asset' ? ': an image file' : ''}. Replace image keeps its place and box{layer.type === 'image' && layer.fit === 'contain' ? ', fitted without distortion' : ''}.{layer.locked ? ' Locked on the canvas.' : ''}</p>}
     <label className="layer-field layer-name-field">Name<input aria-label="Layer name" maxLength={200} value={layer.name} onFocus={() => { session.current = crypto.randomUUID(); }} onChange={e => change({ name: e.target.value }, session.current)} /></label>
     <div className="layer-grid">{number('X', 'x')}{number('Y', 'y')}{number('Width', 'width', 1, 16384)}{number('Height', 'height', 1, 16384)}{number('Rotation', 'rotation', -180, 180)}</div>
     <label className="layer-field">Opacity {Math.round(layer.opacity * 100)}%<input type="range" aria-label="Opacity" min={0} max={100} value={Math.round(layer.opacity * 100)}
@@ -119,7 +120,7 @@ export function LayerInspector({ variant, layer }: { variant: DesignVariant; lay
       <label className="layer-field">Stroke width<input type="number" aria-label="Stroke width" min={0} max={200} value={layer.stroke?.width ?? 0} onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) change({ stroke: v ? { color: layer.stroke?.color ?? '#000000', width: v } : null }); }} /></label>
     </>}
     {layer.type === 'image' && layer.textSuggestion && <div className="layer-text-suggestion">
-      <p><strong>Text image.</strong> {layer.textSuggestion.text ? <>Suggested text (unverified): “{layer.textSuggestion.text}”.</> : 'No reliable text suggestion; you can type it after converting.'}</p>
+      <p><strong>Text image.</strong> {layer.textSuggestion.text ? layer.textSuggestion.confidence === 'provided' ? <>Text entered by the template's administrator: “{layer.textSuggestion.text}”.</> : <>Suggested text (unverified): “{layer.textSuggestion.text}”.</> : 'No reliable text suggestion; you can type it after converting.'}</p>
       <button className="button" onClick={convert}><Type size={14} />Make text editable</button>
     </div>}
     {layer.type === 'image' && <div className="layer-replace">

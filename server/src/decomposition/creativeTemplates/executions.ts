@@ -13,12 +13,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { BlueprintCompatibility, ExecutionImage, ExecutionMode, ExecutionUsage, GenerationReview, TemplateEditOptions, TemplateExecution } from '@frameflow/shared';
 import { RunError, validRunId } from '../layerizeExperiment.js';
+import { ARTIFACTS_DIR } from '../../deployment.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_EXECUTIONS_DIR = resolve(here, '../../../../artifacts/decomposition/template-executions');
+export const DEFAULT_EXECUTIONS_DIR = resolve(ARTIFACTS_DIR, 'decomposition/template-executions');
 const RECORD = 'execution.json', KEYS = 'idempotency.json';
 const KEY = /^[A-Za-z0-9_-]{8,80}$/;
 export const validIdempotencyKey = (key: unknown): key is string => typeof key === 'string' && KEY.test(key);

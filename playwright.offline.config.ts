@@ -1,7 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
 /** Full built-client regressions plus a real local API journey. All server providers are injected fakes. */
-const port = 3317, baseURL = `http://127.0.0.1:${port}`;
+// FRAMEFLOW_OFFLINE_E2E_PORT: another port when 3317 is busy (a demo of the fixture left running); 3317 by default.
+const port = Number(process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317), baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: './tests', testMatch: ['e2e/**/*.spec.ts', 'e2e-image-templates/**/*.spec.ts'],
   outputDir: 'test-results/offline', fullyParallel: true, workers: 2,

@@ -1,10 +1,13 @@
+import { productWordModeChanged } from '../../store/uiSlice';
 import { Heading1, Heading2, Pilcrow, Type } from 'lucide-react';
 import { TEXT_LIMITS } from '@frameflow/shared';
-import { selectActiveVariant, useAppSelector } from '../../store';
+import { selectActiveVariant, useAppSelector, useAppDispatch } from '../../store';
 import { useTextActions } from './useTextActions';
 
 export function TextPanel() {
-  const { elements } = useAppSelector(selectActiveVariant);
+  const variant = useAppSelector(selectActiveVariant), { elements } = variant;
+  const dispatch = useAppDispatch();
+  const groups = variant.productTemplate ? [...new Set(elements.map(e => e.protectedSlot?.word?.groupId).filter(Boolean))] : [];
   const selectedId = useAppSelector((state) => state.ui.selectedElementId);
   const actions = useTextActions();
   const atLimit = elements.length >= TEXT_LIMITS.maxElements;
@@ -20,7 +23,11 @@ export function TextPanel() {
     <div className="section-label elements-heading"><h3>Elements</h3><span>{elements.length}</span></div>
     {elements.length === 0 ? <p className="elements-empty">Add text above, then select it here to edit.</p> :
       <ul className="text-elements" aria-label="Text elements" data-selection-owner>
-        {elements.map((element) => <li key={element.id}>
+        {groups.map(id => { const words = elements.filter(e => e.protectedSlot?.word?.groupId === id).sort((a,b) => a.protectedSlot!.word!.order - b.protectedSlot!.word!.order); return <li key={id}><details><summary>{words.map(w => w.text).join(' ').slice(0, 60)} ({words.length} words)</summary>
+          <button onClick={() => { dispatch(productWordModeChanged(false)); actions.select(words[0].id); }}>Select headline group</button>
+          {words.map(w => <button key={w.id} aria-label={`Select word ${w.text}`} onClick={() => { dispatch(productWordModeChanged(true)); actions.select(w.id); }}>{w.text}</button>)}
+        </details></li>; })}
+        {elements.filter(e => !variant.productTemplate || !e.protectedSlot?.word).map((element) => <li key={element.id}>
           <button aria-pressed={element.id === selectedId} onClick={() => actions.select(element.id)} title={element.text || 'Empty text'}>
             <Type size={15} /><span><strong>{element.text.trim() || 'Empty text'}</strong><small>{element.role === 'custom' ? 'Text' : element.role}</small></span>
           </button>

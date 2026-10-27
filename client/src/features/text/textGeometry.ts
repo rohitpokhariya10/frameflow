@@ -2,11 +2,13 @@ import { Text } from 'konva/lib/shapes/Text';
 import { fontStack, isTextBox, recoverablePosition, textBlock, textBoxOf, type CanvasSize, type TextElement } from '@frameflow/shared';
 import { fitTemplateText, templateTextProps } from '../templates/templateText';
 
+/** Konva's font style: italic (when set) and the weight, e.g. "italic 700". */
+export const konvaFontStyle = (element: Pick<TextElement, 'fontStyle' | 'fontWeight'>) => `${element.fontStyle === 'italic' ? 'italic ' : ''}${element.fontWeight}`;
 export const textNodeStyle = (element: TextElement) => ({
   text: element.text, width: element.width, fontSize: element.fontSize,
-  fontFamily: ['Inter', 'Lora'].includes(element.fontFamily) && !/[\u0900-\u097f]/u.test(element.text) ? element.fontFamily : fontStack(element.fontFamily), fontStyle: String(element.fontWeight),
+  fontFamily: ['Inter', 'Lora'].includes(element.fontFamily) && !/[\u0900-\u097f]/u.test(element.text) ? element.fontFamily : fontStack(element.fontFamily), fontStyle: konvaFontStyle(element),
   fill: element.fill, align: element.align, lineHeight: element.lineHeight,
-  letterSpacing: element.letterSpacing, wrap: 'word' as const,
+  letterSpacing: element.letterSpacing, wrap: 'word' as const, opacity: element.opacity ?? 1,
 });
 
 /**
@@ -20,7 +22,7 @@ export function textDisplay(element: TextElement) {
   if (!isTextBox(element)) return { props: textNodeStyle(element), rotation, offsetY: 0, box: undefined, truncated: false };
   const resolved = textBoxOf(element), fit = fitTemplateText(resolved), block = textBlock(resolved, fit);
   return {
-    props: { ...templateTextProps(resolved, fit.fontPx), fill: element.fill, ...(fit.truncated ? { height: block.height + 0.5, ellipsis: true } : {}) },
+    props: { ...templateTextProps(resolved, fit.fontPx), fontStyle: konvaFontStyle(element), opacity: element.opacity ?? 1, fill: element.fill, ...(fit.truncated ? { height: block.height + 0.5, ellipsis: true } : {}) },
     rotation, offsetY: -block.y, truncated: fit.truncated,
     // The filled box behind the text (a CTA's button), the size of the fixed box.
     box: element.box?.fill ? { width: element.width, height: element.height, fill: element.box.fill, cornerRadius: Math.min(element.box.radius, element.width / 2, element.height / 2) } : undefined,

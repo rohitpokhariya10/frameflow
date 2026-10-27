@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
 import { catalogFont, searchFonts } from '@frameflow/shared';
 import { fontLoader } from './fontLoader';
-export function FontPicker({value,onChange,recommended=[],recommendationLabel='Recommended fonts'}:{value:string;onChange:(font:string)=>void;recommended?:readonly string[];recommendationLabel?:string}) {
+// heading: null where the field already has its own label (the text inspector's "Font family").
+export function FontPicker({value,onChange,recommended=[],recommendationLabel='Recommended fonts',heading='Font Family'}:{value:string;onChange:(font:string)=>void;recommended?:readonly string[];recommendationLabel?:string;heading?:string|null}) {
   const [query,setQuery]=useState(''),[open,setOpen]=useState(false);
   const results=useMemo(()=>searchFonts(query),[query]);
   const select=(font:string)=>{onChange(font);setOpen(false);};
   return <div className="theme-font-picker">
-    <strong>Font Family</strong>
+    {heading&&<strong>{heading}</strong>}
     <button type="button" className="ws-btn" aria-label="Choose font" aria-expanded={open} onClick={()=>setOpen(!open)}>{value} · Search fonts… ▾</button>
     {fontLoader.state(value)==='failed'&&<small role="status">Font unavailable. A readable fallback is shown; your selection is kept.</small>}
     {open&&<div className="theme-font-menu">

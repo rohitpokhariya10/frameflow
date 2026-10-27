@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --conditions=development --env-file-if-exists=.env src/index.ts",
+    "dev": "tsx watch --conditions=development --env-file-if-exists=../.env --env-file-if-exists=.env src/index.ts",
     "build": "tsc",
-    "start": "node --env-file-if-exists=.env dist/index.js",
+    "start": "node --env-file-if-exists=../.env --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
     "worker": "node --env-file-if-exists=.env dist/decomposition/workerEntry.js",
     "worker:dev": "tsx watch --conditions=development --env-file-if-exists=.env src/decomposition/workerEntry.ts",
@@ -14,12 +14,14 @@
     "decomp:layerize-experiment": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/layerizeExperiment.ts",
     "decomp:seedream-prompt": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/seedreamPromptExperiment.ts",
     "decomp:smoke": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/smoke.ts",
-    "decomp:backup": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/setup.ts backup"
+    "decomp:backup": "tsx --conditions=development --env-file-if-exists=.env src/decomposition/setup.ts backup",
+    "studio:import-brand-kit": "tsx --conditions=development --env-file-if-exists=.env src/templateStudio/importBrandKit.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",
     "@frameflow/shared": "*",
     "@google/genai": "^2.23.0",
+    "@tesseract.js-data/eng": "^1.0.0",
     "archiver": "^8.0.0",
     "better-sqlite3": "^13.0.3",
     "busboy": "^1.6.0",
@@ -28,7 +30,10 @@
     "express-rate-limit": "^8.7.0",
     "image-size": "^2.0.4",
     "openai": "^7.23.0",
-    "sharp": "^0.35.4"
+    "opentype.js": "^2.0.0",
+    "sharp": "^0.35.4",
+    "tesseract.js": "^6.0.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/archiver": "^8.0.0",

@@ -172,7 +172,7 @@ flowchart TD
     Browser --> IDB[IndexedDB - artwork Blobs]
 ```
 
-The frontend executes in the browser; Render serves its built assets and the API from one origin. Main-editor projects and reusable templates remain browser-local. The optional legacy decomposition service uses SQLite and filesystem artifacts under `DECOMP_DATA_DIR`; the layerize experiment stores runs and generation groups in repository-level `artifacts/decomposition/`.
+The frontend executes in the browser; Render serves its built assets and the API from one origin. Main-editor projects and reusable templates remain browser-local. The optional legacy decomposition service uses SQLite and filesystem artifacts under `DECOMP_DATA_DIR`. The layerize experiment, the offer and product templates and Template Studio store their files under `artifacts/`: in the repository during development, or in `FRAMEFLOW_DATA_DIR` (a persistent disk) on a deployed server.
 
 Redux stores serializable documents, asset IDs, UI metadata, and bounded history snapshots. Image Blobs, decoded images, canvas/DOM nodes, object URLs, and request controllers stay outside Redux. This keeps saving and undo/redo predictable without duplicating image data in every snapshot.
 
@@ -463,10 +463,11 @@ flowchart TD
     Browser[Browser] --> Render[Render Web Service]
     Render --> Frontend[Built Vite frontend]
     Render --> API[Express /api]
-    API --> CF[Cloudflare Workers AI]
+    API --> AI[OpenAI and fal]
+    API --> Disk[Persistent disk: FRAMEFLOW_DATA_DIR]
 ```
 
-The repository's commands support this layout from the repository root:
+The repository's commands support this layout from the repository root. **[docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)** has the exact dashboard settings, the persistent disk, every environment variable and the one-time data migration.
 
 | Setting | Value |
 | --- | --- |
@@ -475,24 +476,28 @@ The repository's commands support this layout from the repository root:
 | Health path | `/api/health` |
 | Listen address | `0.0.0.0`, using Render's `PORT` |
 | Frontend API base | Relative `/api` |
+| Node version | 22 (`.nvmrc`) |
+| Instance type | Free: no persistent disk, so saved files are temporary |
+| Access | `FRAMEFLOW_ACCESS_PASSWORD` (required before adding AI keys) |
 
 The current same-origin setup does **not** require `VITE_API_BASE_URL`; leave it unset so the built client uses `/api`. Configure provider credentials in Render's server environment, not in a frontend bundle:
 
 ```dotenv
-AI_PROVIDER=cloudflare
-CLOUDFLARE_ACCOUNT_ID=<secret>
-CLOUDFLARE_API_TOKEN=<secret>
-CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-2-klein-4b
-AI_TIMEOUT_MS=120000
-CLIENT_ORIGIN=https://frameflow-h7fa.onrender.com
+NODE_ENV=production
+LAYERIZE_EXPERIMENT=1
 TRUST_PROXY_HOPS=1
+FRAMEFLOW_ACCESS_PASSWORD=<secret>
+OPENAI_API_KEY=<secret>
+FAL_KEY=<secret>
+# Optional, only for the editor's older "generate artwork" feature:
+# AI_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID=<secret>, CLOUDFLARE_API_TOKEN=<secret>
 ```
 
-`CLIENT_ORIGIN` is the **allowed browser/frontend origin**. Here it equals the Render origin because the frontend and API share that origin. `TRUST_PROXY_HOPS=1` accounts for the Render proxy; direct local access uses `0`. Let Render supply its listening port.
+`CLIENT_ORIGIN` is the **allowed browser/frontend origin**. Here it equals the Render origin because the frontend and API share that origin. Without it, the server uses the address Render gives the service (`RENDER_EXTERNAL_URL`), so leave it unset unless you use a custom domain. `TRUST_PROXY_HOPS=1` accounts for the Render proxy; direct local access uses `0`. Let Render supply its listening port.
 
 For the legacy pipeline in production, use a persistent `DECOMP_DATA_DIR`, `DECOMP_AUTH_MODE=local-operator`, configured operator credentials, and a separate built worker (`npm run worker -w @frameflow/server`) sharing that storage. Production rejects development authentication and mock mode. A default single web-service deployment does not start this worker.
 
-The layerize experiment can also be enabled in production, but it has **no operator login**. Its origin checks are not authentication; visitors able to use the app can trigger paid provider work. Keep it disabled on an unrestricted deployment or protect access externally, and persist its artifact directories if run history must survive redeploys.
+The layerize experiment has **no user accounts**, and its origin checks are not authentication. Set `FRAMEFLOW_ACCESS_PASSWORD`: every page and API request then needs it (except `/api/health`). A production server that holds paid AI keys but no password refuses every API change, so visitors cannot start paid work. On Render Free there is no persistent disk: templates, uploads, creatives and runs are temporary and are lost on every restart, redeploy or spin-down. With a paid disk, set `FRAMEFLOW_DATA_DIR=/var/data/frameflow`.
 
 ## Verification and Testing
 

@@ -3,6 +3,7 @@ import { selectActiveVariant, useAppDispatch, useAppSelector } from '../../store
 import { textAdded, textDeleted, textDuplicated, textMoved, textUpdated, textWidthResized } from '../../store/editorSlice';
 import { elementSelected, tabChanged } from '../../store/uiSlice';
 import { boundTextPosition } from './textGeometry';
+import { measuredWords } from './measuredWords';
 
 export const focusCanvas = () => document.getElementById('canvas-interaction')?.focus({ preventScroll: true });
 
@@ -19,7 +20,12 @@ export function useTextActions() {
       dispatch(tabChanged('text'));
       focusCanvas();
     },
-    update(id: string, changes: TextChanges, editSession?: string) { dispatch(textUpdated({ ...target(id), changes, editSession })); },
+    update(id: string, changes: TextChanges, editSession?: string) {
+      // (A product template's word: its drawn width before and after, measured, so the rest of its line follows exactly.)
+      const element = variant.productTemplate ? variant.elements.find((e): e is TextElement => e.id === id && e.type === 'text') : undefined;
+      const measured = element ? measuredWords([{ element, changes }]) : undefined;
+      dispatch(textUpdated({ ...target(id), changes, editSession, ...(measured ? { measured } : {}) }));
+    },
     move(element: TextElement, position: { x: number; y: number }, editSession?: string) {
       dispatch(textMoved({ ...target(element.id), ...boundTextPosition(element, variant.canvas, position), editSession }));
     },

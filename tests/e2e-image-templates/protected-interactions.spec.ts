@@ -1,10 +1,12 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { API, createTemplate, executionOf, fixture, openWizard, runDetails, runOf, started } from './wizard.helpers';
+import { API, createTemplate, executionOf, fixture, openWizard, runDetails, runOf, started, enableLegacyTemplates } from './wizard.helpers';
 
 // Offline fixture server, injected local providers. Seedream's fake answers are the splits seen live, with everything
 // baked into the base; the planner answers with the analyses recorded live. People stay intact layers whether the
 // template is being created (planner) or reused (saved plan), and hiding or moving them reveals a clean background.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
+// The earlier wizard's tab is hidden in the client UI; these tests exercise it directly.
+test.beforeEach(({ page }) => enableLegacyTemplates(page));
 test.describe.configure({ mode: 'serial' });
 
 /** Where the people (and what they hold or wear) were, the run's background matches the true scene, with no black. */
@@ -51,7 +53,7 @@ test('a person holding a phone stays one intact layer on creation and reuse; its
   await page.screenshot({ path: testInfo.outputPath('1-protected-run.png'), fullPage: true });
 
   // The saved template keeps the phone grouped with the person for decomposition, yet its content is still editable.
-  await panel.getByRole('tab', { name: 'Create Template', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Legacy Templates', exact: true }).click();
   await panel.getByRole('button', { name: 'Back to template library', exact: true }).click();
   await panel.getByRole('button', { name: 'Next', exact: true }).click();
   const held = panel.getByLabel('Held object content', { exact: true });

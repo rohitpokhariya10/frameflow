@@ -14,14 +14,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { ChangePlan, ExecutionImage, SceneDescription, SceneDraft, SceneSlotMapping, VariantSet } from '@frameflow/shared';
 import { RunError, validRunId } from '../layerizeExperiment.js';
 import { validIdempotencyKey } from './executions.js';
+import { ARTIFACTS_DIR } from '../../deployment.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_ANALYSES_DIR = resolve(here, '../../../../artifacts/decomposition/scene-analyses');
-export const DEFAULT_VARIANTS_DIR = resolve(here, '../../../../artifacts/decomposition/creative-variants');
+export const DEFAULT_ANALYSES_DIR = resolve(ARTIFACTS_DIR, 'decomposition/scene-analyses');
+export const DEFAULT_VARIANTS_DIR = resolve(ARTIFACTS_DIR, 'decomposition/creative-variants');
 const KEYS = 'idempotency.json';
 export const newRecordId = () => `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`;
 export const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');

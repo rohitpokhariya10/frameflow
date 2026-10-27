@@ -8,15 +8,15 @@ import 'konva/lib/shapes/Rect';
 import 'konva/lib/shapes/Text';
 import 'konva/lib/shapes/Transformer';
 import { clamp, recoverablePosition, TEXT_LIMITS, type CanvasSize, type TextElement } from '@frameflow/shared';
-import { useAppDispatch } from '../../store';
-import { textMoved, textWidthResized } from '../../store/editorSlice';
-import { elementSelected } from '../../store/uiSlice';
+import { useAppDispatch, useAppSelector, selectActiveVariant } from '../../store';
+import { textGroupMoved, textMoved, textWidthResized } from '../../store/editorSlice';
+import { elementSelected, productWordModeChanged } from '../../store/uiSlice';
 import { textDisplay } from '../text/textGeometry';
 import { focusCanvas } from '../text/useTextActions';
 
 /** A text drawn without interaction (previews, comparisons), by the same display rules as the editable node. */
 export function StaticText({ element, name }: { element: TextElement; name: string }) {
-  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text }]);
+  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text, italic: element.fontStyle === 'italic' }]);
   const display = useMemo(() => { void fonts.revision; return textDisplay(element); }, [element, fonts.revision]);
   if (element.visible === false) return null;
   return <>
@@ -33,8 +33,10 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom, ra
   const boxRef = useRef<KonvaRect>(null);
   const transformerRef = useRef<KonvaTransformer>(null);
   const dispatch = useAppDispatch();
+  const variant = useAppSelector(selectActiveVariant), wordMode = useAppSelector(s => s.ui.productWordMode);
+  const group = variant.productTemplate && !wordMode ? element.protectedSlot?.word?.groupId : undefined;
   // Free text: its own style. A fixed text box: wrapped, shrunk or cut for display by the shared overflow policy.
-  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text }]);
+  const fonts = useFonts([{ family: element.fontFamily, weight: element.fontWeight, text: element.text, italic: element.fontStyle === 'italic' }]);
   const display = useMemo(() => { void fonts.revision; return textDisplay(element); }, [element, fonts.revision]);
   useLayoutEffect(() => {
     if (selected && nodeRef.current && transformerRef.current) {
@@ -60,14 +62,17 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom, ra
   return <>
     {display.box && <Rect ref={boxRef} name="text-box" x={element.x} y={element.y} rotation={display.rotation} {...display.box} listening={false} />}
     <Text key={fonts.revision} ref={nodeRef} id={element.id} name="editable-text" {...display.props} x={element.x} y={element.y} rotation={display.rotation} offsetY={display.offsetY}
-      draggable onMouseDown={select} onTouchStart={select} onClick={select} onTap={select}
+      draggable={!element.locked} onMouseDown={select} onTouchStart={select} onClick={select} onTap={select}
+      onDblClick={() => { if (variant.productTemplate) dispatch(productWordModeChanged(true)); select(); }}
+      onDblTap={() => { if (variant.productTemplate) dispatch(productWordModeChanged(true)); select(); }}
       onDragStart={select}
       onDragMove={(event) => { keepRecoverable(event.target as KonvaText); followBox(event.target as KonvaText); }}
       onDragEnd={(event) => {
         const node = event.target as KonvaText;
         keepRecoverable(node);
         // Node position is already in its parent's logical coordinate system, even at a scaled stage.
-        dispatch(textMoved({ variantId, id: element.id, ...node.position(), timestamp: new Date().toISOString() }));
+        if (group) dispatch(textGroupMoved({ variantId, groupId: group, dx: node.x() - element.x, dy: node.y() - element.y, timestamp: new Date().toISOString() }));
+        else dispatch(textMoved({ variantId, id: element.id, ...node.position(), timestamp: new Date().toISOString() }));
       }}
       onTransform={() => { normalizeWidth(); if (nodeRef.current) followBox(nodeRef.current); }}
       onTransformEnd={() => {
@@ -80,7 +85,7 @@ export function TextElementNode({ element, selected, canvas, variantId, zoom, ra
       onMouseEnter={(event) => { const stage = event.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
       onMouseLeave={(event) => { const stage = event.target.getStage(); if (stage) stage.container().style.cursor = ''; }}
     />
-    {selected && <Transformer ref={transformerRef} name="text-transformer"
+    {selected && !element.locked && <Transformer ref={transformerRef} name="text-transformer"
       enabledAnchors={['middle-left', 'middle-right']} rotateEnabled={false} flipEnabled={false} keepRatio={false}
       anchorSize={8} anchorCornerRadius={2} anchorFill="#FFFFFF" anchorStroke="#285443" anchorStrokeWidth={1}
       borderStroke="#285443" borderStrokeWidth={1} padding={3}

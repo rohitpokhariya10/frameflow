@@ -82,7 +82,8 @@ export interface SceneDescription {
 export interface SceneCorrection { category?: string; description?: string; brand?: string; model?: string; ignored?: boolean }
 
 export class SceneValidationError extends Error { constructor(message: string) { super(message); this.name = 'SceneValidationError'; } }
-export const SCENE_LIMITS = { objects: 24, marks: 12, overlays: 12, relations: 60, text: 160, overlayText: 200, category: 40, uncertainties: 8, correction: 120 } as const;
+/** Marks and overlays: an offer creative can carry two rows of bank logos (10–20) and a dozen lines of copy. */
+export const SCENE_LIMITS = { objects: 24, marks: 40, overlays: 24, relations: 60, text: 160, overlayText: 200, category: 40, uncertainties: 8, correction: 120 } as const;
 
 /** Untrusted model text as data: sanitized, double quotes softened (prompts quote values), bounded. */
 export function cleanSceneText(value: unknown, limit: number = SCENE_LIMITS.text): string {
@@ -138,11 +139,12 @@ const byReading = (a: { box: SceneBox }, b: { box: SceneBox }) => (a.box.y + a.b
  * from category and position so the same image reads the same way however the model ordered its answer; every
  * reference is checked; held/worn chains cannot loop. Throws SceneValidationError; nothing partial is ever returned.
  */
-export function parseSceneDescription(value: unknown): SceneDescription {
+export function parseSceneDescription(value: unknown, limits: { objects?: number } = {}): SceneDescription {
   const v = value as Record<string, unknown> | undefined;
   if (!v || typeof v !== 'object' || Array.isArray(v)) throw new SceneValidationError('The analysis is not an object.');
   const objects = v.objects as Record<string, unknown>[], relations = v.relations as Record<string, unknown>[], marks = (v.marks ?? []) as Record<string, unknown>[], overlays = (v.text_overlays ?? []) as Record<string, unknown>[];
-  if (!Array.isArray(objects) || !objects.length || objects.length > SCENE_LIMITS.objects) throw new SceneValidationError(`The analysis must list 1–${SCENE_LIMITS.objects} objects.`);
+  const maxObjects = limits.objects ?? SCENE_LIMITS.objects;
+  if (!Array.isArray(objects) || !objects.length || objects.length > maxObjects) throw new SceneValidationError(`The analysis must list 1–${maxObjects} objects.`);
   if (!Array.isArray(relations) || relations.length > SCENE_LIMITS.relations || !Array.isArray(marks) || marks.length > SCENE_LIMITS.marks || !Array.isArray(overlays) || overlays.length > SCENE_LIMITS.overlays) throw new SceneValidationError('The analysis lists too many relations, marks or text overlays.');
   const ids = new Set<string>();
   const ownId = (raw: unknown, what: string) => {
@@ -189,9 +191,12 @@ export function parseSceneDescription(value: unknown): SceneDescription {
   const overlayItems = overlays.map((t, i) => {
     if (!t || typeof t !== 'object') throw new SceneValidationError(`Text overlay ${i + 1} is not an object.`);
     const rawId = ownId(t.id, `Text overlay ${i + 1}`), b = box(t.box, `Text overlay ${rawId}`);
-    const refersTo = Array.isArray(t.refers_to) ? t.refers_to : [];
-    if (refersTo.length > 8 || refersTo.some(r => typeof r !== 'string' || !remap.has(r))) throw new SceneValidationError(`Text overlay ${rawId} refers to an unknown object.`);
-    return { rawId, role: oneOf(SCENE_OVERLAY_ROLES, t.role, `Text overlay ${rawId} role`), text: cleanSceneText(t.text, SCENE_LIMITS.overlayText), refersTo: refersTo as string[], box: b, zone: zoneOfBox(b) };
+    if (t.refers_to !== undefined && !Array.isArray(t.refers_to)) throw new SceneValidationError(`Text overlay ${rawId} refers_to must be a list.`);
+    // Only what a text is about: references to objects and marks of this analysis, at most 8. A reference to anything
+    // else (another text, an id it did not list) or beyond 8 is left out; it never discards the whole analysis (a real
+    // answer named 9 and 12 products for a headline and an offer about all of them).
+    const refersTo = ((t.refers_to ?? []) as unknown[]).filter((r): r is string => typeof r === 'string' && remap.has(r)).slice(0, 8);
+    return { rawId, role: oneOf(SCENE_OVERLAY_ROLES, t.role, `Text overlay ${rawId} role`), text: cleanSceneText(t.text, SCENE_LIMITS.overlayText), refersTo, box: b, zone: zoneOfBox(b) };
   });
   [...overlayItems].sort(byReading).forEach((t, n) => remap.set(t.rawId, `text_${n + 1}`));
   const to = (raw: string) => remap.get(raw)!;

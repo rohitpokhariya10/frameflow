@@ -5,7 +5,7 @@ import { API, executionOf, fixture, runOf, writesOf } from './wizard.helpers';
 // a version: each result opens as a design of its own (on its own canvas), the design that was open keeps its versions
 // (28 stays 28, 30 stays 30, no limit warning), opening it again switches back to the same design, and a double-click
 // makes one design. Opening never calls a provider: the page only reads, plus one "opened" record per open.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 test.describe.configure({ mode: 'serial' });
 
 /** A finished Create Template execution made through the API (fake providers): a stored result to open. */

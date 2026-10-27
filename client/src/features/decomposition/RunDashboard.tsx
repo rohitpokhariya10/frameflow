@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { AI_PRICING, type CostAmount, type DiagnosticPrompt, type DiagnosticStage, type RunDiagnostics } from '@frameflow/shared';
-import { editorLayersOf, experimentFileUrl, type BackgroundStep, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
+import { editorLayersOf, experimentFileUrl, isProtectedRun, refusalAdvice, type BackgroundStep, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
 import './runDashboard.css';
 
 export const rupees = (value: number) => `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -30,6 +30,9 @@ const STEP_LABELS: Record<BackgroundStep['step'], string> = {
   'provider-base': 'Seedream base', 'scene-composite': 'Seedream scene layers', 'local-continuation': 'Local continuation', 'ai-reconstruction': 'AI reconstruction', fallback: 'Fallback',
 };
 export function displayLayer(layer: ExperimentLayer, run: ExperimentRun): { name: string; role: string } {
+  // A creative's run: each layer is one of its own elements; texts and shapes open editable.
+  const own = run.creative?.layers.find(l => l.file === layer.file);
+  if (own) return { name: (layer.name ?? '').replace(/^(?:Text|Shape) · /, '') || layer.file, role: { background: 'Background', artwork: 'Artwork object', image: 'Logo / picture', text: 'Text · editable', shape: 'Shape · editable', object: 'Product / character' }[own.kind] };
   const category = run.refinement?.curation?.entries.find(e => e.file === layer.file)?.category ?? layer.provenance?.role ?? '';
   const words = `${category} ${layer.name ?? ''}`;
   const role = layer.placement.kind === 'base' || layer.cleanBackground ? 'Background'
@@ -73,11 +76,12 @@ export function RunDashboard({ run, diagnostics: d, loadingError, actions, devel
   const target = AI_PRICING.targetInr;
   return <main className="lx-dashboard" aria-label="Decomposition diagnostics">
     <section className="lx-card lx-summary" aria-label="Run summary">
-      <div className="lx-row"><div><p className="lx-eyebrow">Decomposition result · {run.templateKey ?? 'Template A'}</p><h2>Image to editor layers</h2></div>
+      <div className="lx-row"><div><p className="lx-eyebrow">Decomposition result · {run.alternative ? 'Qwen-Image-Layered (alternative)' : isProtectedRun(run) ? 'Protected template · Seedream only' : run.creative ? 'Saved creative · editor conversion' : run.templateKey ?? 'Template A'}</p><h2>Image to editor layers</h2></div>
         <span className={`lx-badge lx-${status === 'FAILED' ? 'failed' : status === 'PARTIAL' ? 'warning' : status === 'RUNNING' ? 'running' : 'complete'}`} role="status">{status}</span></div>
       <p className="lx-muted lx-run-id">{new Date(run.createdAt).toLocaleString()} · Run {run.id}</p>
+      {run.creative?.provenance?.preparation && <p className="lx-muted" data-testid="preparation-cost">Prior template preparation: {run.creative.provenance.preparation.method}, ${run.creative.provenance.preparation.costUsd.toFixed(4)} recorded, {run.creative.provenance.preparation.requests} provider operations{run.creative.provenance.preparation.ai?.offline ? ' (offline stand-in)' : ''}. Reused here; no new preparation charge.{run.creative.provenance.preparation.ai?.requestId ? ` Seedream request: ${run.creative.provenance.preparation.ai.requestId}.` : ''}</p>}
       <div className="lx-stats">
-        <div className="lx-total"><span>{run.stage === 'failed' ? 'AI cost so far' : status === 'RUNNING' ? 'AI cost so far' : 'Total AI cost'}</span><strong data-testid="run-cost">{d ? costText(d.total) : loadingError ? 'Unavailable' : 'Loading usage…'}</strong><small>Target ₹{target.min}–₹{target.max}{d?.total.inr !== null && d?.total.inr !== undefined && d.total.inr > target.max ? ` · ${rupees(d.total.inr - target.max)} above` : ''}</small></div>
+        <div className="lx-total"><span>{run.creative ? 'Editor conversion AI cost' : run.stage === 'failed' ? 'AI cost so far' : status === 'RUNNING' ? 'AI cost so far' : 'Total AI cost'}</span><strong data-testid="run-cost">{d ? costText(d.total) : loadingError ? 'Unavailable' : 'Loading usage…'}</strong><small>Target ₹{target.min}–₹{target.max}{d?.total.inr !== null && d?.total.inr !== undefined && d.total.inr > target.max ? ` · ${rupees(d.total.inr - target.max)} above` : ''}</small></div>
         <div><span>Paid API calls</span><strong>{d ? `${d.calls}${d.callsMeasured ? '' : ' inferred'}` : '—'}</strong></div>
         <div><span>Raw → Editor layers</span><strong data-testid="layer-story">{d?.rawLayers ?? '—'} → {layers.length}</strong></div>
         <div><span>Residual passes</span><strong>{residual?.calls.length ?? '—'}</strong></div>
@@ -87,9 +91,20 @@ export function RunDashboard({ run, diagnostics: d, loadingError, actions, devel
       {run.stage === 'failed' && <div className="lx-message lx-failure" role="alert"><p>{`${failedStage?.label ?? failurePoint[run.error?.stage ?? ''] ?? 'Processing'} failed. `}{run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED'
         ? 'Seedream could not produce a valid decomposition. No raw layers were returned.' : run.error?.code === 'PROVIDER_SAFETY_REJECTED' ? 'The provider withheld the result after its safety check. Choose a different image.' : 'The run stopped before editor layers were ready.'}</p>
         {run.error?.provider && <p>Provider response (HTTP {run.error.provider.status}): {run.error.provider.messages.map(m => m.msg).join(' ')}</p>}
-        {run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' && <p>This request is final; Resume cannot recover it. Retry extraction reuses the saved plan without another planner call, but makes a new paid Seedream request and may fail again. You can also choose a different image or template.</p>}
+        {run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' && <p>{refusalAdvice(run, AI_PRICING.qwenLayered.perRequest)}</p>}
+        {run.error?.code === 'QWEN_LAYERS_FAILED' && <p>{run.error.message}</p>}
         <p>Technical details are available below.</p></div>}
       {status === 'PARTIAL' && <p className="lx-message">The result needs manual review. Check background quality and the final layers before using it.</p>}
+      {run.alternative && run.stage === 'done' && <p className="lx-message">Layers from Qwen-Image-Layered, after Seedream refused run {run.alternative.fromRunId}. Qwen chose how objects are grouped; visible pixels are the image's own, and areas hidden behind objects are AI-generated.</p>}
+      {run.creative?.product && run.stage === 'done' && run.creative.provenance?.variation && <p className="lx-message" data-testid="variation-run-note">Decomposition layers of your selected variation “{run.creative.provenance.variation.title}” ({run.creative.provenance.variation.aspectRatio === 'original' ? 'original size' : run.creative.provenance.variation.aspectRatio}, {run.creative.canvas.width} × {run.creative.canvas.height} px).
+        Its {run.creative.provenance.inputs.filter(i => i.role === 'product' || i.role === 'character').length} product and character cut-outs were reused as they are: nothing was segmented again and no text or logo was sent anywhere (cost $0.00). Check the layers, then open it in the editor.</p>}
+      {run.creative?.product && run.stage === 'done' && <p className="lx-message" data-testid="creative-run-note">Made from your Product with Text creative “{run.creative.name}” (template version {run.creative.masterRevision}, creative version {run.creative.creativeRevision}) without any AI request.
+        Each product, character, decoration, text and logo is its own layer at its saved place; behind them the background is the template’s prepared base (an estimate where something was in front). In the editor, texts open as editable text. Your creative itself is not changed.</p>}
+      {run.creative && !run.creative.product && run.stage === 'done' && <p className="lx-message" data-testid="creative-run-note">Made from your saved creative “{run.creative.name}” (template version {run.creative.masterRevision}, creative revision {run.creative.creativeRevision}) without any AI request.
+        Each text, logo, shape and the background is its own layer at its saved place{run.creative.artwork?.objects ? <>, and the background artwork is split into {run.creative.artwork.objects} object{run.creative.artwork.objects === 1 ? '' : 's'} (border, illustrations, ornaments) over its base{run.creative.artwork.method === 'local' ? '; behind them the base is continued from the field around them, an estimate that shows only if you move or hide an object' : ', cut along the template\'s own Seedream layers'}</> : ''}.
+        In the editor, texts open as editable text and shapes as editable shapes. Your creative itself is not changed.</p>}
+      {run.creative?.artwork?.method === 'local' && run.stage === 'done' && <p className="lx-muted" data-testid="artwork-split-hint">Objects that touch stay one layer (for example a flower lying on its leaves).
+        To split them further, use the template's own option once: Offer Templates → Edit master → 2 · Artwork layers → Split it into layers with Seedream (paid, cost shown first), then Save master. A creative moved to that version (Use the newer background) and sent again uses those layers.</p>}
       {loadingError && <p className="lx-message" role="alert">Recorded usage could not be loaded. Reopen this run to retry. Costs are unavailable.</p>}
       <div className="lx-actions">{actions}</div>
     </section>

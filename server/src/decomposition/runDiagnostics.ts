@@ -122,6 +122,17 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
     if (prompt) prompts.push({ label: 'Generation prompt', text: prompt, model: call.model, inputTokens: call.usage?.inputTokens });
     sourceTime += num(variant.durationMs) ?? 0; sourceTimeKnown &&= num(variant.durationMs) !== undefined && imageCalls.length === 1;
     notes.push('Generation belongs to the linked source image and is included once in this view, even when that image has other decomposition runs.');
+  } else if (run.origin?.kind === 'protected-template') {
+    add('reference', 'Analyze reference', 'Skipped', [], 'Protected template: regions marked and reviewed by an administrator · no analysis call');
+    add('generation', 'Generate image', 'Skipped', [], 'No image generation: the prepared base was made locally from the protected template');
+    notes.push(`Protected template ${run.origin.generationId}: its text, logos and legal copy were kept out of this image and are restored from their preserved assets. Seedream 5.0 Pro Layerize is the only model this run may call.`);
+  } else if (run.origin?.kind === 'master-creative') {
+    add('reference', 'Analyze reference', 'Skipped', [], `Saved creative “${run.creative?.name ?? run.origin.variantId}” of a Text & Graphics template · no analysis call`);
+    add('generation', 'Generate image', 'Skipped', [], 'No image generation: the layers were made locally from the creative\'s own elements');
+    notes.push('Layers made locally from the saved creative: each text, logo, shape and the background is its own layer at its saved place. No planner, Seedream or OCR call; texts and shapes open as editable text and shapes. The creative itself is not changed.');
+    const art = run.creative?.artwork;
+    if (art?.method === 'local') notes.push(`The background artwork was split locally into ${art.objects} object layer(s) over its base (a border of repeated pieces, illustrations, ornaments; touching objects stay one layer). Each object keeps its exact pixels; behind them (${art.behindPercent ?? 0}% of the picture) the base is continued from the field around them, ${art.trustedPercent ?? 0}% as a plain field or the pattern, the rest a smooth estimate.`);
+    else if (art?.method === 'master-layers') notes.push(`The background artwork is the template's own decomposition: ${art.objects} object layer(s) over its base.`);
   } else {
     add('reference', 'Analyze reference', 'Skipped', [], 'Uploaded image; no linked reference analysis');
     add('generation', 'Generate image', 'Skipped', [], 'Uploaded image; no linked generation');
@@ -138,7 +149,9 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
   const reused = run.promptSource && run.promptSource.mode !== 'generated';
   add('planner', 'Plan layers', run.planner ? 'Complete' : plannerCalls ? failed ? 'Failed' : 'Running' : reused ? 'Skipped' : pending(),
     plannerCalls ? padCalls([planner], plannerCalls, 'text') : [], run.planner ? `${run.planner.planned_layers.length} planned elements${run.planner.capture ? ' · reusable template captured in the same call' : ''}`
-      : run.promptSource?.mode === 'template-plan' ? `Saved template plan reused (${run.promptSource.templateName} v${run.promptSource.version}) · no planner call` : reused ? 'Saved plan reused · no new planner call' : 'Layer planning', !!run.calls || !!run.planner || !plannerCalls);
+      : run.promptSource?.mode === 'template-plan' ? `Saved template plan reused (${run.promptSource.templateName} v${run.promptSource.version}) · no planner call`
+      : run.promptSource?.mode === 'protected' ? `Not used: a protected template never calls the planner${run.promptSource.prompt ? ' · administrator\'s layer instructions sent as written' : ' · no prompt (Seedream\'s automatic mode)'}`
+      : reused ? 'Saved plan reused · no new planner call' : run.alternative ? 'Not used: Qwen layers need no plan' : run.origin?.kind === 'master-creative' ? 'Not used: the creative\'s own elements are its layers' : 'Layer planning', !!run.calls || !!run.planner || !plannerCalls);
   if (str(plannerRequest.instructions)) prompts.push({ label: 'Planner instructions', text: String(plannerRequest.instructions), model: planner.model, inputTokens: planner.usage?.inputTokens });
   if (run.finalPrompt !== undefined) prompts.push({ label: 'Seedream prompt', text: run.finalPrompt || '(Empty prompt: automatic major elements)', model: run.seedream.endpoint });
   const seedreamFacts = async (pass: number): Promise<PaidCall> => {
@@ -165,11 +178,21 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
       baseWidth: width, baseHeight: height,
       noCharge: !pass && run.error?.provider?.billableUnits === '0' ? true : undefined };
   };
-  const initialCalls = run.calls?.seedreamInitial ?? (run.seedream.requestId || existsSync(join(dir, 'seedream-request.json')) || existsSync(join(dir, 'seedream-response.json')) || run.error?.stage === 'submitting' ? 1 : 0);
+  // A Qwen run (the alternative after a refusal) never reaches Seedream, whatever stage it stopped at.
+  const initialCalls = run.alternative ? 0 : run.calls?.seedreamInitial ?? (run.seedream.requestId || existsSync(join(dir, 'seedream-request.json')) || existsSync(join(dir, 'seedream-response.json')) || run.error?.stage === 'submitting' ? 1 : 0);
   const initial = initialCalls ? await seedreamFacts(0) : undefined;
   const hasOutput = existsSync(join(dir, 'seedream-response.json'));
   add('seedream', 'Generate raw layers', hasOutput ? 'Complete' : initialCalls ? failed ? 'Failed' : 'Running' : pending(), initial ? padCalls([initial], initialCalls, 'seedream') : [],
     initial?.rawLayers !== undefined ? `${initial.rawLayers} billable raw layers` : initialCalls ? 'Provider output not yet available' : 'Not run', !!run.calls || !!run.seedream.requestId || !initialCalls);
+  const alternative = run.alternative;
+  if (alternative) {
+    // Counted once sent; fal's own zero billable units (saved with a refused request) prove it was free.
+    const refused = obj(json(dir, 'qwen-error.json').provider);
+    const calls: PaidCall[] = alternative.requestId ? [{ kind: 'qwen', model: alternative.endpoint, requestId: alternative.requestId, noCharge: refused.billableUnits === '0' ? true : undefined }] : [];
+    add('alternative', 'Qwen layers (alternative)', done ? 'Complete' : failed ? 'Failed' : 'Running', calls,
+      done ? `${alternative.returned ?? '?'} Qwen layers after Seedream refused run ${alternative.fromRunId}` : failed ? run.error?.message ?? 'Failed' : 'Waiting for Qwen');
+    notes.push(`Qwen-Image-Layered was chosen after Seedream refused run ${alternative.fromRunId}; that run's planner cost stays on it. The model chose how objects are grouped, and areas hidden behind objects are AI-generated.`);
+  }
   const submittedPasses = (run.refinement?.passes ?? []).filter(p => p.requestId || existsSync(join(dir, `pass-${p.pass}-seedream-request.json`)) || existsSync(join(dir, `pass-${p.pass}-seedream-response.json`)));
   const residual = await Promise.all(submittedPasses.map(p => seedreamFacts(p.pass)));
   padCalls(residual, run.calls?.seedreamResidual ?? residual.length, 'seedream');
@@ -195,7 +218,8 @@ export async function readRunDiagnostics(dir: string, options: DiagnosticsOption
   add('curation', 'Local curation', done && editorLayers ? 'Complete' : failed && run.error?.stage === 'refining' ? 'Failed' : pending(), [], done ? `${editorLayers} editor layers selected locally` : 'Not completed');
   add('editor', 'Editor-ready layers', done && editorLayers ? ref?.state === 'failed' || ref?.background?.contaminated || ref?.background?.status === 'fallback' || (ref?.background?.quality && ref.background.quality !== 'usable') ? 'Warning' : 'Complete' : pending(), [], done && editorLayers ? 'Ready for manual evaluation' : 'No completed editor result');
   const rawCalls = [...(initial ? [initial] : []), ...residual];
-  const rawLayers = rawCalls.length && rawCalls.every(c => c.rawLayers !== undefined) ? rawCalls.reduce((sum, c) => sum + c.rawLayers!, 0) : rawCalls.length ? null : 0;
+  const rawLayers = alternative ? alternative.returned ?? (done ? null : 0)
+    : rawCalls.length && rawCalls.every(c => c.rawLayers !== undefined) ? rawCalls.reduce((sum, c) => sum + c.rawLayers!, 0) : rawCalls.length ? null : 0;
   // totalMs is persisted pipeline duration. updatedAt changes on re-render, so it is not a duration fallback.
   const decompositionMs = run.timings.totalMs ?? (run.seedream.completedAt && Date.parse(run.seedream.completedAt) - Date.parse(run.createdAt) + (run.timings.renderMs ?? 0) + (run.timings.refineMs ?? 0));
   const elapsedMs = terminal && typeof decompositionMs === 'number' && decompositionMs >= 0 && sourceTimeKnown ? decompositionMs + sourceTime : null;

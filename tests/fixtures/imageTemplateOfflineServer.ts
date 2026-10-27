@@ -1,3 +1,11 @@
+import { productReuseProviders } from './productReuseProviders.js';
+import { liveProductAnalyzer, parseProductScene, replayProductAnalyzer } from '../../server/src/decomposition/protectedTemplates/product/analyzer.js';
+import { failingResponsesClient, recordedResponsesClient, type FailingKind } from '../../server/src/decomposition/protectedTemplates/product/responsesClient.fixture.js';
+import { replayArtworkGenerator } from '../../server/src/decomposition/protectedTemplates/product/artwork.js';
+import { standInProductLayerizer } from '../../server/src/decomposition/protectedTemplates/product/aiDecompose.js';
+import type { ReusePlacementPlanner } from '../../server/src/decomposition/protectedTemplates/product/reusePlacement.js';
+import { findSheetCreatives } from '../../server/src/decomposition/protectedTemplates/product/sheet.js';
+import { decodeRgba } from '../../server/src/decomposition/protectedTemplates/pixels.js';
 /** Local-only reviewer fixture: real routes/storage/planner adaptation/import, deterministic providers, no credentials. */
 import express from 'express';
 import { createHash, randomBytes } from 'node:crypto';
@@ -21,12 +29,28 @@ import { TEMPLATE_CAPTURE_SCHEMA, SEMANTIC_SCHEMA, type SemanticAnalysis, type S
 import { BANGLE_PARTS, bangleAnalysis, blackSilhouetteEdit, creative, HOLDING_PARTS, holdingAnalysis, partPng } from '../../server/src/decomposition/protectedInteraction.fixture.js';
 import { curationFixture } from '../../server/src/decomposition/curation.fixture.js';
 import { parseStructure } from '../../server/src/decomposition/creativeTemplates/inspect.js';
+import { createTemplateStudioRouter } from '../../server/src/templateStudio/router.js';
+import { parseStudioEnv } from '../../server/src/templateStudio/config.js';
+import { FakeProvider, fakeSegmenter } from '../../server/src/templateStudio/testing/fakeProvider.js';
+import { fakeRecognizer, tesseractRecognizer, type WordRecognizer } from '../../server/src/textRecognition/recognizer.js';
+import { masterPosterPng, newLogoPng } from '../../server/src/decomposition/protectedTemplates/master/masterPoster.fixture.js';
+import { artworkPosterPng } from '../../server/src/decomposition/protectedTemplates/master/artworkObjects.fixture.js';
+import { existsSync } from 'node:fs';
+import { loadGaneshHandmade } from './privateHandmade.js';
+import { homedir } from 'node:os';
+import { replacementLogoPng, VARIATION_WORDS, variationPosterPng } from '../../server/src/textRecognition/variationPoster.fixture.js';
+import { logoPng, productCutoutPng, productPhotoPng, referencePosterPng, TEST_BRAND_RULES } from '../../server/src/templateStudio/testing/fixtures.js';
+import { fakeArtworkGenerator, fakeProductAnalyzer, fakeSegmenter as fakeProductSegmenter, PRODUCT_WORDS, productPosterPng } from '../../server/src/decomposition/protectedTemplates/product/productPoster.fixture.js';
 
 if (process.env.FRAMEFLOW_OFFLINE_E2E !== '1') throw new Error('This fixture requires FRAMEFLOW_OFFLINE_E2E=1.');
 // No SDK transport is used. An accidental fetch fails before it can leave this process.
 globalThis.fetch = async () => { throw new Error('Network is disabled in the offline fixture server.'); };
 const port = Number(process.env.FRAMEFLOW_OFFLINE_PORT ?? 3317), origin = `http://127.0.0.1:${port}`;
 const root = mkdtempSync(join(tmpdir(), 'frameflow-image-template-e2e-'));
+// Optional real-poster fixture prepared by prepareSavedVariation.ts. Copy only; the saved original is never served or edited.
+if (process.env.FRAMEFLOW_SAVED_VARIATION_FIXTURE) {
+  cpSync(join(resolve(process.env.FRAMEFLOW_SAVED_VARIATION_FIXTURE), 'protected'), join(root, 'protected'), { recursive: true });
+}
 
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const curation = curationFixture(), curationImages = new Set<string>();
@@ -143,6 +167,98 @@ const holdingDigest = creative(HOLDING_PARTS).then(digest), bangleDigest = creat
 let blackEditNext = false;
 let complexResidualNext = false;
 const providerCalls: { kind: 'seedream-initial' | 'seedream-residual' | 'background-edit'; complex?: boolean }[] = [];
+/**
+ * Protected templates: a 900×1200 EMI poster (two bank logos, a headline, fine print) and its clean artwork. A 10 px
+ * marker in the unprotected top-left corner tells the fake Seedream what to do with a base: answer with the base and the
+ * phone as layers, or refuse it as the provider's partner content check did on 2026-10-19 (422, 0 billable units).
+ */
+const PT_SIZE = { width: 900, height: 1200 }, PT_MARKERS = { ok: [10, 126, 141], refuse: [10, 126, 142] } as const;
+const PT_GRADIENT = '<defs><linearGradient id="ptg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b6e79"/><stop offset="1" stop-color="#14a3a8"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#ptg)"/>';
+const PT_PHONE = '<rect x="520" y="420" width="260" height="520" rx="36" fill="#22252c"/><rect x="536" y="440" width="228" height="480" rx="26" fill="#9fb7d9"/>';
+const PT_LOGO_A = '<rect width="200" height="80" rx="10" fill="#f4f1e8"/><circle cx="40" cy="40" r="26" fill="#c8102e"/><rect x="80" y="26" width="100" height="28" fill="#1d2a6b"/>';
+const PT_LOGO_B = '<circle cx="50" cy="50" r="46" fill="#1b8a3a"/><rect x="30" y="40" width="40" height="20" fill="#ffffff"/>';
+const PT_LOGO_NEW = '<rect width="200" height="80" rx="40" fill="#f26b1d"/><rect x="40" y="30" width="120" height="20" fill="#ffffff"/>';
+const ptSvg = (body: string, w = PT_SIZE.width, h = PT_SIZE.height) => sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${body}</svg>`)).png().toBuffer();
+const ptMarker = (kind: keyof typeof PT_MARKERS) => `<rect x="4" y="4" width="10" height="10" fill="rgb(${PT_MARKERS[kind].join(',')})"/>`;
+/** A test's own mark beside the marker (unprotected), so its images are its own while other specs share this server. */
+const ptSeed = (seed: string) => seed ? `<rect x="20" y="4" width="10" height="10" fill="#${createHash('sha256').update(seed).digest('hex').slice(0, 6)}"/>` : '';
+const ptSource = (kind: keyof typeof PT_MARKERS, seed = '') => ptSvg(PT_GRADIENT + ptMarker(kind) + ptSeed(seed) + PT_PHONE + `<g transform="translate(60 60)">${PT_LOGO_A}</g><g transform="translate(300 50)">${PT_LOGO_B}</g>`
+  + '<text x="60" y="380" font-family="Helvetica, Arial, sans-serif" font-size="72" font-weight="700" fill="#ffffff">Easy EMI</text>'
+  + '<text x="60" y="1150" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#e8f4f4">T&amp;C apply. EMI on select bank cards. Offer valid till 31 Oct 2026.</text>');
+const ptClean = (kind: keyof typeof PT_MARKERS, seed = '') => ptSvg(PT_GRADIENT + ptMarker(kind) + ptSeed(seed) + PT_PHONE);
+async function ptMarkerOf(bytes: Buffer): Promise<keyof typeof PT_MARKERS | undefined> {
+  const { data, info } = await sharp(bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (info.width !== PT_SIZE.width || info.height !== PT_SIZE.height) return undefined;
+  const i = (8 * info.width + 8) * 3;
+  return (Object.keys(PT_MARKERS) as (keyof typeof PT_MARKERS)[]).find(k => PT_MARKERS[k].every((v, c) => data[i + c] === v));
+}
+const partnerRefused = new Set<string>();
+// Master templates: the REAL local OCR (tesseract.js, its model read from node_modules; no network), every read counted, so
+// a browser test can prove that reuse reads nothing. A master's clean background registered for "echo" comes back from the
+// fake Seedream as its own layer (the artwork unchanged), instead of the lavender studio every unknown image gets.
+const masterOcr = tesseractRecognizer();
+let masterOcrCalls = 0;
+const masterRecognizer: WordRecognizer = { engine: masterOcr.engine, recognize: input => { masterOcrCalls++; return masterOcr.recognize(input); } };
+const masterEcho = new Set<string>();
+// FRAMEFLOW_PRODUCT_REFERENCE=1 (screenshots of a real reference only): the real local OCR, and for the LG creative of
+// Ganesh-Chaturthi.png the HAND-MADE stand-in answer (tests/fixtures/ganeshHandmade.fixture.ts), never a model's.
+// (The hand-made manifest of the client's reference creative is confidential and kept out of the repository: used only
+// where it is present, like the reference picture itself.)
+const handmade = await loadGaneshHandmade();
+const GANESH_LG_SIZE = handmade?.GANESH_LG_SIZE ?? { width: 607, height: 606 };
+const realProduct = process.env.FRAMEFLOW_PRODUCT_REFERENCE === '1' && !!handmade, fixtureAnalyzer = fakeProductAnalyzer(), handmadeAnalyzer = fakeProductAnalyzer(handmade?.GANESH_LG_HANDMADE_ANSWER);
+// New artwork for recomposed variations: the offline image model (no network, labelled as a test model).
+// With the recorded real answer (FRAMEFLOW_PRODUCT_RECORDED=1) the RECORDED real gpt-image-2 artworks are replayed instead.
+const reuseProof = process.env.FRAMEFLOW_PRODUCT_REUSE_PROOF === '1' ? productReuseProviders() : undefined;
+const productArtwork = reuseProof?.artwork ?? (process.env.FRAMEFLOW_PRODUCT_RECORDED === '1' && existsSync('tests/fixtures/recorded/gpt-image-2-ganesh-16x9-2026-10-22.png')
+  ? replayArtworkGenerator({ wide: readFileSync('tests/fixtures/recorded/gpt-image-2-ganesh-16x9-2026-10-22.png'), tall: readFileSync('tests/fixtures/recorded/gpt-image-2-ganesh-9x16-2026-10-22.png'), square: readFileSync('tests/fixtures/recorded/gpt-image-2-ganesh-1x1-2026-10-22.png') })
+  : fakeArtworkGenerator());
+const productRecognizer = realProduct ? Object.assign(masterRecognizer, { calls: [] as unknown[] }) : fakeRecognizer(PRODUCT_WORDS), productSegmenter = fakeProductSegmenter();
+// The AI decomposition core's OFFLINE STAND-IN (aiDecompose.ts): no OpenAI planner, no Seedream — labelled so wherever it
+// shows; FRAMEFLOW_PRODUCT_LAYERIZE=off removes it (the screens then offer only the local decomposition).
+/**
+ * Reuse Template's AI placement, as a test double (offline:false, so the cost approval is exercised; NEVER contacts a
+ * provider): it returns the fixed-rule proposal with the middle product enlarged as the hero, and one deliberately bad
+ * box (the last product over the headline) that the server's checks must reject.
+ */
+const placementCalls: { format: string; products: string[]; imageBytes: number; operationId: string }[] = [];
+const reusePlacement: ReusePlacementPlanner = { model: 'test placement planner (no network or charges)', offline: false, async place(input, image, save, operationId) {
+  placementCalls.push({ format: input.format, products: input.products.map(p => p.id), imageBytes: image.length, operationId });
+  save('placement.test-request.json', { format: input.format, products: input.products.length, testOnly: true });
+  const hero = input.proposal[Math.floor(input.proposal.length / 2)], text = input.keepOut[0];
+  return { responseId: `fixture-placement-${placementCalls.length}`, raw: { notes: ['Hero product centred and enlarged (test double).'], products: input.proposal.map((b, i) => {
+    if (b.id === hero?.id) { const k = 1.12; return { id: b.id, x: b.x + b.width / 2 - b.width * k / 2, y: b.y + b.height - b.height * k, width: b.width * k, height: b.height * k, z: 900, role: 'hero' }; }
+    if (i === input.proposal.length - 1 && text && input.proposal.length > 1) return { id: b.id, x: text.x, y: text.y, width: b.width, height: b.height, z: b.z, role: 'supporting' };
+    return { ...b, role: 'supporting' };
+  }) } };
+} };
+const productLayerizer = process.env.FRAMEFLOW_PRODUCT_LAYERIZE === 'off' ? undefined : reuseProof?.layerizer ?? standInProductLayerizer();
+// FRAMEFLOW_PRODUCT_RECORDED=1 (with FRAMEFLOW_PRODUCT_REFERENCE=1): the LG creative gets the RECORDED real answer of the one
+// approved live detection (gpt-5.6-sol, 2026-10-22), replayed without network; otherwise the handmade manifest.
+const recordedProduct = realProduct && process.env.FRAMEFLOW_PRODUCT_RECORDED === '1' && existsSync('tests/fixtures/recorded/ganesh-lg-gpt-5.6-sol-2026-10-22.response.json');
+let recordedAnalyzer: ReturnType<typeof replayProductAnalyzer> | undefined;
+if (recordedProduct) {
+  const sheet = readFileSync('Ganesh-Chaturthi.png'), c = findSheetCreatives(await decodeRgba(sheet)).boxes[0];
+  const creative = await sharp(sheet).extract({ left: c.x, top: c.y, width: c.width, height: c.height }).png({ compressionLevel: 9 }).toBuffer();
+  recordedAnalyzer = replayProductAnalyzer({ response: JSON.parse(readFileSync('tests/fixtures/recorded/ganesh-lg-gpt-5.6-sol-2026-10-22.response.json', 'utf8')), model: 'gpt-5.6-sol', imageSha256: createHash('sha256').update(await sharp(creative).png().toBuffer()).digest('hex') });
+}
+// FRAMEFLOW_PRODUCT_AI_CLIENT: the LIVE analyzer code (picture sent at most 2048 px, request, error handling) with a client
+// that never reaches the network: `recorded` answers with the RECORDED real answer for the LG creative at the size actually
+// sent (any upload size of that creative); `timeout`, `connection`, `no-credit` or `bad-key` fail as the OpenAI SDK does.
+const aiClientKind = process.env.FRAMEFLOW_PRODUCT_AI_CLIENT;
+const liveWithFakeClient = !aiClientKind ? undefined : aiClientKind === 'recorded'
+  ? liveProductAnalyzer({ model: 'gpt-5.6-sol (recorded answer, replayed)', client: recordedResponsesClient(JSON.parse(readFileSync('tests/fixtures/recorded/ganesh-lg-gpt-5.6-sol-2026-10-22.response.json', 'utf8')), GANESH_LG_SIZE) })
+  : liveProductAnalyzer({ model: 'gpt-5.6-sol', client: failingResponsesClient(aiClientKind as FailingKind) });
+// `model` is the analyser that answered the last request (detection records it: a replayed real answer is labelled so).
+let lastProductModel = 'offline-test-analyser';
+const productAnalyzer = { get model() { return lastProductModel; }, get calls() { return fixtureAnalyzer.calls + handmadeAnalyzer.calls + (recordedAnalyzer?.calls ?? 0); },
+  async analyze(image: Buffer, mime: string, save: (file: string, value: object) => void) { const m = await sharp(image).metadata();
+    lastProductModel = 'offline-test-analyser';
+    if (liveWithFakeClient) { lastProductModel = liveWithFakeClient.model; return liveWithFakeClient.analyze(image, mime, save); }
+    if (recordedAnalyzer && m.width === GANESH_LG_SIZE.width) { lastProductModel = recordedAnalyzer.model; return recordedAnalyzer.analyze(image, mime, save); }
+    if (realProduct && handmade && m.width === GANESH_LG_SIZE.width) { await handmadeAnalyzer.analyze(image, mime, save); return parseProductScene(handmade.ganeshWordManifest({ width: m.width!, height: m.height! }), { width: m.width!, height: m.height! }); } return fixtureAnalyzer.analyze(image, mime, save); } };
+// Style variations: the word-analysis poster and the words its fake recognizer reads (variationPoster.fixture.ts). No OCR runs.
+const variationRecognizer = fakeRecognizer(VARIATION_WORDS);
 async function complexLayers(requestId: string, base: readonly OfferPart[], parts: OfferPart[], duplicates: OfferPart[] = []) {
   const entries: [string, Buffer][] = [['Background', await offerComposite(base)], ...await Promise.all([...parts, ...duplicates].map(async part => [partName(part), await offerPart(part)] as [string, Buffer]))];
   return entries.map(([name, png], z_index) => { const url = `https://v3b.fal.media/files/offline/${requestId}-${z_index}.png`; files.set(url, png); return { image: { url }, z_index, name }; });
@@ -155,6 +271,22 @@ const transport: FalTransport = {
     const residual = String(input.prompt ?? '').startsWith(RESIDUAL_PROMPT.slice(0, 60));
     const { width = 1024, height = 1024 } = await sharp(bytes).metadata();
     const requestId = `offline-${results.size}`;
+    if (!residual && masterEcho.has(await pixelsDigest(bytes))) {
+      providerCalls.push({ kind: 'seedream-initial' });
+      const url = `https://v3b.fal.media/files/offline/${requestId}-master-0.png`; files.set(url, await sharp(bytes).png().toBuffer());
+      results.set(requestId, { layers: [{ image: { url }, z_index: 0, name: 'Clean background' }] }); return { requestId };
+    }
+    const protectedBase = residual ? undefined : await ptMarkerOf(bytes);
+    if (protectedBase === 'refuse') { providerCalls.push({ kind: 'seedream-initial' }); partnerRefused.add(requestId); results.set(requestId, { refused: true }); return { requestId }; }
+    if (protectedBase === 'ok') {
+      providerCalls.push({ kind: 'seedream-initial' });
+      const raw = await sharp(bytes).ensureAlpha().raw().toBuffer();
+      for (let y = 0; y < PT_SIZE.height; y++) for (let x = 0; x < PT_SIZE.width; x++) if (!(x >= 520 && x < 780 && y >= 420 && y < 940)) raw[(y * PT_SIZE.width + x) * 4 + 3] = 0;
+      const layers = await Promise.all([await sharp(bytes).png().toBuffer(), await sharp(raw, { raw: { ...PT_SIZE, channels: 4 } }).png().toBuffer()].map(async (png, z_index) => {
+        const url = `https://v3b.fal.media/files/offline/${requestId}-protected-${z_index}.png`; files.set(url, png); return { image: { url }, z_index, name: z_index ? 'Phone' : 'Background' };
+      }));
+      results.set(requestId, { layers }); return { requestId };
+    }
     if (!residual && rejectFirstExtraction.delete(digest(bytes))) rejectedRequests.add(requestId);
     else if (!residual && !markerRejected.has(digest(bytes)) && await hasMarker(bytes)) { markerRejected.add(digest(bytes)); rejectedRequests.add(requestId); }
     if (!residual && curationImages.has(await pixelsDigest(bytes))) {
@@ -207,6 +339,12 @@ const transport: FalTransport = {
   status: async () => { callCounts.fal++; return 'COMPLETED'; },
   result: async (_endpoint, id) => {
     callCounts.fal++; await pause();
+    if (partnerRefused.has(id)) {
+      // The provider's partner content check, as answered live on 2026-10-19 (request 01a1539b-…): the reason is not disclosed.
+      const detail = { msg: 'The content could not be processed because it contained material flagged by a content checker.', type: 'content_policy_violation', loc: 'body.image_url', reason: 'partner_validation_failed' };
+      throw Object.assign(new ProviderError('PROVIDER_REJECTED', 'The provider rejected the image or request. Check the saved input and provider account.', false, 422),
+        { providerDetail: { status: 422, billableUnits: '0', requestId: id, messages: [detail] } });
+    }
     if (rejectedRequests.has(id)) {
       // fal's intake refusal: answered in the submission second, 0 billable units, a generic invalid_request on the image.
       const detail = { msg: 'The provided image could not be processed for layer decomposition. Try a different image.', type: 'invalid_request', loc: 'body.image_url' };
@@ -317,7 +455,9 @@ const router = createLayerizeRouter({
     segmenter: () => ({ provider: 'sam3', segment: async ({ width, height }) => { callCounts.fal++; await pause();
       return { mask: await svgPng(width, height, '<rect width="1000" height="1000" fill="#000"/><rect x="345" y="190" width="310" height="570" rx="45" fill="#fff"/>'), requestIds: ['offline-sam3'] }; } }),
   },
-  runsDir: join(root, 'runs'), imageTemplatesDir: join(root, 'templates'),
+  runsDir: join(root, 'runs'), imageTemplatesDir: join(root, 'templates'), protectedDir: join(root, 'protected'), wordRecognizer: () => variationRecognizer, masterRecognizer: () => masterRecognizer,
+  // Product with Text templates: the fixture poster's words (no OCR), the fixture's vision answer and a fake cut-out service, each counted.
+  productRecognizer: () => productRecognizer, productAnalyzer: () => productAnalyzer, productSegmenter: () => productSegmenter, productLayerizer: () => productLayerizer, productPlacement: () => reusePlacement, productArtwork: () => productArtwork,
   templatesDir: join(root, 'creative-templates'), executionsDir: join(root, 'executions'),
   inspector: () => ({ model: 'gpt-5.6-luna', inspect: async (_bytes, _mime, save) => {
     callCounts.openai++;
@@ -349,8 +489,21 @@ const router = createLayerizeRouter({
     return { image: black ? await blackSilhouetteEdit(image, mask) : await rowFillEdit(image, mask), requestId: `offline-edit-${providerCalls.length}` };
   } } }),
 });
+// Template Studio with MOCKED OpenAI answers and SAM-3 masks: synthetic scenes, never real generations.
+const studioProvider = new FakeProvider();
+studioProvider.delayMs = 300;
+const studioRouter = createTemplateStudioRouter({ env: parseStudioEnv({}, join(root, 'template-studio')), provider: studioProvider, segmenter: () => fakeSegmenter(), runsDir: join(root, 'runs'),
+  protectedDir: join(root, 'protected'), recognizer: () => variationRecognizer, masterRecognizer: () => masterRecognizer,
+  access: { production: true, clientOrigin: origin }, falConfigured: true, log: () => undefined });
 // Explicit empty configuration: no environment credentials or .env files are read.
-const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router);
+const app = createApp(readConfig({ CLIENT_ORIGIN: origin }), undefined, () => undefined, undefined, undefined, router, undefined, studioRouter);
+// Template Studio's fake provider calls (prompts and instructions), and synthetic posters and products to upload.
+app.get('/__test__/studio-calls', (_req, res) => res.json(studioProvider.calls.map(c => ({ kind: c.kind, schemaName: c.schemaName, system: c.system, prompt: c.prompt, images: c.images, fidelityMode: c.data?.fidelityMode, masterId: (c.data?.master as { id?: string } | undefined)?.id }))));
+app.get('/__test__/studio-reference.png', async (_req, res) => res.type('png').send(await referencePosterPng()));
+app.get('/__test__/studio-product.png', async (req, res) => res.type('png').send(await productPhotoPng(String(req.query.colour ?? '#8b929c'))));
+app.get('/__test__/studio-cutout.png', async (_req, res) => res.type('png').send(await productCutoutPng()));
+app.get('/__test__/studio-logo.png', async (_req, res) => res.type('png').send(await logoPng('#14325c')));
+app.get('/__test__/studio-brand-rules', (_req, res) => res.json(TEST_BRAND_RULES));
 // Clone a persisted fake run into a billing-unknown failure; this route exists ONLY in the offline fixture.
 app.post('/__test__/dashboard-failure/:id', (req, res) => {
   if (!/^[0-9TZa-f-]+$/.test(req.params.id)) return void res.status(400).end();
@@ -394,6 +547,38 @@ app.get('/__test__/background-check', async (req, res) => {
   res.json({ file: run.outputLayers[0].file, area, matchShare: Math.round(1000 * match / Math.max(1, area)) / 1000, black });
 });
 app.get('/__test__/provider-calls', (_req, res) => res.json(providerCalls));
+// Master templates: OCR reads so far, a synthetic offer poster and logo, the reference posters when present on this machine,
+// and a master's clean background registered for the fake Seedream's echo.
+app.get('/__test__/master-ocr-calls', (_req, res) => res.json({ calls: masterOcrCalls }));
+app.get('/__test__/product-poster.png', async (_req, res) => res.type('png').send(await productPosterPng()));
+app.get('/__test__/ganesh-sheet.png', (_req, res) => { const p = resolve('Ganesh-Chaturthi.png'); if (!existsSync(p)) { res.status(404).json({ error: 'not available' }); return; } res.type('png').send(readFileSync(p)); });
+app.post('/__test__/product-fail-after-one', (_req, res) => { reuseProof?.failProductAfter(2); res.json({ testOnly: true }); });
+app.get('/__test__/reuse-layerize-input.png', (_req, res) => { const bytes = reuseProof?.layerizer.calls[0]?.image; if (!bytes) { res.sendStatus(404); return; } res.type('image/png').send(bytes); });
+app.get('/__test__/placement-calls', (_req, res) => res.json({ calls: placementCalls }));
+app.get('/__test__/product-calls', (_req, res) => res.json({ decompositionInputs: reuseProof?.layerizer.calls.map(c => ({ excluded: c.excluded, elements: c.elements, width: c.width, height: c.height })) ?? [], submissions: reuseProof?.submissions ?? [], productPrompts: reuseProof?.prompts ?? [], analyzer: productAnalyzer.calls, segmenter: productSegmenter.calls.length, layerizer: productLayerizer?.calls.length ?? 0, recognizer: productRecognizer.calls.length, artwork: typeof productArtwork.calls === 'number' ? productArtwork.calls : productArtwork.calls.length }));
+app.get('/__test__/product-sheet.png', async (_req, res) => { const p = await productPosterPng(); res.type('png').send(await sharp({ create: { width: 2200, height: 1400, channels: 3, background: '#f5f5f5' } }).composite([{ input: p, left: 60, top: 100 }, { input: p, left: 1140, top: 100 }]).png().toBuffer()); });
+app.get('/__test__/product-packshot.png', async (_req, res) => res.type('png').send(await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="240" height="400"><rect width="240" height="400" fill="#ffffff"/><rect x="40" y="30" width="160" height="340" rx="20" fill="#1e40af"/><circle cx="120" cy="250" r="50" fill="#93c5fd"/></svg>')).png().toBuffer()));
+app.get('/__test__/master-poster.png', async (_req, res) => res.type('png').send(await masterPosterPng()));
+app.get('/__test__/master-logo.png', async (_req, res) => res.type('png').send(await newLogoPng()));
+app.get('/__test__/master-art-poster.png', async (_req, res) => res.type('png').send(await artworkPosterPng()));
+app.get('/__test__/reference-poster/:name', (req, res) => {
+  const dir = resolve(process.env.FRAMEFLOW_MASTER_REFERENCE_DIR ?? join(homedir(), 'Downloads', 'pL-Templates')), name = String(req.params.name);
+  if (!/^[A-Za-z0-9._-]+\.(jpg|jpeg|png)$/.test(name) || !existsSync(join(dir, name))) { res.status(404).json({ error: 'not available' }); return; }
+  res.type(name.endsWith('png') ? 'png' : 'jpeg').send(readFileSync(join(dir, name)));
+});
+app.post('/__test__/seedream-echo/:id', async (req, res) => {
+  const t = JSON.parse(readFileSync(join(root, 'protected', String(req.params.id).replace(/[^a-z0-9-]/g, ''), 'template.json'), 'utf8')) as { base?: { file: string } };
+  if (!t.base) { res.status(409).json({ error: 'no base' }); return; }
+  masterEcho.add(await pixelsDigest(readFileSync(join(root, 'protected', String(req.params.id), t.base.file)))); res.json({ ok: true });
+});
+app.get('/__test__/protected-source.png', async (req, res) => res.type('png').send(await ptSource(req.query.refuse === '1' ? 'refuse' : 'ok', String(req.query.seed ?? ''))));
+app.get('/__test__/protected-clean.png', async (req, res) => res.type('png').send(await ptClean(req.query.refuse === '1' ? 'refuse' : 'ok', String(req.query.seed ?? ''))));
+app.get('/__test__/variation-poster.png', async (req, res) => res.type('png').send(await variationPosterPng(String(req.query.seed ?? ''))));
+app.get('/__test__/variation-logo.png', async (_req, res) => res.type('png').send(await replacementLogoPng()));
+app.get('/__test__/recognizer-calls', (_req, res) => res.json({ template: variationRecognizer.calls.filter(c => c.purpose === 'template').length, artwork: variationRecognizer.calls.filter(c => c.purpose === 'artwork-check').length }));
+app.get('/__test__/protected-logo-a.png', async (_req, res) => res.type('png').send(await ptSvg(PT_LOGO_A, 200, 80)));
+app.get('/__test__/protected-logo-b.png', async (_req, res) => res.type('png').send(await ptSvg(PT_LOGO_B, 100, 100)));
+app.get('/__test__/protected-logo-new.png', async (_req, res) => res.type('png').send(await ptSvg(PT_LOGO_NEW, 200, 80)));
 // Seedream submissions of one image (by its sha256): exact per test while other specs share the server.
 app.get('/__test__/extractions', (req, res) => res.json({ count: submitted.filter(s => s === String(req.query.image)).length }));
 app.get('/__test__/call-counts', (_req, res) => res.json(callCounts));

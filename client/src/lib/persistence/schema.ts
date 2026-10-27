@@ -1,4 +1,4 @@
-import { CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, LAYER_LIMITS, TEMPLATE_LIMITS, isCatalogFont, TEXT_LIMITS, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
+import { CANVAS_IMAGE_ROLES, CANVAS_SHAPE_ROLES, CANVAS_TEXT_ROLES, EDITABLE_PROPERTIES, LAYER_LIMITS, PROTECTED_KINDS, PROTECTED_REPRESENTATIONS, TEMPLATE_LIMITS, isCatalogFont, TEXT_LIMITS, validCreativeId, validLogoSlotId, validProtectedElementId, validProtectedTemplateId, validWordGroupId, validWordId, validWordLineId, validateCanvasSize, type ProjectDocument } from '@frameflow/shared';
 
 type Check = (value: unknown) => boolean;
 const string: Check = (v) => typeof v === 'string' && v.length <= 10_000;
@@ -21,33 +21,41 @@ const focalPoint = object({ x: range(0, 1), y: range(0, 1) });
 // Optional on text and layers alike: what an element opened from a template keeps of the shared CanvasElement model.
 // Every one is absent on documents saved before they existed, which stay valid as they are.
 const editable = object(Object.fromEntries(EDITABLE_PROPERTIES.map((property) => [property, choice(true, false)])));
-const text = object({
+// The protected template slot a layer or text fills: which template and element, so a replacement keeps its place.
+// A word of a protected template (its phrase and line, for the phrase tools) or one of its logo slots: both optional.
+const protectedSlot = object({ templateId: validProtectedTemplateId, elementId: validProtectedElementId, kind: choice(...PROTECTED_KINDS), representation: choice(...PROTECTED_REPRESENTATIONS) }, {
+  word: object({ id: validWordId, groupId: validWordGroupId, lineId: validWordLineId, order: (v) => Number.isSafeInteger(v) && (v as number) >= 0 }, { role: (v) => typeof v === 'string' && v.length <= 40, protected: choice(true, false) }),
+  logoSlotId: validLogoSlotId,
+});
+const textWithMinimum = (minimum: number) => object({
   id, type: choice('text'), role: choice('eyebrow', 'title', 'date', 'venue', 'body', 'custom', ...CANVAS_TEXT_ROLES),
   text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters,
   x: finite, y: finite, width: range(TEXT_LIMITS.minWidth, TEXT_LIMITS.maxWidth),
-  fontFamily: isCatalogFont, fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize),
+  fontFamily: isCatalogFont, fontSize: range(minimum, TEXT_LIMITS.maxFontSize),
   fontWeight: choice(400, 600, 700), fill: color, align: choice('left', 'center', 'right'),
   lineHeight: (v) => finite(v) && (v as number) > 0, letterSpacing: finite,
 }, {
   name: string, rotation: range(-360, 360), zIndex, visible: choice(true, false), height: size, verticalAlign: choice('top', 'middle', 'bottom'),
   maxLines: (v) => Number.isSafeInteger(v) && (v as number) >= 1 && (v as number) <= TEMPLATE_LIMITS.maxLines, overflow: choice('shrink', 'ellipsis'),
   minFontSize: (v) => finite(v) && (v as number) > 0 && (v as number) <= TEXT_LIMITS.maxFontSize,
-  box: object({ fill: (v) => v === null || color(v), radius: range(0, LAYER_LIMITS.maxSide) }), editable,
+  box: object({ fill: (v) => v === null || color(v), radius: range(0, LAYER_LIMITS.maxSide) }), editable, locked: choice(true, false), protectedSlot,
+  fontStyle: choice('normal', 'italic'), opacity: range(0, 1),
 });
+const text = textWithMinimum(TEXT_LIMITS.minFontSize), nativeText = textWithMinimum(0.001);
 const layerBase = { id, name: string, x: finite, y: finite, width: size, height: size, rotation: range(-360, 360), opacity: range(0, 1), visible: choice(true, false), locked: choice(true, false) };
 const layerSource = object({ jobId: id, layerId: id, kind: choice('image', 'text', 'shape') });
-const layerShared = { source: layerSource, zIndex, role: choice(...CANVAS_IMAGE_ROLES, ...CANVAS_SHAPE_ROLES), editable };
+const layerShared = { source: layerSource, zIndex, role: choice(...CANVAS_IMAGE_ROLES, ...CANVAS_SHAPE_ROLES), editable, protectedSlot };
 const imageLayer = object({ ...layerBase, type: choice('image') }, { ...layerShared, assetId: id, fit: choice('cover', 'contain'), focalPoint, radius: range(0, LAYER_LIMITS.maxSide),
-  textSuggestion: object({ text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters, confidence: choice('none', 'low') }, { fill: color, fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize), fontWeight: choice(400, 600, 700) }) });
+  textSuggestion: object({ text: (v) => typeof v === 'string' && v.length <= TEXT_LIMITS.maxCharacters, confidence: choice('none', 'low', 'provided') }, { fill: color, fontSize: range(TEXT_LIMITS.minFontSize, TEXT_LIMITS.maxFontSize), fontWeight: choice(400, 600, 700) }) });
 const shapeLayer = object({ ...layerBase, type: choice('shape'), shapeType: choice('rectangle', 'rounded-rectangle', 'ellipse', 'circle'), fill: color, radius: range(0, LAYER_LIMITS.maxSide) }, { ...layerShared,
   gradient: object({ from: color, to: color, angle: range(-360, 360) }), stroke: object({ color, width: range(0, 1000) }) });
 const layer: Check = (v) => imageLayer(v) || shapeLayer(v);
 const uniqueIds: Check = (v) => Array.isArray(v) && new Set(v.map((item: { id: string }) => item.id)).size === v.length;
 const canvas: Check = (v) => object({ width: finite, height: finite, backgroundColor: color }, { transparent: choice(true, false) })(v)
   && validateCanvasSize((v as { width: number }).width, (v as { height: number }).height).valid;
-const variant = object({
+const variantFields = object({
   id, name: string, revision: (v) => Number.isSafeInteger(v) && (v as number) >= 0, canvas,
-  elements: (v) => array(text, TEXT_LIMITS.maxElements)(v) && uniqueIds(v),
+  elements: (v) => array(nativeText, 400)(v) && uniqueIds(v),
 }, {
   background: object({ assetId: id, fit: choice('cover', 'contain'), focalPoint }),
   template: object({ templateId: id, templateVersion: (v) => Number.isSafeInteger(v) && (v as number) >= 1 }, { themeId: id, creativeId: id,
@@ -55,10 +63,22 @@ const variant = object({
   sourceVariantId: id,
   decomposition: object({ jobId: id, mode: choice('blank', 'original') }),
   importedFrom: object({ templateId: id, resultId: id, runId: id }),
-  layers: (v) => array(layer, LAYER_LIMITS.maxLayers)(v) && uniqueIds(v),
+  styleVariation: object({ variationId: id, templateId: id, presetId: id, provenance: choice('ai_generated', 'local_reuse', 'local_restyle', 'reconstructed'), typographyMode: choice('match', 'suggested', 'custom') }),
+  // A creative of a Text & Graphics master: saving sends this version back to that creative (never to the master).
+  creative: object({ masterId: validProtectedTemplateId, masterRevision: (v) => Number.isSafeInteger(v) && (v as number) >= 1, creativeId: v => validCreativeId(v) || (typeof v === 'string' && /^pc-[a-f0-9]{6}$/.test(v)), syncedRevision: (v) => Number.isSafeInteger(v) && (v as number) >= 1, scale: range(0.001, 1) }, { size: object({ width: range(1, 65536), height: range(1, 65536) }), product: choice(true), masterEditing: choice(true), warnings: array(string, 400) }),
+  productTemplate: choice(true),
+  sourceSize: object({ width: range(1, 65536), height: range(1, 65536), scale: range(0.001, 1) }),
+  layers: (v) => array(layer, 201)(v) && uniqueIds(v),
   generation: object({ mode: choice('live', 'example'), promptUsed: string, requestedAspectRatio: string,
     returnedWidth: range(1, 16384), returnedHeight: range(1, 16384) }, { provider: choice('gemini', 'cloudflare'), model: string, sourceAssetId: id }),
 });
+// Imported product manifests may contain 400 individual words and all of their separated pictures.
+// Ordinary designs keep their existing editor limits.
+const variant: Check = v => {
+  if (!variantFields(v)) return false;
+  const value = v as { creative?: { product?: boolean }; elements: unknown[]; layers?: unknown[] };
+  return value.creative?.product === true || (array(text, TEXT_LIMITS.maxElements)(value.elements) && (value.layers?.length ?? 0) <= LAYER_LIMITS.maxLayers);
+};
 const project = object({
   schemaVersion: choice(1), id, name: string, createdAt: date, updatedAt: date,
   variants: (v) => Array.isArray(v) && v.length > 0 && array(variant, 30)(v) && uniqueIds(v),
@@ -69,6 +89,6 @@ export function isDesignLayer(value: unknown): boolean { return layer(value); }
 /** A whole design version, with the same rules as persisted documents. */
 export function isDesignVariant(value: unknown): boolean { return variant(value); }
 /** A single text element, with the same rules as persisted documents. */
-export function isTextElement(value: unknown): boolean { return text(value); }
+export function isTextElement(value: unknown): boolean { return nativeText(value); }
 /** Version 1 only. Unknown fields are rejected so runtime/UI data cannot leak into JSON. */
 export function isProjectDocument(value: unknown): value is ProjectDocument { return project(value); }

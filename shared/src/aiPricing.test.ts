@@ -32,5 +32,10 @@ describe('recorded AI costs', () => {
   });
   it('marks the undocumented exact Seedream boundary as an assumption', () => expect(calculateCallCost({ ...seed(8), baseWidth: 1536, baseHeight: 1536 }).confidence).toBe('Estimated'));
   it('only explicit zero billable units prove a failed call was free', () => expect(calculateCallCost({ kind: 'seedream', noCharge: true }).inr).toBe(0));
+  it('prices a Qwen-Image-Layered request at fal\'s listed price, as an estimate, and no other endpoint', () => {
+    expect(calculateCallCost({ kind: 'qwen', model: AI_PRICING.qwenLayered.model }, 90)).toMatchObject({ usd: 0.05, inr: 4.5, confidence: 'Estimated' });
+    expect(calculateCallCost({ kind: 'qwen', model: 'fal-ai/other' }).confidence).toBe('Unknown');
+    expect(calculateCallCost({ kind: 'qwen', model: AI_PRICING.qwenLayered.model, noCharge: true }).usd).toBe(0);
+  });
   it('rejects inconsistent cache accounting', () => expect(calculateCallCost({ ...planner, usage: { inputTokens: 100, outputTokens: 1, cachedTokens: 200 } }).confidence).toBe('Unknown'));
 });

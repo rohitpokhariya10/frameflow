@@ -1,4 +1,4 @@
-import type { RunTemplateExecution } from '@frameflow/shared';
+import type { CreativeGroup, CreativeShape, CreativeText, RunTemplateExecution } from '@frameflow/shared';
 import { CANVAS_LIMITS, validateCanvasSize, type RunDiagnostics, type DesignLayer, type DesignVariant } from '@frameflow/shared';
 
 /** Mirrors the server's run.json for the OpenAI → Seedream layerize experiment (server/src/decomposition/layerizeExperiment.ts). */
@@ -145,7 +145,9 @@ export type ExperimentRun = {
     | { mode: 'retry'; fromRunId: string; providerPrompt?: 'current' | 'auto'; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
     | { mode: 'automatic'; retryOf?: string }
     | { mode: 'template-plan'; templateId: string; templateName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
-    | { mode: 'blueprint'; familyId: string; familyName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] };
+    | { mode: 'blueprint'; familyId: string; familyName: string; version: number; prompt: string; planned_layers: PlannedLayer[]; warnings: string[] }
+    /** A protected template's prepared base: Seedream only, with the administrator's instructions or none. */
+    | { mode: 'protected'; templateId: string; elementsRevision: number; baseSha256: string; prompt: string };
   /** "Separate held object from subject" (Template A); absent on older runs, which all separated it, and on Template B runs. */
   separateHeldObject?: boolean;
   /** The template's own options (Template B: separateTouchingIndependentObjects); absent for Template A. */
@@ -155,7 +157,23 @@ export type ExperimentRun = {
   /** The user ran it anyway, without the fit check. */
   skipFitCheck?: boolean;
   /** Where the image came from when not an upload: a template's test generation (the creative's group) and, since creatives have aspect-ratio variants, which variant. */
-  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation' | 'image-template'; generationId: string; variantId?: string; aspectRatio?: string };
+  origin?: { kind: 'template-a-generation' | 'template-b-generation' | 'template-c-generation' | 'image-template' | 'template-execution' | 'protected-template' | 'master-creative'; generationId: string; variantId?: string; aspectRatio?: string };
+  /** A creative of a Text & Graphics master sent to decomposition (server creativeRun.ts): its texts and shapes open as editable text and shapes. */
+  creative?: { version?: number; masterId: string; masterRevision: number; creativeId: string; creativeRevision: number; name: string; canvas: { width: number; height: number };
+    texts: CreativeText[]; shapes: CreativeShape[]; groups: CreativeGroup[]; aiGenerated: boolean;
+    layers: { file: string; kind: 'background' | 'artwork' | 'shape' | 'image' | 'text' | 'object'; elementIds: string[]; hidden: boolean; z: number }[];
+    /** A Product with Text creative's run (`masterId` is its template): characters, products and the brand logo are 'object' layers. */
+    product?: true;
+    native?: { creative: import('@frameflow/shared').ProductCreative; files: Record<string, string>; warnings: string[] };
+    /** A Product with Text creative's run (version 3): its inputs (files and hashes), cost (none), layout and the variation it came from. */
+    provenance?: { preparation?: import('@frameflow/shared').ProductPrepared['separation']; processingVersion: number; inputs: { layer: string; role: string; file: string; source: string; sha256: string }[]; cost: { usd: number; providerRequests: number; segmentation: 'reused' };
+      textLayersSentToProviders: 0; layout?: { aspectRatio: string; sourceCanvas: { width: number; height: number }; axis: 'none' | 'x' | 'y'; extra: { before: number; after: number } };
+      variation?: { jobId: string; index: number; kind: string; title: string; aspectRatio: string; checks?: 'ready' | 'needs-review' | 'failed' } };
+    words?: import('@frameflow/shared').DetectedWord[];
+    /** How the background artwork was split into its objects (server artworkObjects.ts, or the master's own decomposition). */
+    artwork?: { method: 'local' | 'master-layers'; objects: number; behindPercent?: number; trustedPercent?: number; durationMs?: number;
+      /** Version 3: of the pixels behind objects, the share rebuilt from the template's structure; border dots drawn again; the layers over each other against the creative. */
+      rebuiltPercent?: number; borderDotsAdded?: number; reconstruction?: { mean: number; max: number; visiblePercent: number } } };
   /** The exact prompt sent to Seedream after held-object grouping; absent on older runs. */
   finalPrompt?: string;
   /** Suggested and target output layer count; absent on older runs. */
@@ -175,14 +193,45 @@ export type ExperimentRun = {
   calls?: CallCounts;
   /** Image-aware and refined runs: people and interactions kept intact (worn ornaments, finger fragments, held objects). */
   interactions?: InteractionRecord;
+  /** fal's refusal of the run's Seedream request, classified from its own answer; absent on older runs. */
+  rejection?: { category: 'partner-content' | 'unprocessable-image' | 'image-url' | 'invalid-request' | 'temporary' | 'unknown'; reason?: string; loc?: string; billableUnits?: string };
+  /** The one Qwen-Image-Layered request of a run made after Seedream refused run fromRunId; absent on every other run. */
+  alternative?: { provider: 'qwen'; fromRunId: string; requestId?: string; returned?: number };
 };
 
-/** A final provider rejection has no result to resume. A paid retry is only supported for decomposition rejections. */
-export function runRecovery(run: Pick<ExperimentRun, 'stage' | 'active' | 'error' | 'seedream'>) {
-  const failed = run.stage === 'failed' && !run.active;
+/** A protected template's run: Seedream only, decomposed again (or resumed) from its protected template. */
+export const isProtectedRun = (run: Pick<ExperimentRun, 'promptSource' | 'origin'>) => run.promptSource?.mode === 'protected' || run.origin?.kind === 'protected-template';
+/**
+ * A final provider rejection has no result to resume. A paid retry is only supported for decomposition rejections; so is
+ * the alternative provider (Qwen), except for a template execution's run, which offers it from its execution. A protected
+ * template's run offers neither: its template decides what is sent again, and no other model is ever used for it.
+ */
+export function runRecovery(run: Pick<ExperimentRun, 'stage' | 'active' | 'error' | 'seedream' | 'templateExecution'> & Partial<Pick<ExperimentRun, 'promptSource' | 'origin'>>) {
+  const failed = run.stage === 'failed' && !run.active, rejected = failed && run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED', protectedRun = isProtectedRun(run);
   const final = ['PROVIDER_DECOMPOSITION_REJECTED', 'PROVIDER_SAFETY_REJECTED'].includes(run.error?.code ?? '')
     || [400, 422].includes(run.error?.provider?.status ?? 0);
-  return { resume: failed && !!run.seedream.requestId && !final, retry: failed && run.error?.code === 'PROVIDER_DECOMPOSITION_REJECTED' };
+  return { resume: failed && !!run.seedream.requestId && !final && !protectedRun, retry: rejected && !protectedRun, qwen: rejected && !run.templateExecution && !protectedRun };
+}
+/**
+ * What a person can do about a Seedream refusal (PROVIDER_DECOMPOSITION_REJECTED). A partner content check names the
+ * image, not the plan, and its reason is never given: saved runs show it refusing one image every time and accepting
+ * another on a later try, so a retry is neither ruled out nor promised.
+ */
+export function refusalAdvice(run: Pick<ExperimentRun, 'rejection' | 'error' | 'templateExecution'> & Partial<Pick<ExperimentRun, 'promptSource' | 'origin'>>, qwenUsd: number): string {
+  const partner = run.rejection?.category === 'partner-content' || !!run.error?.provider?.messages.some(m => m.reason === 'partner_validation_failed');
+  const free = (run.rejection?.billableUnits ?? run.error?.provider?.billableUnits) === '0';
+  if (isProtectedRun(run)) return [
+    partner ? `Seedream's content checker (run by its provider, ByteDance) refused the prepared base. It does not say what it flagged.` : '',
+    `This request is final.${free ? ' fal charged nothing for the refusal.' : ''}`,
+    'Seedream is the only model a protected template uses; no other is offered. The same image is not sent again: change the clean artwork or the protected regions in its protected template first.',
+  ].filter(Boolean).join(' ');
+  return [
+    partner ? `Seedream's content checker (run by its provider, ByteDance) refused this image itself, not the layer plan. It does not say what it flagged.` : '',
+    `This request is final; Resume cannot recover it.${free ? ' fal charged nothing for the refusal.' : ''}`,
+    `Retry extraction makes a new paid Seedream request with the same image and the saved plan, without another planner call${partner ? ': this check has accepted an image on a later try before, and refused another every time' : ', and may fail again'}.`,
+    run.templateExecution ? '' : `Try Qwen layers sends it to a different model instead (one request, about $${qwenUsd.toFixed(2)}), which groups objects its own way.`,
+    'You can also choose a different image or template.',
+  ].filter(Boolean).join(' ');
 }
 
 export const BACKGROUND_STATUS_LABELS: Record<CleanBackgroundStatus, string> = { 'provider-clean': 'Clean (Seedream base, no reconstruction needed)', 'scene-clean': 'Clean (Seedream scene layers, no reconstruction needed)',
@@ -241,6 +290,8 @@ export const experimentApi = {
   /** Explicit user action: a NEW run (one paid Seedream call) for a run Seedream rejected. 'current' reuses its prompt;
    * 'auto' (Template B) sends an empty prompt, Seedream's automatic major-elements mode. */
   retry: (id: string, providerPrompt: 'current' | 'auto' = 'current') => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ providerPrompt }) }),
+  /** Explicit user action after Seedream refused a run: a NEW run with one Qwen-Image-Layered request (listed $0.05) for the same image. */
+  qwen: (id: string) => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}/qwen`, { method: 'POST' }),
   resume: (id: string, requestId?: string, targetLayers?: number) => call<ExperimentRun>(`/runs/${encodeURIComponent(id)}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...(requestId ? { requestId } : {}), ...(targetLayers !== undefined ? { targetLayers } : {}) }) }),
 };

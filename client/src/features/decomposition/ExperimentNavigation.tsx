@@ -1,22 +1,31 @@
 import { useState } from 'react';
-import { LayoutDashboard, ImagePlus, Layers3, History, Search, ArrowUpRight } from 'lucide-react';
+import { LayoutDashboard, Sparkles, Layers3, History, Search, ArrowUpRight, Archive, ShieldCheck, LayoutTemplate } from 'lucide-react';
 import { dashboardStatus } from './RunDashboard';
-import { editorLayersOf, experimentFileUrl, type ExperimentRun } from './layerizeExperiment';
+import { editorLayersOf, experimentFileUrl, isProtectedRun, type ExperimentRun } from './layerizeExperiment';
 
+/**
+ * Template Studio (template creation and image generation) takes the place the earlier Create Template wizard had. That
+ * wizard ('create') keeps its panel for saved executions opened from Saved Runs; its own tab is shown only with the
+ * LEGACY_CREATIVE_TEMPLATES flag (lib/featureFlags.ts).
+ */
 export const EXPERIMENT_TABS = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { id: 'create', label: 'Create Template', icon: ImagePlus },
+  { id: 'offer', label: 'Offer Templates', icon: LayoutTemplate },
+  { id: 'studio', label: 'Template Studio', icon: Sparkles },
   { id: 'decompose', label: 'Decompose/Test', icon: Layers3 },
+  { id: 'protected', label: 'Protected Templates', icon: ShieldCheck },
   { id: 'saved', label: 'Saved Runs', icon: History },
 ] as const;
-export type ExperimentTab = typeof EXPERIMENT_TABS[number]['id'];
-export function ExperimentTabs({ current, onChange, runCount }: { current: ExperimentTab; onChange: (tab: ExperimentTab) => void; runCount: number }) {
+export const LEGACY_TEMPLATES_TAB = { id: 'create', label: 'Legacy Templates', icon: Archive } as const;
+export type ExperimentTab = typeof EXPERIMENT_TABS[number]['id'] | typeof LEGACY_TEMPLATES_TAB['id'];
+export function ExperimentTabs({ current, onChange, runCount, legacy = false }: { current: ExperimentTab; onChange: (tab: ExperimentTab) => void; runCount: number; legacy?: boolean }) {
+  const tabs: readonly { id: ExperimentTab; label: string; icon: typeof LayoutDashboard }[] = legacy ? [...EXPERIMENT_TABS, LEGACY_TEMPLATES_TAB] : EXPERIMENT_TABS;
   return <nav className="ff-lab-nav" aria-label="Test workspace"><div role="tablist" aria-label="Test sections">
-    {EXPERIMENT_TABS.map(({ id, label, icon: Icon }, index) => <button key={id} type="button" role="tab" id={`lab-tab-${id}`} aria-controls={`lab-panel-${id}`}
+    {tabs.map(({ id, label, icon: Icon }, index) => <button key={id} type="button" role="tab" id={`lab-tab-${id}`} aria-controls={`lab-panel-${id}`}
       aria-selected={current === id} tabIndex={current === id ? 0 : -1} onClick={() => onChange(id)} onKeyDown={event => {
-        const next = event.key === 'ArrowRight' ? (index + 1) % EXPERIMENT_TABS.length : event.key === 'ArrowLeft' ? (index + EXPERIMENT_TABS.length - 1) % EXPERIMENT_TABS.length : event.key === 'Home' ? 0 : event.key === 'End' ? EXPERIMENT_TABS.length - 1 : undefined;
+        const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : undefined;
         if (next === undefined) return;
-        event.preventDefault(); onChange(EXPERIMENT_TABS[next].id);
+        event.preventDefault(); onChange(tabs[next].id);
         (event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next])?.focus();
       }}><Icon size={17} aria-hidden="true" /><span>{label}</span>{id === 'saved' && runCount > 0 && <span className="ff-lab-nav-count" aria-hidden="true">{runCount}</span>}</button>)}
   </div></nav>;
@@ -29,7 +38,7 @@ export function savedRunStatus(run: ExperimentRun) {
 }
 export function filterSavedRuns(runs: ExperimentRun[], query: string, status: string) {
   const text = query.trim().toLowerCase();
-  return runs.filter(run => (!text || `${run.id} ${run.templateExecution?.template?.name ?? run.templateKey ?? ''} ${run.createdAt} ${savedRunStatus(run)}`.toLowerCase().includes(text))
+  return runs.filter(run => (!text || `${run.id} ${run.templateExecution?.template?.name ?? run.creative?.name ?? run.templateKey ?? ''} ${run.createdAt} ${savedRunStatus(run)}`.toLowerCase().includes(text))
     && (status === 'all' || savedRunStatus(run) === status));
 }
 const LABELS: Record<string, string> = { 'READY FOR EDITOR': 'Ready for editor', PARTIAL: 'Needs review', FAILED: 'Failed', RUNNING: 'Running' };
@@ -47,7 +56,7 @@ export function SavedRunBrowser({ runs, loading, selected, busy, onSelect }: { r
         const status = savedRunStatus(run), layers = runLayerCount(run), counts = run.refinement?.curation?.counts;
         return <article key={run.id} className={`ff-lab-run-card${selected === run.id ? ' is-selected' : ''}`} aria-label={`Saved run ${run.id}`}>
           <div className="ff-lab-run-thumb"><img loading="lazy" src={experimentFileUrl(run.id, run.original.file)} alt="" /><span className={`lx-badge lx-${status === 'FAILED' ? 'failed' : status === 'PARTIAL' ? 'warning' : status === 'RUNNING' ? 'running' : 'complete'}`}>{LABELS[status]}</span></div>
-          <div className="ff-lab-run-info"><h3>{run.templateExecution?.template?.name ?? 'Creative decomposition'}</h3><p>{new Date(run.createdAt).toLocaleString()}</p>
+          <div className="ff-lab-run-info"><h3>{run.templateExecution?.template?.name ?? (isProtectedRun(run) ? 'Protected template (Seedream only)' : run.creative ? `${run.creative.name} · saved creative` : 'Creative decomposition')}</h3><p>{new Date(run.createdAt).toLocaleString()}</p>
             <p>{counts ? `${counts.rawLayers} raw → ${counts.editorLayers} editor layers` : run.stage === 'done' ? `${layers} editor layers` : LABELS[status]}{run.origin?.aspectRatio ? ` · ${run.origin.aspectRatio}` : ''}</p>
             <small className="ff-lab-run-id">{run.id}</small><button className="ws-btn" disabled={busy} onClick={() => onSelect(run.id)}>View run <ArrowUpRight size={15} aria-hidden="true" /></button>
           </div>

@@ -5,7 +5,7 @@ import { API, createTemplate, fixture, openWizard, runOf, writesOf } from './wiz
 // (an empty layer, a scene plate, a translucent shadow, a text outline, a helper, near-empty noise, a duplicate phone…),
 // of which 6 are worth editing. Template creation shows, imports and reopens only those 6; the run dashboard keeps the
 // rest for diagnosis, and reading it never calls a provider.
-test.use({ extraHTTPHeaders: { origin: 'http://127.0.0.1:3317' } });
+test.use({ extraHTTPHeaders: { origin: `http://127.0.0.1:${process.env.FRAMEFLOW_OFFLINE_E2E_PORT ?? 3317}` } });
 
 test('Create New Template stores 13 raw candidates but previews, imports and reopens only 6 curated layers; Saved Runs and the dashboard read them without provider calls', async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'One full route journey; viewport regressions are covered separately.');
