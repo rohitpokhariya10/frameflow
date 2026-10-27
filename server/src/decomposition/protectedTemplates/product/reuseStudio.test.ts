@@ -211,10 +211,11 @@ describe('Reuse Template studio (HTTP, temporary store, fake planner)', { timeou
         for (const o of p.creative.objects.filter(x => x.kind === 'product')) expect(inter(o.box, { x: 0, y: 0, ...p.creative.canvas })).toBeCloseTo(o.box.width * o.box.height, -2);
         expect(p.checks.status).not.toBe('failed');
       }
-      // AI placement: the cost must be approved; one request per format; never retried.
+      // AI placement: the cost must be approved; one request per format; never retried. In the template's own format the
+      // dishwasher takes the removed product's place (slot-anchored), so that format is not sent.
       expect((await s.send('POST', `/${id}/reuse/${d.id}/placement`, {})).status).toBe(400); expect(calls).toEqual([]);
       d = (await s.send<ReuseDraft>('POST', `/${id}/reuse/${d.id}/placement`, { approveUsd: 0.32 })).body;
-      expect(calls).toEqual(['original', '3:9', '4:9', '16:9']); expect(d.placement.mode).toBe('ai'); expect(d.ai).toMatchObject({ requests: 4, costUsd: 0.32 });
+      expect(calls).toEqual(['3:9', '4:9', '16:9']); expect(d.placement.mode).toBe('ai'); expect(d.ai).toMatchObject({ requests: 3, costUsd: 0.24 });
       // Text: the person's own headline, set where the template's was.
       const headline = (await s.call<{ texts: { groupId: string; category: string }[] }>(`/${id}/reuse/${d.id}`)).body.texts.find(t => t.category === 'headline');
       if (headline) d = (await s.send<ReuseDraft>('PUT', `/${id}/reuse/${d.id}`, { expectedRevision: d.revision, texts: { [headline.groupId]: { text: 'Golden days call for golden deals' } } })).body;

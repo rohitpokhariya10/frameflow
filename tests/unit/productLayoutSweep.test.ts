@@ -56,6 +56,20 @@ describe('clean template: text on a plain plate leaves no marks', () => {
     let stripeTaken = 0; for (let y = 0; y < 60; y++) for (let x = 150; x < 240; x++) if (mask[y * 240 + x]) stripeTaken++;
     expect(stripeTaken).toBe(0);
   });
+  it('on artwork, refills only where the marks it added are, not the line\'s padded band', async () => {
+    // The band reaches a quarter line above and below the words: on a pill whose rim is near its text, past the rim into the
+    // page, whose colour was then read into the letters (mint letters on the orange "What to expect this Onam?" pill).
+    const stripes = Array.from({ length: 24 }, (_, i) => `<rect x="${i * 10}" y="0" width="5" height="60" fill="#e5f5c0"/>`).join('');
+    const source = await rgba(`<svg xmlns="http://www.w3.org/2000/svg" width="240" height="60"><rect width="240" height="60" fill="#c8e88a"/>${stripes}<text x="30" y="36" font-family="Helvetica" font-size="16" fill="#1f2937">Get 26%</text></svg>`);
+    const analysis = { words: [{ ...word('w1', 'Get', { x: 30, y: 24, width: 28, height: 14 }), style: { ...word('w1', '', { x: 0, y: 0, width: 1, height: 1 }).style, color: '#1f2937' } }], groups: [{ id: 'g', lines: [{ id: 'l', wordIds: ['w1'] }] }], logoSlots: [], plates: [] } as unknown as TextAnalysis;
+    const { sweep } = overlayMask(source, analysis);
+    // The rows of the line's ink ("Get 26%"): the area to refill lies within them (a pixel of soft edge either side).
+    const inkRows = Array.from({ length: 60 }, (_, y) => Array.from({ length: 240 }, (_, x) => source.data[(y * 240 + x) * 4] < 0x70).some(Boolean)).flatMap((on, y) => (on ? [y] : []));
+    const area = sweep.find(s => !s.plain);
+    expect(area).toBeDefined();
+    expect(area!.box.y).toBeGreaterThanOrEqual(inkRows[0] - 2);
+    expect(area!.box.y + area!.box.height).toBeLessThanOrEqual(inkRows.at(-1)! + 3);
+  });
 });
 
 describe('variations in other aspect ratios: nothing stretched, plain margins lengthened, the rest flagged', () => {

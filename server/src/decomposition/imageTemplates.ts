@@ -11,8 +11,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import busboy from 'busboy';
 import express, { type Request, type Router } from 'express';
 import type OpenAI from 'openai';
@@ -26,9 +25,9 @@ import { plannerModel } from './aiModels.js';
 import { allowOnly, supportsProductReference, generateVariant, queueVariant, recordDecomposition, variantImage, type GenerationConfig, type GenerationVariant, type VariantDecomposition } from './generationGroups.js';
 import { createRun, executeRun, MAX_UPLOAD_BYTES, readRun, resumeRun, RunError, validRunId, type RunnerDeps, type RunRecord } from './layerizeExperiment.js';
 import type { PlannerUsage } from './layerizePlanner.js';
+import { ARTIFACTS_DIR } from '../deployment.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_IMAGE_TEMPLATES_DIR = resolve(here, '../../../artifacts/decomposition/image-templates');
+export const DEFAULT_IMAGE_TEMPLATES_DIR = resolve(ARTIFACTS_DIR, 'decomposition/image-templates');
 const RECORD = 'group.json', PROMPT_REQUEST = 'prompt.openai-request.json', PROMPT_RESPONSE = 'prompt.openai-response.json';
 
 /** OpenAI's prompt for the reference: its state, what was sent and returned (files), and its error. */

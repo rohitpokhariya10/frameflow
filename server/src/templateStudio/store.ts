@@ -12,16 +12,15 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { CustomTypography, LayoutValidation, StudioProductAction, StudioReferenceScene, StyleVariationRequest, StylePreset, TypographyMode, VariantLayout, VariationEvent, VariationProvenance, VariationReview, VariationSource, VariationStatus } from '@frameflow/shared';
+import { ARTIFACTS_DIR } from '../deployment.js';
 
 export interface ReferencePolicy {
   primaryAssetId: string; scene: StudioReferenceScene | null;
   actions: StudioProductAction[]; backgroundOnly: boolean; text: 'keep' | 'remove'; localReuse: boolean;
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_STUDIO_DIR = resolve(here, '../../../artifacts/template-studio');
+export const DEFAULT_STUDIO_DIR = resolve(ARTIFACTS_DIR, 'template-studio');
 export const STORE_SCHEMA = 'template-studio-db/1';
 
 export const newId = (prefix: string) => `${prefix}_${randomBytes(10).toString('hex')}`;

@@ -26,6 +26,7 @@ import { buildMasterAnalysis } from '../master/analysis.js';
 import type { SceneAnalyzer } from '../../creativeTemplates/smartProviders.js';
 
 import { ProductAnalysisError, type ProductScene } from './analyzer.js';
+import { fitSceneWords } from './wordFit.js';
 import { measureWord } from '../../../textRecognition/measure.js';
 import { productInkBounds } from './typography.js';
 import { matchLineFont, offerFontFile } from '../../../textRecognition/fontMatch.js';
@@ -171,6 +172,14 @@ export async function detectProduct(input: ProductDetectInput): Promise<ProductD
       const known = error instanceof ProductAnalysisError ? error : undefined;
       ai = { status: 'failed', model: input.analyzer.model, error: error instanceof Error ? error.message.slice(0, 400) : String(error), ...(known ? { code: known.code, costUsd: known.usage?.costUsd, ...(known.details?.httpStatus ? { httpStatus: known.details.httpStatus } : {}), ...(known.details?.elapsedMs !== undefined ? { elapsedMs: known.details.elapsedMs } : {}), ...(known.details?.sent ? { sent: known.details.sent } : {}) } : {}) };
     }
+  }
+  // The model's word boxes moved onto their letters before anything is measured from them or calibrated against them
+  // (wordFit.ts: read by the on-device recognizer, else by the letter strokes; kept when unsure). What each line did is
+  // saved beside the analysis.
+  if (scene?.words && !input.exact) {
+    const fit = await fitSceneWords(source, scene.words, input.recognizer);
+    scene = { ...scene, words: fit.words };
+    input.save('product.word-fit.json', { note: 'The analysis\'s word boxes fitted to their letters in the picture, line by line (letters: read on this computer; strokes: by the picture\'s letter strokes; kept: left as given).', lines: fit.lines });
   }
   // The model's fractional frame corrected (calibrateScene); the boxes as it gave them kept, to tell later which ones a
   // review left untouched.

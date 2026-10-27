@@ -12,12 +12,11 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { migrateProtectedTemplate, ProtectedSchemaError, validProtectedTemplateId, type ProtectedTemplate } from '@frameflow/shared';
 import { RunError } from '../layerizeExperiment.js';
+import { ARTIFACTS_DIR } from '../../deployment.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_PROTECTED_DIR = resolve(here, '../../../../artifacts/decomposition/protected-templates');
+export const DEFAULT_PROTECTED_DIR = resolve(ARTIFACTS_DIR, 'decomposition/protected-templates');
 /** File names inside a template folder: lower-case, no separators, a known type. Nothing else is read or served. */
 const FILE = /^[a-z0-9][a-z0-9-]{0,100}\.(png|jpg|webp|json)$/;
 export const validProtectedFile = (name: unknown): name is string => typeof name === 'string' && FILE.test(name);

@@ -49,9 +49,19 @@ export function measureWord(source: Rgba, box: PixelBox, text: string, baselineL
   for (let x = x0 - 2; x < x1 + 2; x++) for (const y of [y0 - 2, y1 + 1]) if (x >= 0 && y >= 0 && x < source.width && y < source.height) { const i = (y * source.width + x) * 4; ring.push([source.data[i], source.data[i + 1], source.data[i + 2]]); }
   for (let y = y0; y < y1; y++) for (const x of [x0 - 2, x1 + 1]) if (x >= 0 && x < source.width) { const i = (y * source.width + x) * 4; ring.push([source.data[i], source.data[i + 1], source.data[i + 2]]); }
   const bg = [0, 1, 2].map(c => median(ring.map(p => p[c])));
+  // A word on two backgrounds (a badge split orange over green): the ring's median is a mix of them, and the second
+  // background then differs from it most and was taken for the ink. Each pixel is measured against the nearest of the
+  // ring's own colours instead (each of a tenth of the ring or more; one colour: the median, as before).
+  const buckets = new Map<number, number[][]>();
+  for (const p of ring) { const k = (p[0] >> 4 << 8) | (p[1] >> 4 << 4) | (p[2] >> 4); const b = buckets.get(k); if (b) b.push(p); else buckets.set(k, [p]); }
+  const grounds = [...buckets.values()].filter(b => b.length >= ring.length * 0.1).sort((a, b) => b.length - a.length).slice(0, 4).map(b => [0, 1, 2].map(c => median(b.map(p => p[c]))));
+  const backgrounds = grounds.length >= 2 ? grounds : [bg];
   const diff = new Float32Array(W * H);
   let maxDiff = 0;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = px(x, y), d = Math.max(Math.abs(p[0] - bg[0]), Math.abs(p[1] - bg[1]), Math.abs(p[2] - bg[2])); diff[y * W + x] = d; if (d > maxDiff) maxDiff = d; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = px(x, y), d = Math.min(...backgrounds.map(g => Math.max(Math.abs(p[0] - g[0]), Math.abs(p[1] - g[1]), Math.abs(p[2] - g[2]))));
+    diff[y * W + x] = d; if (d > maxDiff) maxDiff = d;
+  }
   const inkThreshold = Math.max(30, maxDiff * 0.45), ink = new Uint8Array(W * H);
   const strong: number[][] = [];
   for (let i = 0; i < W * H; i++) if (diff[i] >= inkThreshold) { ink[i] = 1; if (diff[i] >= maxDiff * 0.75) strong.push(px(i % W, Math.floor(i / W))); }

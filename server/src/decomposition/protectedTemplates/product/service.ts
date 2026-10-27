@@ -13,7 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import sharp from 'sharp';
 import {
-  decomposesObject, estimateAdvance, isMasterCategory, isOverlayKind, normalizeBox, orderProductObjects, PRODUCT_ELEMENT_KINDS, PRODUCT_LIMITS, PRODUCT_OBJECT_KINDS, PRODUCT_PREPARE_VERSION, PRODUCT_SCHEMA_VERSION, PROTECTED_SCHEMA_VERSION,
+  decomposesObject, estimateAdvance, isMasterCategory, isOverlayKind, normalizeBox, orderProductObjects, PRODUCT_ELEMENT_KINDS, PRODUCT_LIMITS, PRODUCT_OBJECT_KINDS, PRODUCT_PREPARE_VERSION, PRODUCT_SCHEMA_VERSION, PROTECTED_SCHEMA_VERSION, withHistory,
   type DetectedWord, type LogoSlot, type MasterCategory, type PixelRect, type ProductHistoryEntry, type ProductInfo, type ProductObject, type ProductObjectKind, type ProductPrepared, type ProductSnapshot, type ProductGenerationBrief, type ProductStage, type ProtectedTemplate, type SourceBox,
 } from '@frameflow/shared';
 import { RunError } from '../../layerizeExperiment.js';
@@ -29,6 +29,7 @@ import { createProductCreatives } from './creatives.js';
 import { createProductVariations, type ProductVariationPlanner } from './variations.js';
 import type { ArtworkGenerator } from './artwork.js';
 import { detectProduct, logoSlot, styleLine } from './detect.js';
+import { fitLines } from './wordFit.js';
 import { productSceneFromResponse, replayProductAnalyzer, type ProductAnalysisJob, type RecoverableProductAnalyzer } from './analyzer.js';
 import { findSheetCreatives } from './sheet.js';
 import { decompositionPlan, deriveBrief, type DetectionAnswer } from './brief.js';
@@ -536,6 +537,43 @@ export function createProductTemplates(options: ProductTemplateOptions) {
     });
     return view(saved.id);
   });
+  /**
+   * Asked for explicitly (never on its own): the AI-read text lines moved onto their letters in the picture (wordFit.ts:
+   * on this computer, no AI request), each moved line's style measured again there and its source crop taken again.
+   * Lines a person corrected, rotated words and other text stay. A new analysis revision: a prepared or approved
+   * template is prepared (and approved) again; its saved revisions do not change.
+   */
+  const fitText = (id: string, input: { expectedRevision?: number }) => locked(id, async () => {
+    if (detecting.has(id) || preparingNow(id)) fail('BUSY', 'Wait for detection or decomposition to finish before fitting the text.');
+    const t = requireProduct(id), at = nowIso(), size = { width: t.source.width, height: t.source.height };
+    if (input.expectedRevision !== t.revision) fail('STALE_REVISION', `This template changed since you opened it (revision ${t.revision}, yours ${String(input.expectedRevision)}). Reload it and try again.`, { revision: t.revision });
+    const a = t.textAnalysis ? structuredClone(t.textAnalysis) : undefined;
+    if (!a || t.product.variation || !a.words.some(w => w.origin === 'ai' && w.review.status !== 'rejected')) fail('NOTHING_TO_FIT', 'This template has no text read by the AI analysis to fit.');
+    const sourceBytes = store.read(id, t.source.inputFile), source = await decodeRgba(sourceBytes);
+    const lines = a.groups.flatMap(g => g.lines.map(l => l.wordIds.map(w => a.words.find(x => x.id === w)).filter((w): w is DetectedWord => !!w && w.review.status !== 'rejected'))).filter(l => l.length);
+    const keep = lines.map(ws => ws.some(w => w.origin !== 'ai' || !!w.box.rotation || !!w.corrected?.box));
+    const fits = await fitLines(source, lines.map(ws => ws.map(w => ({ text: w.text, box: w.source?.box ?? w.box }))), options.recognizer(), keep);
+    const report = lines.map((ws, i) => ({ text: ws.map(w => w.text).join(' ').slice(0, 120), method: fits[i].method, moved: fits[i].moved, ...(keep[i] ? { reason: 'corrected by a person, rotated or not read by the analysis' } : fits[i].reason ? { reason: fits[i].reason } : {}) }));
+    let moved = 0;
+    for (const [i, ws] of lines.entries()) {
+      if (fits[i].method === 'kept' || fits[i].moved < 1) continue;
+      moved++;
+      for (const [k, w] of ws.entries()) {
+        const b = fits[i].boxes[k], box = { x: b.x, y: b.y, width: b.width, height: b.height, rotation: 0 };
+        const rect = { left: Math.max(0, Math.floor(box.x)), top: Math.max(0, Math.floor(box.y)) }, crop = await sharp(sourceBytes).extract({ ...rect, width: Math.max(1, Math.min(Math.ceil(box.width), size.width - rect.left)), height: Math.max(1, Math.min(Math.ceil(box.height), size.height - rect.top)) }).png().toBuffer();
+        const file = `word-${w.id}-${sha256(crop).slice(0, 12)}.png`;
+        if (!store.has(id, file)) store.write(id, file, crop);
+        w.box = box; w.normalized = normalizeBox(box, size); w.source = { box: { ...box }, crop: file, z: w.source?.z ?? w.order };
+      }
+      const styled = await styleLine(source, ws.map(w => ({ text: w.text, box: w.box })));
+      ws.forEach((w, k) => { if (styled[k].confidence > 0) w.style = { ...styled[k].style, opacity: w.style.opacity, lineHeight: w.style.lineHeight, align: w.style.align }; });
+    }
+    if (!moved) return { ...view(id), fit: { moved, lines: report } };
+    a.revision += 1; a.updatedAt = at;
+    a.history = withHistory(a.history, { at, action: 'corrected', detail: `Text boxes of ${moved} line(s) fitted to their letters in the picture.` });
+    const saved = store.update(id, input.expectedRevision, x => { x.textAnalysis = a; history(x.product!, { action: 'reviewed', detail: `Text boxes of ${moved} line(s) fitted to their letters (on this computer, no AI request).` }); });
+    return { ...view(saved.id), fit: { moved, lines: report } };
+  });
   /** A text block typed again: the new words take the old words' places in order (extra words follow on its last line). */
   function retype(a: NonNullable<ProtectedTemplate['textAnalysis']>, groupId: string, text: string, at: string, size: { width: number; height: number }) {
     const g = a.groups.find(x => x.id === groupId)!, lines = text.split('\n').map(l => l.split(/\s+/).filter(Boolean)).filter(l => l.length);
@@ -692,6 +730,14 @@ export function createProductTemplates(options: ProductTemplateOptions) {
     void runPrepare(id, engine).catch(error => console.error('product prepare', id, error)).finally(() => preparing.delete(id));
     return { started: true };
   });
+  /** The overlay gate's refusal, naming the text it is about and what to do (its boxes off the letters: the usual cause). */
+  const gateMessage = (error: OverlayGateError, a: ProtectedTemplate['textAnalysis']) => {
+    if (!a || !/still in the picture/.test(error.message)) return error.message;
+    const over = (p: PixelRect, q: PixelRect) => p.x < q.x + q.width && q.x < p.x + p.width && p.y < q.y + q.height && q.y < p.y + p.height;
+    const named = a.groups.filter(g => a.words.some(w => w.groupId === g.id && w.review.status !== 'rejected' && error.areas.some(b => over(w.source?.box ?? w.box, b))))
+      .map(g => `“${g.label.length > 48 ? `${g.label.slice(0, 48)}…` : g.label}”`);
+    return `${error.message}${named.length ? ` (${named.slice(0, 2).join(', ')})` : ''} Its text boxes may not sit on the letters: use “Fit text to the letters” in the review (free, on this computer), or correct the boxes, then prepare again.`;
+  };
   async function runPrepare(id: string, engine: 'ai' | 'sam3' | 'local') {
     const started = Date.now(), at = nowIso(), t = requireProduct(id), objectsRevision = t.product.objectsRevision, analysisRevision = t.textAnalysis?.revision ?? 0, paid = engine !== 'local';
     await service.updateMaster(id, undefined, x => { x.product!.preparing = { status: 'running', startedAt: at, paid, engine }; });
@@ -743,7 +789,7 @@ export function createProductTemplates(options: ProductTemplateOptions) {
         history(p, { action: 'prepared', detail: `${result.cutouts.length} object(s) cut out (${result.separation.method === 'seedream' ? `AI: ${result.separation.ai?.planner} plan → ${result.separation.ai?.engine}, ${result.separation.ai?.matched.length} element(s) from its layers${result.separation.ai?.unmatched.length ? `, ${result.separation.ai.unmatched.length} locally` : ''}, $${result.separation.costUsd.toFixed(2)}` : result.separation.method === 'sam3' ? `SAM-3, ${result.separation.requests} request(s)` : 'locally'})${stands.length ? `, ${stands.length} display stand(s) on their own layers` : ''}; ${result.quality.issues.length} check(s) to look at.` });
       });
     } catch (error) {
-      const message = error instanceof OverlayGateError ? error.message : error instanceof Error ? error.message.slice(0, 300) : String(error);
+      const message = error instanceof OverlayGateError ? gateMessage(error, t.textAnalysis) : error instanceof Error ? error.message.slice(0, 300) : String(error);
       await service.updateMaster(id, undefined, x => { x.product!.preparing = { status: 'failed', startedAt: at, paid, engine, error: message }; });
       throw error;
     }
@@ -868,6 +914,6 @@ export function createProductTemplates(options: ProductTemplateOptions) {
   // Reuse Template (separate from variations): the person's own product set, copy and formats.
   const reuse = createReuseStudio({ store, creatives, requireProduct, snapshot, locked, latestRevision: id => requireProduct(id).product.revisions.at(-1)?.revision, placement: options.placement, toTemplate: input => createFromVariation(input) });
 
-  return { list, view, sheetOf, create, createFromVariation, startDetect, review, select, brief, editBrief, uploadReviewAsset, estimate, startPrepare, approve, publish, openEditor, saveEditorMaster, snapshot, creatives, variations, reuse, isDetecting: (id: string) => detecting.has(id), isPreparing: (id: string) => preparing.has(id), requireProduct, kinds: PRODUCT_ELEMENT_KINDS, isOverlayKind };
+  return { list, view, sheetOf, create, createFromVariation, startDetect, review, fitText, select, brief, editBrief, uploadReviewAsset, estimate, startPrepare, approve, publish, openEditor, saveEditorMaster, snapshot, creatives, variations, reuse, isDetecting: (id: string) => detecting.has(id), isPreparing: (id: string) => preparing.has(id), requireProduct, kinds: PRODUCT_ELEMENT_KINDS, isOverlayKind };
 }
 export type ProductTemplates = ReturnType<typeof createProductTemplates>;

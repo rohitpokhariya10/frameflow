@@ -163,21 +163,46 @@ export function checkDecompositionPlan(value: unknown, request: Pick<Decompositi
   return { prompt: out, layers, background: v.background.trim().slice(0, 500), warnings };
 }
 
-/** One Seedream Layerize request: upload, submit (once), poll, read, download every layer, put each on the sent canvas. */
-export async function seedreamLayerize(options: { transport: FalTransport; image: Buffer; width: number; height: number; prompt: string; save: Save; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number; pollTimeoutMs?: number }): Promise<{ requestId: string; layers: LayerizedLayer[]; imageSha256: string; costUsd: number }> {
-  const { transport, save } = options, sleep = options.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
+/**
+ * A fal refusal in words a person can act on: our reading of it, what fal itself said (its key or account message, e.g. a
+ * locked account or an exhausted balance), and what to change.
+ */
+export function falFailureMessage(error: unknown): string {
+  const ours = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof ProviderError)) return ours;
+  const said = (error.providerDetail?.messages ?? []).map(m => m.msg).filter(Boolean).join(' ').slice(0, 300);
+  const fix = error.code === 'PROVIDER_AUTH'
+    ? (error.status === 401 ? 'FAL_KEY is not a valid, active fal key: create one at fal.ai/dashboard/keys, put it in .env and server/.env, and restart the server.'
+      : 'The fal account refused the key: usually its balance is used up (top up at fal.ai/dashboard/billing), or the key was revoked or lacks access (fal.ai/dashboard/keys). Restart the server after changing FAL_KEY.')
+    : error.code === 'PROVIDER_CREDITS' ? 'Top up the fal balance at fal.ai/dashboard/billing.' : '';
+  return `${ours}${said ? ` fal said: “${said}”` : ''}${fix ? ` ${fix}` : ''}`.trim();
+}
+
+export interface SeedreamUpload { url: string; imageSha256: string; width: number; height: number }
+/**
+ * The picture made ready for Seedream and uploaded to fal: free, so it is done before anything paid. A refused key or
+ * account (or no key) stops there, with nothing spent on the planner or Seedream. fal's answer is saved beside the run.
+ */
+export async function uploadForSeedream(transport: FalTransport, image: Buffer, save: Save): Promise<SeedreamUpload> {
   let prepared: Awaited<ReturnType<typeof prepareProviderImage>>;
-  try { prepared = await prepareProviderImage(options.image, 'image/png'); }
+  try { prepared = await prepareProviderImage(image, 'image/png'); }
   catch (error) { throw new AiDecompositionError(error instanceof ProviderImageError ? error.code : 'INVALID_SEEDREAM_INPUT', `${error instanceof Error ? error.message : String(error)} (nothing was sent)`); }
-  const imageSha256 = prepared.report.provider.sha256;
-  let url: string;
-  try { url = await transport.upload(prepared.bytes, prepared.report.provider.mime); }
-  catch (error) { throw new AiDecompositionError('FAL_UPLOAD_FAILED', `The picture could not be uploaded to fal: ${error instanceof Error ? error.message : String(error)} (nothing was submitted).`); }
+  try { return { url: await transport.upload(prepared.bytes, prepared.report.provider.mime), imageSha256: prepared.report.provider.sha256, width: prepared.report.provider.width, height: prepared.report.provider.height }; }
+  catch (error) {
+    if (error instanceof ProviderError) save('seedream-upload-error.json', { code: error.code, status: error.status, detail: error.providerDetail ?? null });
+    throw new AiDecompositionError('FAL_UPLOAD_FAILED', `The picture could not be uploaded to fal: ${falFailureMessage(error)} Nothing was sent to OpenAI or Seedream, and nothing was charged.`);
+  }
+}
+
+/** One Seedream Layerize request: upload (unless done already), submit (once), poll, read, download every layer, put each on the sent canvas. */
+export async function seedreamLayerize(options: { transport: FalTransport; image: Buffer; width: number; height: number; prompt: string; save: Save; uploaded?: SeedreamUpload; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number; pollTimeoutMs?: number }): Promise<{ requestId: string; layers: LayerizedLayer[]; imageSha256: string; costUsd: number }> {
+  const { transport, save } = options, sleep = options.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
+  const { url, imageSha256, width, height } = options.uploaded ?? await uploadForSeedream(transport, options.image, save);
   const input = buildProviderInput('seedream', { imageUrl: url, prompt: options.prompt });
-  save('seedream-request.json', { endpoint: SEEDREAM_LAYERIZE, input: { ...input, image_url: `<fal upload, ${prepared.report.provider.width}×${prepared.report.provider.height}, sha256 ${imageSha256}>` } });
+  save('seedream-request.json', { endpoint: SEEDREAM_LAYERIZE, input: { ...input, image_url: `<fal upload, ${width}×${height}, sha256 ${imageSha256}>` } });
   let requestId: string;
   try { ({ requestId } = await transport.submit(SEEDREAM_LAYERIZE, input)); }
-  catch (error) { throw new AiDecompositionError('FAL_SUBMIT_FAILED', `Seedream did not accept the request: ${error instanceof Error ? error.message : String(error)}. No request ID was returned.`); }
+  catch (error) { throw new AiDecompositionError('FAL_SUBMIT_FAILED', `Seedream did not accept the request: ${falFailureMessage(error)} No request ID was returned.`); }
   save('seedream-request.json', { endpoint: SEEDREAM_LAYERIZE, requestId, input: { ...input, image_url: `<fal upload, sha256 ${imageSha256}>` } });
   const t0 = Date.now();
   for (let failures = 0; ;) {
@@ -223,11 +248,13 @@ export async function seedreamLayerize(options: { transport: FalTransport; image
 /** The decomposition core: the planner's prompt, then Seedream. */
 export function createProductLayerizer(options: { planner: ProductDecompositionPlanner; transport: () => FalTransport; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number }): ProductLayerizer {
   return { planner: options.planner.model, engine: SEEDREAM_LAYERIZE, offline: options.planner.offline, async decompose(request, save) {
+    // fal first, and free: no key, a refused key or a locked account stops here, before the planner is paid for.
+    let transport: FalTransport;
+    try { transport = options.transport(); } catch (error) { throw new AiDecompositionError('FAL_NOT_CONFIGURED', `${error instanceof Error ? error.message : String(error)} Nothing was sent to OpenAI or Seedream.`); }
+    const uploaded = await uploadForSeedream(transport, request.image, save);
     const planned = await options.planner.plan(request, save);
     save('ai-plan.json', planned.plan);
-    let transport: FalTransport;
-    try { transport = options.transport(); } catch (error) { throw new AiDecompositionError('FAL_NOT_CONFIGURED', error instanceof Error ? error.message : String(error)); }
-    const s = await seedreamLayerize({ transport, image: request.image, width: request.width, height: request.height, prompt: planned.plan.prompt, save, ...(options.sleep ? { sleep: options.sleep } : {}), ...(options.pollIntervalMs !== undefined ? { pollIntervalMs: options.pollIntervalMs } : {}) });
+    const s = await seedreamLayerize({ transport, image: request.image, width: request.width, height: request.height, prompt: planned.plan.prompt, save, uploaded, ...(options.sleep ? { sleep: options.sleep } : {}), ...(options.pollIntervalMs !== undefined ? { pollIntervalMs: options.pollIntervalMs } : {}) });
     return { plan: planned.plan, planner: { model: options.planner.model, offline: options.planner.offline, ...(planned.responseId ? { responseId: planned.responseId } : {}), ...(planned.usage ? { usage: planned.usage } : {}), costUsd: options.planner.offline ? 0 : DECOMPOSITION_PLANNER_USD },
       seedream: { endpoint: SEEDREAM_LAYERIZE, offline: false, requestId: s.requestId, layers: s.layers.length, costUsd: s.costUsd, imageSha256: s.imageSha256 }, layers: s.layers };
   } };

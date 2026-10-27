@@ -28,6 +28,7 @@ import type { LogoSlot, PixelRect, ProductAiSeparation, ProductObject, ProductQu
 import { flattenRgb, sha256, type Rgba } from '../pixels.js';
 import { removalMask } from '../master/removal.js';
 import { extendLineToInk } from '../master/scan.js';
+import { measureWord } from '../../../textRecognition/measure.js';
 import { cleanBackground } from '../master/patternFill.js';
 import { fillLevels, levelsOf, unmix } from '../master/artworkRebuild.js';
 import { groundColours, groundMask } from '../master/artworkObjects.js';
@@ -45,10 +46,56 @@ type Box = PixelRect;
 const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 export class OverlayGateError extends Error { constructor(message: string, readonly areas: Box[]) { super(message); this.name = 'OverlayGateError'; } }
 
+/**
+ * The AI words' ink measured again where their letters are (measureWord: against the nearest of the colours around each
+ * word), for the removal mask. A stored colour measured as a mix of two backgrounds, or at another place, masks the
+ * background and leaves the letters: white "Festive" on an orange-over-green badge was stored as the green, its letters
+ * stayed in the picture and the band of green under them was streaked. A word too faint to measure keeps its colour.
+ */
+export function withMeasuredInk(source: Rgba, analysis: TextAnalysis): TextAnalysis {
+  return { ...analysis, words: analysis.words.map(w => {
+    if (w.origin !== 'ai' || w.review.status === 'rejected' || w.box.rotation) return w;
+    const m = measureWord(source, w.source?.box ?? w.box, w.text);
+    return m.evidence.separation >= 0.25 && m.color !== w.style.color ? { ...w, style: { ...w.style, color: m.color } } : w;
+  }) };
+}
+
+/**
+ * A word's own ink pixels inside `padded` (its box grown by the mask's pad): the marks of its ink colour of a word's size.
+ * A mark of that colour much taller or wider than the word — a badge's white ring passing its ends, a rule through the
+ * line — is the artwork's and stays (masked, it was filled with streaks over the badge's border).
+ */
+export function wordLetters(source: Rgba, ink: number[], padded: { x0: number; y0: number; x1: number; y1: number }, box: Box): [number, number][] {
+  const { width: W, height: H, data } = source, lh = Math.max(1, box.height);
+  // The marks are followed a line's height past the word in every direction, to see how far they reach.
+  const wx0 = Math.max(0, padded.x0 - lh), wy0 = Math.max(0, padded.y0 - lh), wx1 = Math.min(W, padded.x1 + lh), wy1 = Math.min(H, padded.y1 + lh), ww = wx1 - wx0, wh = wy1 - wy0;
+  const isInk = (x: number, y: number) => { const i = (y * W + x) * 4; return Math.max(Math.abs(data[i] - ink[0]), Math.abs(data[i + 1] - ink[1]), Math.abs(data[i + 2] - ink[2])) <= 70; };
+  const seen = new Uint8Array(ww * wh), out: [number, number][] = [];
+  for (let y = padded.y0; y < padded.y1; y++) for (let x = padded.x0; x < padded.x1; x++) {
+    const k = (y - wy0) * ww + x - wx0;
+    if (seen[k] || !isInk(x, y)) continue;
+    const stack = [k], comp: number[] = []; seen[k] = 1;
+    let minX = x, maxX = x, minY = y, maxY = y;
+    while (stack.length) {
+      const q = stack.pop()!, qx = q % ww + wx0, qy = Math.floor(q / ww) + wy0; comp.push(q);
+      if (qx < minX) minX = qx; if (qx > maxX) maxX = qx; if (qy < minY) minY = qy; if (qy > maxY) maxY = qy;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = qx + dx, ny = qy + dy; if (nx < wx0 || ny < wy0 || nx >= wx1 || ny >= wy1) continue;
+        const nk = (ny - wy0) * ww + nx - wx0; if (seen[nk] || !isInk(nx, ny)) continue; seen[nk] = 1; stack.push(nk);
+      }
+    }
+    // A letter (or letters joined by their edges): no taller than the line with its pad, no wider than the word and a line.
+    if (maxY - minY + 1 > box.height * 1.35 + 2 * (padded.y1 - padded.y0 - box.height) / 2 + 2 || maxX - minX + 1 > box.width + lh) continue;
+    for (const q of comp) { const qx = q % ww + wx0, qy = Math.floor(q / ww) + wy0; if (qx >= padded.x0 && qx < padded.x1 && qy >= padded.y0 && qy < padded.y1) out.push([qx, qy]); }
+  }
+  return out;
+}
+
 /** The overlays' removal mask: text ink of every kept word's line, text plates, bank/payment logos and QR codes. */
-export function overlayMask(source: Rgba, analysis: TextAnalysis | undefined): { mask: Uint8Array; areas: { id: string; box: Box }[]; sweep: { id: string; box: Box; plain: boolean }[] } {
+export function overlayMask(source: Rgba, given: TextAnalysis | undefined): { mask: Uint8Array; areas: { id: string; box: Box }[]; sweep: { id: string; box: Box; plain: boolean }[] } {
   const areas: { id: string; box: Box }[] = [];
-  if (!analysis) return { mask: new Uint8Array(source.width * source.height), areas, sweep: [] };
+  if (!given) return { mask: new Uint8Array(source.width * source.height), areas, sweep: [] };
+  const analysis = withMeasuredInk(source, given);
   const lines: { box: Box; ink: string; lineHeight: number }[] = [];
   for (const g of analysis.groups) for (const l of g.lines) {
     const words = l.wordIds.map(id => analysis.words.find(w => w.id === id)).filter((w): w is NonNullable<typeof w> => !!w && w.review.status !== 'rejected').map(w => ({ ...w, box: w.source?.box ?? w.box }));
@@ -69,12 +116,9 @@ export function overlayMask(source: Rgba, analysis: TextAnalysis | undefined): {
       // The ink and its soft edge: a letter's anti-aliasing is wider in a bigger picture (3–4 px at 4096 px), so the ink is
       // widened by a share of the word's height (1 px for small print; faint letter outlines were left on the rays).
       const ink = [1,3,5].map(i => parseInt(word.style.color.slice(i,i+2),16)), r = Math.max(1, Math.round(b.height * 0.08)), pad = r + 1;
-      for (let y=Math.max(0,Math.floor(b.y)-pad);y<Math.min(source.height,Math.ceil(b.y+b.height)+pad);y++)
-        for (let x=Math.max(0,Math.floor(b.x)-pad);x<Math.min(source.width,Math.ceil(b.x+b.width)+pad);x++) {
-          const i=(y*source.width+x)*4;
-          if (Math.max(Math.abs(source.data[i]-ink[0]),Math.abs(source.data[i+1]-ink[1]),Math.abs(source.data[i+2]-ink[2]))>70) continue;
-          for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++)if(x+dx>=0&&y+dy>=0&&x+dx<source.width&&y+dy<source.height)mask[(y+dy)*source.width+x+dx]=1;
-        }
+      const px0 = Math.max(0, Math.floor(b.x) - pad), py0 = Math.max(0, Math.floor(b.y) - pad), px1 = Math.min(source.width, Math.ceil(b.x + b.width) + pad), py1 = Math.min(source.height, Math.ceil(b.y + b.height) + pad);
+      for (const [x, y] of wordLetters(source, ink, { x0: px0, y0: py0, x1: px1, y1: py1 }, b))
+        for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++)if(x+dx>=0&&y+dy>=0&&x+dx<source.width&&y+dy<source.height)mask[(y+dy)*source.width+x+dx]=1;
       continue;
     }
     for (let y = Math.max(0, Math.floor(b.y) - 1); y < Math.min(source.height, Math.ceil(b.y + b.height) + 1); y++)
@@ -149,7 +193,11 @@ export function sweepPlainLines(source: Rgba, analysis: TextAnalysis, mask: Uint
     for (const c of accepted) for (const i of c.px) if (!mask[i]) { mask[i] = 1; ends++; }
     if (swept || ends) {
       const xs = [...accepted].flatMap(c => [c.x0, c.x1 + 1]), ex0 = Math.min(x0, ...xs), ex1 = Math.max(x1, ...xs);
-      out.push({ id: `${g.id}:${l.id}`, box: { x: ex0, y: y0, width: ex1 - ex0, height: y1 - y0 }, plain });
+      // On artwork, the area to fill is only what the marks cover: the padded band reaches past a pill's rim into the page
+      // around it, whose colour was then read into the letters (mint letters on an orange "What to expect" pill).
+      const ys = [...accepted].flatMap(c => [c.y0, c.y1 + 1]);
+      const box = plain || !ys.length ? { x: ex0, y: y0, width: ex1 - ex0, height: y1 - y0 } : { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+      out.push({ id: `${g.id}:${l.id}`, box, plain });
     }
   }
   return out;
@@ -286,6 +334,20 @@ export function refillPatterned(rgb: Uint8Array, w: number, h: number, mask: Uin
 }
 
 /**
+ * The colours around a box, from its ring's pixels (per channel: `ring[c]`): each colour covering a tenth of the ring or
+ * more when there are two or more (text on a badge split in two colours), else the ring's median.
+ */
+export function ringColours(ring: number[][]): number[][] {
+  const n = ring[0]?.length ?? 0, buckets = new Map<number, number[]>();
+  for (let k = 0; k < n; k++) { const key = (ring[0][k] >> 4 << 8) | (ring[1][k] >> 4 << 4) | (ring[2][k] >> 4); const b = buckets.get(key); if (b) b.push(k); else buckets.set(key, [k]); }
+  const med = (v: number[]) => { const s = [...v].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
+  const major = [...buckets.values()].filter(b => b.length >= n * 0.1).sort((a, b) => b.length - a.length).slice(0, 4);
+  return major.length >= 2 ? major.map(b => [0, 1, 2].map(c => med(b.map(k => ring[c][k])))) : [[0, 1, 2].map(c => med(ring[c]))];
+}
+/** How far an RGB pixel (`rgb` at `q`) is from the nearest of `colours` (largest channel difference). */
+const nearestColour = (rgb: Uint8Array, q: number, colours: number[][]) => Math.min(...colours.map(c => Math.max(Math.abs(rgb[q] - c[0]), Math.abs(rgb[q + 1] - c[1]), Math.abs(rgb[q + 2] - c[2]))));
+
+/**
  * The gate: where an overlay was, the clean picture must not still show it. An overlay's own pixels are the ones of its
  * removal mask that stand out from what is just around its area (text ink, a logo card); most of them must have changed.
  * A picture that still keeps over half of any overlay's pixels is refused, and nothing is sent anywhere.
@@ -301,11 +363,11 @@ export function assertOverlaysGone(source: Uint8Array, clean: Uint8Array, mask: 
       const i = y * w + x; if (mask[i]) continue;
       for (let c = 0; c < 3; c++) ring[c].push(source[i * 3 + c]);
     }
-    const around = ring.map(v => { v.sort((p, q) => p - q); return v.length ? v[v.length >> 1] : 0; });
+    const around = ringColours(ring);
     let own = 0, kept = 0;
     for (let y = a.box.y; y < Math.min(h, a.box.y + a.box.height); y++) for (let x = a.box.x; x < Math.min(w, a.box.x + a.box.width); x++) {
       const i = y * w + x;
-      if (!mask[i] || !far(source, i, around, 40)) continue;
+      if (!mask[i] || nearestColour(source, i * 3, around) <= 40) continue;
       own++; if (!far(clean, i, [source[i * 3], source[i * 3 + 1], source[i * 3 + 2]], 8)) kept++;
     }
     if (own >= 20 && kept / own > 0.5) failed.push(a.box);
@@ -869,13 +931,14 @@ async function aiLayers(layerizer: ProductLayerizer, rgb: Uint8Array, clean: Uin
   // The source-ink heuristic otherwise mistakes unchanged scene texture under an overlay for retained lettering.
   // Uploaded creatives and legacy compositions without this proof still require the pixel gate.
   const still: string[] = [];
-  for (const [label, b0] of (verifiedComposition ? [] : [...words.map(x => [`“${x.text}”`, x.box] as const), ...logos.map(l => [l.label, l.box] as const)])) {
+  // (A word's letters are where its source box is: a box moved in the review moves its live text, not its pixels.)
+  for (const [label, b0] of (verifiedComposition ? [] : [...words.map(x => [`“${x.text}”`, x.source?.box ?? x.box] as const), ...logos.map(l => [l.label, l.box] as const)])) {
     const b = scale(b0), x0 = Math.max(0, b.x), y0 = Math.max(0, b.y), x1 = Math.min(W, b.x + b.width), y1 = Math.min(H, b.y + b.height); if (x1 - x0 < 2 || y1 - y0 < 2) continue;
     const ring: number[][] = [[], [], []], X0 = Math.max(0, x0 - 2), Y0 = Math.max(0, y0 - 2), X1 = Math.min(W - 1, x1 + 1), Y1 = Math.min(H - 1, y1 + 1);
     for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) if (y === Y0 || y === Y1 || x === X0 || x === X1) for (let c = 0; c < 3; c++) ring[c].push(source[(y * W + x) * 3 + c]);
-    const med = ring.map(v => { v.sort((p, q) => p - q); return v[v.length >> 1] ?? 0; });
+    const around = ringColours(ring);
     let ink = 0, same = 0;
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const q = (y * W + x) * 3; if (Math.max(...[0, 1, 2].map(c => Math.abs(source[q + c] - med[c]))) <= 40) continue; ink++; if (Math.max(...[0, 1, 2].map(c => Math.abs(source[q + c] - small[q + c]))) <= 24) same++; }
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const q = (y * W + x) * 3; if (nearestColour(source, q, around) <= 40) continue; ink++; if (Math.max(...[0, 1, 2].map(c => Math.abs(source[q + c] - small[q + c]))) <= 24) same++; }
     if (ink >= 6 && same > ink * 0.3) still.push(label);
   }
   save('ai-input-check.json', { proof: verifiedComposition ? 'hash-verified server-rendered composition excluding text and logo layers' : 'pixel comparison against source overlay ink', sent: { width: W, height: H }, words: words.length, logos: logos.length, logosKeptInPicture: kept.map(l => l.label), stillVisible: still });

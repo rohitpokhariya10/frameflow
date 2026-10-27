@@ -41,6 +41,8 @@ export interface ProductView {
 }
 export interface ProductListItem { id: string; name: string; createdAt: string; updatedAt: string; stage: ProductStage; source: ProtectedTemplate['source']; counts: ProductView['counts']; revisions: number; /** The latest saved version is a draft with quality warnings. */ draft?: boolean }
 export interface SheetAnswer { sheet: boolean; width: number; height: number; boxes: PixelRect[] }
+/** What fitting the text did, line by line (letters: read on this computer; strokes: by the picture; kept: unchanged). */
+export interface TextFit { moved: number; lines: { text: string; method: 'letters' | 'strokes' | 'kept'; moved: number; reason?: string }[] }
 export interface ReviewBody {
   expectedRevision: number;
   /** `layer`, for a podium or stand: its own layer (separated, movable) or part of the background; null clears it. `hidden`: kept but not used. */
@@ -95,6 +97,8 @@ export const productApi = {
   /** `savedAnswer`: read the AI answer already received for this creative again (free: no new request). */
   detect: (id: string, input: { force?: boolean; useAi: boolean; savedAnswer?: boolean; recover?: boolean; newRequest?: boolean }) => call<{ started: boolean; template: ProductView }>(`/${id}/detect`, json('POST', input)),
   review: (id: string, body: ReviewBody) => call<ProductView>(`/${id}/review`, json('PUT', body)),
+  /** The AI-read text boxes moved onto their letters (free, on this computer); a person's corrections stay. */
+  fitText: (id: string, expectedRevision: number) => call<ProductView & { fit: TextFit }>(`/${id}/text/fit`, json('POST', { expectedRevision })),
   /** A picture for the review (a logo's replacement): stored; used only when the review naming it is saved. */
   reviewAsset: (id: string, file: Blob) => call<{ file: string; width: number; height: number }>(`/${id}/review-assets`, upload(file)),
   estimate: (id: string) => call<PrepareEstimate>(`/${id}/prepare-estimate`),
@@ -155,7 +159,8 @@ export interface ReuseStudioView {
   texts: { groupId: string; label: string; category: string; text: string; style?: CreativeTextStyle }[];
   logos: { id: string; label: string; category: string; file: string }[];
   formats: { ratio: ReuseAspectRatio; label: string; canvas: { width: number; height: number }; method: 'template' | 'slice' | 'mirror-extend'; note?: string }[];
-  placement: { ai: boolean; model: string; offline: boolean; costUsd: number }; knownCategories: string[];
+  /** `slots`: the template's own product places (as many products or fewer stand in them, never arranged anew). */
+  placement: { ai: boolean; model: string; offline: boolean; costUsd: number; slots?: number }; knownCategories: string[];
 }
 export interface ReuseDraftChange {
   expectedRevision: number; name?: string; ratios?: ReuseAspectRatio[]; placement?: { mode?: 'original' | 'geometry' | 'ai'; keepStands?: boolean; hero?: string | null; variant?: number };

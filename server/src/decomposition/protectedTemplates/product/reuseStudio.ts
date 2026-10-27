@@ -8,7 +8,8 @@
  *   compose    per format: the revision's creative with the edits applied, framed for the format (reuseLayout.ts: never
  *              stretched), products placed on its stage (reusePlacement.ts: the template's own places, fixed rules, or
  *              an approved AI plan), each product's own picture composited with a soft contact shadow, manual corrections
- *              last, then checked. Free, on this computer.
+ *              last, then checked. The template's products not standing in their own places leave no footprint: the
+ *              background is the base with theirs cleaned (footprint.ts), or the empty stage. Free, on this computer.
  *   generate   each chosen format drawn as one complete poster (preview) with its checks
  *   save       each format becomes an ordinary creative of the template (its own files): Creatives, the editor and
  *              "Decompose & Edit" (the existing approved planner + Seedream route) take it from there
@@ -16,8 +17,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import {
-  fitToSlot, isOfferFont, offerWeights, REUSE_ASPECT_LABELS, REUSE_ASPECT_RATIOS, rewriteGroup, CREATIVE_SCHEMA_VERSION,
-  type CreativeInstance, type OfferWeight, type ProductCreative, type ProductCreativeObject, type ProductSnapshot, type ProductVariationCheck, type ReuseAiPlan, type ReuseAspectRatio,
+  isOfferFont, offerWeights, REUSE_ASPECT_LABELS, REUSE_ASPECT_RATIOS, rewriteGroup, CREATIVE_SCHEMA_VERSION,
+  type CreativeInstance, type OfferWeight, type ProductCreative, type ProductCreativeObject, type ProductSlot, type ProductSnapshot, type ProductVariationCheck, type ReuseAiPlan, type ReuseAspectRatio,
   type ReuseDraft, type ReuseItem, type ReuseOutput, type ReuseOverride, type ReusePlacementBox, type ReusePlacementMode, type ReuseTextEdit,
 } from '@frameflow/shared';
 import { RunError } from '../../layerizeExperiment.js';
@@ -28,6 +29,7 @@ import { renderProductCreative } from './creativeRun.js';
 import { cutOutUpload } from './uploadCutout.js';
 import { shadowPng } from './stage.js';
 import { cleanStage } from './stageCleanup.js';
+import { cleanFootprints, FOOTPRINT_VERSION, type Footprint } from './footprint.js';
 import { clearResidue, inkColours, textArt } from './textArt.js';
 import { artworkBase } from './artworkText.js';
 import { refineCluster } from './reuseCluster.js';
@@ -35,7 +37,7 @@ import { fontMeasure } from './ratioLayout.js';
 import { fitGroup } from './composition.js';
 import { inferAlign, restyleGroup } from './variations.js';
 import { variationComposition, type VariationComposition } from './variationTemplate.js';
-import { reuseCategory, shapeMismatch } from './reusePlacement.js';
+import { reuseCategory, shapeMismatch, sizeUnit } from './reusePlacement.js';
 import { artRows, frameBackground, groupBounds, mapBox, mapCreative, mapX, planFrame, reanchor, type Box, type Decoration, type ReuseFrame } from './reuseLayout.js';
 import { checkPlacement, geometryPlacement, KNOWN_KINDS, PLACEMENT_COST_USD, type PlacementInput, type ReusePlacementPlanner, type Stage } from './reusePlacement.js';
 
@@ -78,8 +80,55 @@ interface Ground { file: string; png: Buffer; lettering: Map<string, { file: str
 /** Bumped when stageCleanup.ts changes what it draws (a new cached file per revision). */
 const STAGE_CLEANUP_VERSION = 1, TEXT_ART_VERSION = 3;
 export interface Composed {
-  creative: ProductCreative; frame: ReuseFrame; mode: ReusePlacementMode; placement: { input: PlacementInput; boxes: ReusePlacementBox[]; notes: string[]; rejected: { id: string; reason: string }[] };
+  creative: ProductCreative; frame: ReuseFrame; mode: ReusePlacementMode;
+  /** `places`: for a product standing in a template product's place, that original product's box in this format. */
+  placement: { input: PlacementInput; boxes: ReusePlacementBox[]; notes: string[]; rejected: { id: string; reason: string }[]; places?: Record<string, Box> };
   checks: { status: 'ready' | 'needs-review' | 'failed'; issues: ProductVariationCheck[] };
+  /** Every product stands in a place of the template's own products (slot-anchored), not arranged anew. */
+  anchored: boolean;
+}
+
+/**
+ * The template's product places that can hold a product: its products' slots of a comparable size to its largest (the
+ * main product's place, not a small icon in the footer), the most prominent first (largest, then nearest the middle).
+ */
+export function productPlaces(snapshot: ProductSnapshot) {
+  const placed = snapshot.objects.filter((o): o is typeof o & { slot: ProductSlot } => o.kind === 'product' && !!o.slot);
+  const tallest = Math.max(0, ...placed.map(o => o.slot.targetHeight)), mid = snapshot.canvas.width / 2;
+  return placed.filter(o => o.slot.targetHeight >= tallest * 0.35)
+    .sort((a, b) => b.slot.box.width * b.slot.targetHeight - a.slot.box.width * a.slot.targetHeight || Math.abs(a.slot.box.x + a.slot.box.width / 2 - mid) - Math.abs(b.slot.box.x + b.slot.box.width / 2 - mid));
+}
+
+/**
+ * Slot-anchored replacement: the template's own product places are the source of truth. A product of the template that
+ * stays included keeps its place (a new photo of it fitted to its slot); products the person added take the places of
+ * the template's products left out — the main product (or else the larger kind) the most prominent place. Undefined when
+ * some added product has no place left (more products than places): those are arranged anew instead.
+ */
+export function slotAnchors(snapshot: ProductSnapshot, products: ReuseItem[], hero?: string | null): Map<string, { objectId: string; slot?: ProductSlot }> | undefined {
+  const out = new Map<string, { objectId: string; slot?: ProductSlot }>(), taken = new Set<string>();
+  for (const i of products.filter(x => x.objectId)) { out.set(i.id, { objectId: i.objectId!, slot: snapshot.objects.find(o => o.id === i.objectId)?.slot }); taken.add(i.objectId!); }
+  const free = productPlaces(snapshot).filter(o => !taken.has(o.id));
+  const added = products.filter(x => !x.objectId).sort((a, b) => Number(b.id === hero) - Number(a.id === hero) || sizeUnit(b.category) - sizeUnit(a.category) || a.order - b.order);
+  if (added.length > free.length) return undefined;
+  added.forEach((i, k) => out.set(i.id, { objectId: free[k].id, slot: free[k].slot }));
+  return out;
+}
+
+/**
+ * A product in a template product's slot ("contain"): as tall as the product it replaces (the slot's target height)
+ * unless that makes it wider than the slot holds, centred on the slot, standing on its contact line, its proportions
+ * kept. On the template's stage a wide product may use up to half again the slot's width (a washing machine where a slim
+ * card reader stood), never more than the stage. Kept inside the canvas by being made smaller, never cut.
+ */
+export function fitInSlot(slot: ProductSlot, picture: { width: number; height: number }, canvas: { width: number; height: number }, stage?: Stage): Box {
+  const cx = slot.box.x + slot.box.width / 2;
+  const onStage = !!stage && Math.abs(cx - stage.cx) <= stage.a && slot.contactY >= stage.cy - stage.b * 2 && slot.contactY <= stage.cy + stage.b * 3;
+  const room = onStage ? Math.max(slot.box.width, Math.min(slot.box.width * 1.5, stage!.a * 2 * 0.85)) : slot.box.width;
+  const pw = Math.max(1, picture.width), ph = Math.max(1, picture.height);
+  const scale = Math.min(slot.targetHeight / ph, room / pw, (slot.contactY + 1) / ph, canvas.width / pw);
+  const width = Math.max(1, Math.round(pw * scale)), height = Math.max(1, Math.round(ph * scale));
+  return { x: Math.round(Math.min(Math.max(0, cx - width / 2), canvas.width - width)), y: Math.round(Math.max(0, slot.contactY + 1 - height)), width, height };
 }
 
 export function createReuseStudio(deps: {
@@ -197,6 +246,25 @@ export function createReuseStudio(deps: {
     }
     return ctx;
   }
+  /**
+   * The base ground with the footprints of `gone` (the template's products not standing in their own places) cleaned
+   * (footprint.ts, against the template's original picture): made once per revision and set of products and kept as a
+   * file of its own beside what was found (`pfoot-*.json`); the template's own files never change. Its lettering is the
+   * base ground's (text is not touched). Nothing to clean: the base ground itself.
+   */
+  async function cleanedGround(id: string, ctx: Context, revision: number, gone: ProductSnapshot['objects']): Promise<Ground> {
+    const base = ctx.grounds.base;
+    if (!gone.length) return base;
+    const key = `pfoot-${revision}-${sha256(Buffer.from(JSON.stringify([base.file, sha256(base.png), gone.map(o => o.id).sort(), FOOTPRINT_VERSION]))).slice(0, 12)}`;
+    if (!store.has(id, `${key}.json`)) {
+      const footprints: Footprint[] = gone.map(o => ({ box: o.box, contactY: o.slot?.contactY, ...(o.cutout && store.has(id, o.cutout.file) ? { cutout: { png: store.read(id, o.cutout.file), placement: o.cutout.placement } } : {}) }));
+      const original = ctx.snapshot.source?.file && store.has(id, ctx.snapshot.source.file) ? store.read(id, ctx.snapshot.source.file) : undefined;
+      const r = await cleanFootprints(base.png, footprints, ctx.decorations.map(x => x.box), original);
+      if (r.filled) store.write(id, `${key}.png`, r.png);
+      store.write(id, `${key}.json`, Buffer.from(JSON.stringify({ version: FOOTPRINT_VERSION, from: base.file, products: gone.map(o => ({ id: o.id, label: o.label })), changed: r.filled, ...r.report }, null, 2)));
+    }
+    return store.has(id, `${key}.png`) ? { file: `${key}.png`, png: store.read(id, `${key}.png`), lettering: base.lettering } : base;
+  }
   /** A picture's size (template cut-outs are read once). */
   const sizes = new Map<string, { width: number; height: number }>();
   async function sizeOf(id: string, file: string) {
@@ -235,7 +303,8 @@ export function createReuseStudio(deps: {
       texts: t.groups.filter(g => !t.texts.filter(x => x.groupId === g.id).every(x => x.hidden)).map(g => { const w = t.texts.find(x => x.groupId === g.id); return { groupId: g.id, label: g.label, category: g.category, text: textOf(g.id), style: w?.style }; }).filter(g => g.text.trim()),
       logos: t.images.map(i => ({ id: i.id, label: i.label, category: i.category, file: i.asset.file })),
       formats: REUSE_ASPECT_RATIOS.map(r => { const f = planFrame(ctx.snapshot.canvas, r, ctx.decorations, ctx.avoid); return { ratio: r, label: REUSE_ASPECT_LABELS[r], canvas: f.canvas, method: f.method, note: f.note }; }),
-      placement: (() => { const p = deps.placement?.(); return { ai: !!p, model: p?.model ?? '', offline: p?.offline ?? true, costUsd: PLACEMENT_COST_USD }; })(), knownCategories: KNOWN_KINDS };
+      // `slots`: the template's own product places; as many products as that (or fewer) stand in them, never arranged anew.
+      placement: (() => { const p = deps.placement?.(); return { ai: !!p, model: p?.model ?? '', offline: p?.offline ?? true, costUsd: PLACEMENT_COST_USD, slots: productPlaces(ctx.snapshot).length }; })(), knownCategories: KNOWN_KINDS };
   }
   /** Changes to a draft (what is included, text, logos, formats, placement, corrections, name): a new draft revision. */
   const update = (id: string, did: string, input: { expectedRevision?: unknown; items?: unknown; texts?: unknown; logos?: unknown; ratios?: unknown; placement?: unknown; overrides?: unknown; name?: unknown }) => locked(`${id}:reuse:${did}`, async () => {
@@ -391,8 +460,19 @@ export function createReuseStudio(deps: {
     // How products are placed in this format.
     const plan = d.ai.plans[ratio], planFresh = !!plan && plan.items.join(',') === products.map(i => i.id).sort().join(',') && (plan.hero ?? null) === (d.placement.hero ?? null);
     let mode: ReusePlacementMode = opts.geometryOnly ? 'geometry' : d.placement.mode;
-    if (mode === 'original' && (ratio !== 'original' || added)) { mode = 'geometry'; if (!opts.geometryOnly) notes.push(added ? 'A product was added: the products were arranged again (the template’s own places hold only its own products).' : 'In this format the products are arranged again on its stage.'); }
-    if (mode === 'ai' && !planFresh) { mode = 'geometry'; notes.push(plan ? 'The AI placement was made for other products or another main product: arranged on this computer instead. Run AI placement again.' : 'No AI placement for this format yet: arranged on this computer.'); }
+    // Slot-anchored replacement first: in the template's own format, when every product has a place of the template's
+    // own products, each stands in it (whatever the placement mode); neither the arrangement by rule nor an AI plan
+    // moves it. (Other formats reframe the artwork — characters and text move in — so their products are arranged.)
+    const anchors = opts.geometryOnly || ratio !== 'original' ? undefined : slotAnchors(snapshot, products, d.placement.hero);
+    if (anchors) {
+      const taking = products.filter(i => !i.objectId).length;
+      if (taking) notes.push(`${taking === 1 ? 'Your product stands' : `Your ${taking} products stand`} in the template’s own product ${taking === 1 ? 'place' : 'places'}: centred on ${taking === 1 ? 'it' : 'them'}, on the same base line, at most as large as the original.`);
+      if (mode === 'ai' && plan) notes.push('The AI placement is not used: products that take the template’s own places stay in them.');
+      mode = 'original';
+    } else {
+      if (mode === 'original' && (ratio !== 'original' || added)) { mode = 'geometry'; if (!opts.geometryOnly) notes.push(added ? 'More products than the template has places for: the products were arranged again.' : 'In this format the products are arranged again on its stage.'); }
+      if (mode === 'ai' && !planFresh) { mode = 'geometry'; notes.push(plan ? 'The AI placement was made for other products or another main product: arranged on this computer instead. Run AI placement again.' : 'No AI placement for this format yet: arranged on this computer.'); }
+    }
     // Objects: characters and decorations of the template as they are (a replaced character fitted to its place), stands only in the template's own arrangement.
     const objects: ProductCreativeObject[] = [];
     for (const o of c.objects) {
@@ -415,12 +495,17 @@ export function createReuseStudio(deps: {
       const size = i.asset.kind === 'upload' ? i.asset : await sizeOf(id, i.asset.file), k = Math.min(ref.width / size.width, ref.height / size.height);
       objects.push({ id: i.id, objectId: null, kind: 'character', label: i.label, asset: i.asset, box: { x: ref.x, y: ref.y + ref.height - size.height * k, width: size.width * k, height: size.height * k }, hidden: i.hidden, z: 900 });
     }
-    // The template's own places (original mode): each product where it was; a replacement fitted to its slot.
+    // The template's own places (original mode): each product where it was; a replacement — a new photo of a template
+    // product, or an added product taking a template product's place — fitted to that place's slot (fitInSlot), at the
+    // depth of the product it replaces.
+    const places: Record<string, Box> = {};
     if (mode === 'original' && !opts.withoutProducts) for (const i of products) {
-      const o = c.objects.find(x => x.id === i.id), slot = snapshot.objects.find(x => x.id === i.objectId)?.slot;
+      const a = anchors?.get(i.id), slot = a?.slot ?? snapshot.objects.find(x => x.id === i.objectId)?.slot;
+      const o = i.objectId ? c.objects.find(x => x.id === i.id) : c.objects.find(x => x.kind === 'product' && (x.objectId === a?.objectId || x.id === a?.objectId));
       if (!o) continue;
-      const box = i.asset.kind === 'upload' ? (slot ? fitToSlot(slot, i.asset, snapshot.canvas) : o.box) : o.box;
-      objects.push({ ...o, label: i.label, asset: i.asset, hidden: i.hidden, box: { ...box } });
+      const box = i.asset.kind === 'upload' ? (slot ? fitInSlot(slot, i.asset, snapshot.canvas, ctx.stageFound ? ctx.stage : undefined) : o.box) : o.box;
+      objects.push({ ...o, id: i.id, objectId: i.objectId ?? null, label: i.label, asset: i.asset, hidden: i.hidden, box: { ...box } });
+      places[i.id] = { ...o.box };
     }
     c = { ...c, objects, origin: { kind: 'reuse', draftId: d.id, ratio }, name: `${d.name} · ${REUSE_ASPECT_LABELS[ratio]}`.slice(0, 120) };
     // Framed for the format, then re-anchored where the format cut elements off.
@@ -477,8 +562,9 @@ export function createReuseStudio(deps: {
       objects: c.objects.map(o => { const f = fix[`o:${o.id}`]; return f ? { ...o, box: { ...o.box, ...(f.x !== undefined ? { x: f.x } : {}), ...(f.y !== undefined ? { y: f.y } : {}), ...(f.width !== undefined ? { width: f.width } : {}), ...(f.height !== undefined ? { height: f.height } : {}) } } : o; }),
       texts: c.texts.map(t => { const f = fix[`g:${t.groupId}`]; return f ? { ...t, x: t.x + (f.dx ?? 0), baselineY: t.baselineY + (f.dy ?? 0) } : t; }),
       images: c.images.map(i => { const f = fix[`i:${i.id}`]; return f ? { ...i, box: { ...i.box, x: i.box.x + (f.dx ?? 0), y: i.box.y + (f.dy ?? 0) } } : i; }) };
-    // Soft contact shadows under the products standing on the stage (their own layers, below them).
-    if (!opts.withoutProducts) for (const o of c.objects.filter(x => x.kind === 'product' && !x.hidden && mode !== 'original')) {
+    // Soft contact shadows under the products standing on the stage (their own layers, below them): every product placed
+    // anew, and every new photo standing in a template product's place (the template's own products bring their own).
+    if (!opts.withoutProducts) for (const o of c.objects.filter(x => x.kind === 'product' && !x.hidden && (mode !== 'original' || x.asset.kind === 'upload'))) {
       const w = Math.max(16, Math.round(o.box.width * 1.06)), h = Math.max(8, Math.round(Math.min(o.box.width * 0.11, stage.b * 0.5 + 8)));
       const file = `prs-${Math.min(4096, Math.round(w / 8) * 8)}-${Math.min(1024, Math.round(h / 4) * 4)}.png`;
       if (!store.has(id, file)) store.write(id, file, await shadowPng(Math.min(4096, Math.round(w / 8) * 8), Math.min(1024, Math.round(h / 4) * 4)));
@@ -489,7 +575,11 @@ export function createReuseStudio(deps: {
     const front = Math.max(0, ...c.objects.filter(o => o.kind !== 'character').map(o => o.z)) + 1;
     c = { ...c, objects: c.objects.map(o => (o.kind === 'character' && o.z < front ? { ...o, z: front } : o)) };
     // Products arranged anew stand on the empty stage (the template's painted stands rebuilt away), when that was reliable.
-    const ground = mode !== 'original' && ctx.grounds.empty ? ctx.grounds.empty : ctx.grounds.base;
+    // Else the base, with the footprints of the template's products that do not stand in their own places cleaned
+    // (left out, hidden, replaced by a photo, their place taken by the person's product, moved, or arranged anew).
+    const own = (o: ProductCreativeObject) => { const t = ctx.template.objects.find(x => x.objectId === o.objectId && x.kind === 'product'); return !!t && o.asset.kind === 'template' && o.asset.file === t.asset.file && ['x', 'y', 'width', 'height'].every(k => Math.abs(o.box[k as keyof Box] - t.box[k as keyof Box]) <= 1); };
+    const standing = new Set(mode === 'original' && frame.method === 'template' ? c.objects.filter(o => o.kind === 'product' && !o.hidden && o.objectId && own(o)).map(o => o.objectId!) : []);
+    const ground = mode !== 'original' && ctx.grounds.empty ? ctx.grounds.empty : await cleanedGround(id, ctx, d.templateRevision, snapshot.objects.filter(o => o.kind === 'product' && !standing.has(o.id)));
     // Copy left as it is keeps the template's own lettering (a layer of its own, where its words are, scaled with them);
     // its editable words stay in the creative, hidden. Changed copy is set as live text.
     const top = Math.max(0, ...c.objects.map(o => o.z)) + 1;
@@ -518,8 +608,8 @@ export function createReuseStudio(deps: {
       c = { ...c, background: { file: ground.file, sha256: sha256(ground.png), width: W, height: H, method: 'template', restyled: false, filledPercent: 0, ...cleaned } };
       delete c.backgroundSource;
     }
-    const placement = { input, boxes, notes, rejected };
-    return { creative: c, frame, mode, placement, checks: checksOf(id, ctx, c, frame, mode, placement, products.length > 0) };
+    const placement = { input, boxes, notes, rejected, places: Object.fromEntries(Object.entries(places).map(([pid, b]) => [pid, mapBox(frame, b)])) };
+    return { creative: c, frame, mode, placement, checks: checksOf(id, ctx, c, frame, mode, placement, products.length > 0), anchored: !!anchors };
   }
   /** What to look at before using a format: blocking problems first. */
   function checksOf(id: string, ctx: Context, c: ProductCreative, frame: ReuseFrame, mode: ReusePlacementMode, placement: Composed['placement'], hadProducts: boolean): Composed['checks'] {
@@ -530,7 +620,8 @@ export function createReuseStudio(deps: {
     for (const o of visible) if (area(o.box) - inter(o.box, canvasBox) > area(o.box) * 0.03) issues.push({ code: 'OUT_OF_CANVAS', message: `${o.label} is partly outside the canvas.`, blocking: o.kind === 'product' });
     for (const g of c.groups) { const b = groupBounds(c, g.id); if (b && area(b) - inter(b, canvasBox) > area(b) * 0.02) issues.push({ code: 'OUT_OF_CANVAS', message: `The text “${g.label.slice(0, 40)}” runs off the canvas.`, blocking: true }); }
     const products = visible.filter(o => o.kind === 'product');
-    for (const p of products) for (const k of placement.input.keepOut) if (inter(p.box, k) > area(k) * 0.08) issues.push({ code: 'OVERLAP', message: `${p.label} covers ${k.label}.`, blocking: true });
+    // (A product in a template product's place may cover what that product covered: only more than that counts.)
+    for (const p of products) for (const k of placement.input.keepOut) { const was = placement.places?.[p.id]; if (inter(p.box, k) - (was ? inter(was, k) : 0) > area(k) * 0.08) issues.push({ code: 'OVERLAP', message: `${p.label} covers ${k.label}.`, blocking: true }); }
     // In depth a nearer product may overlap a farther one (a showcase group); flagged when it hides much of it.
     products.forEach((p, n) => products.slice(n + 1).forEach(q => { const [near, far] = p.z >= q.z ? [p, q] : [q, p]; if (inter(near.box, far.box) > area(far.box) * 0.4) issues.push({ code: 'OVERLAP', message: `${near.label} hides much of ${far.label}.`, blocking: false }); }));
     // The character stands in front of the products: one it hides by a quarter or more needs moving.
@@ -574,8 +665,12 @@ export function createReuseStudio(deps: {
    */
   const placeWithAi = (id: string, did: string, input: { ratios?: unknown; approveUsd?: unknown }) => locked(`${id}:reuse:${did}`, async () => {
     const d = read(id, did), planner = deps.placement?.() ?? fail('NOT_CONFIGURED', 'AI placement is not configured on this server (no OpenAI key). Products are arranged on this computer instead (free).');
-    const ratios = Array.isArray(input.ratios) && input.ratios.length ? d.ratios.filter(r => (input.ratios as unknown[]).includes(r)) : d.ratios;
-    if (!ratios.length) fail('INVALID_REQUEST', 'Choose a format of this draft.');
+    const asked = Array.isArray(input.ratios) && input.ratios.length ? d.ratios.filter(r => (input.ratios as unknown[]).includes(r)) : d.ratios;
+    if (!asked.length) fail('INVALID_REQUEST', 'Choose a format of this draft.');
+    // The template's own format, when its products all stand in the template's own places, is never sent (nor charged).
+    const ratios: ReuseAspectRatio[] = [];
+    for (const r of asked) if (!(await compose(id, d, r)).anchored) ratios.push(r);
+    if (!ratios.length) return d;
     const ctx = await contextOf(id, d.templateRevision), issues = sourceIssues(id, ctx.snapshot);
     if (issues.length) fail('SOURCE_NOT_READY', `Repair the master template before any paid request: ${issues.join(' ')}`);
     const estimate = planner.offline ? 0 : Math.round(ratios.length * PLACEMENT_COST_USD * 100) / 100;

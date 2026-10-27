@@ -43,6 +43,7 @@ import { liveReusePlacementPlanner, type ReusePlacementPlanner } from './protect
 import { liveArtworkGenerator, type ArtworkGenerator } from './protectedTemplates/product/artwork.js';
 import type { SceneAnalyzer } from './creativeTemplates/smartProviders.js';
 import { localRecognizer, type WordRecognizer } from '../textRecognition/recognizer.js';
+import { appOrigin } from '../deployment.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
@@ -50,7 +51,7 @@ const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
 /** Off unless explicitly turned on, whatever the environment. */
 export function layerizeExperimentEnabled(env = process.env) { return env.LAYERIZE_EXPERIMENT === '1'; }
 
-/** clientOrigin: the deployed app's own origin (CLIENT_ORIGIN). production: NODE_ENV is production. */
+/** clientOrigin: the deployed app's own origin (CLIENT_ORIGIN, else Render's RENDER_EXTERNAL_URL). production: NODE_ENV is production. */
 export type ExperimentAccess = { clientOrigin?: string; production?: boolean };
 const refuse = (message: string) => ({ error: { code: 'ORIGIN_DENIED', message } });
 /**
@@ -70,7 +71,7 @@ const refuse = (message: string) => ({ error: { code: 'ORIGIN_DENIED', message }
  * experiment, and a script can send these headers itself.
  */
 export function experimentAccess(access: ExperimentAccess = {}): RequestHandler {
-  const production = access.production ?? process.env.NODE_ENV === 'production', origin = (access.clientOrigin ?? process.env.CLIENT_ORIGIN)?.trim().replace(/\/$/, '');
+  const production = access.production ?? process.env.NODE_ENV === 'production', origin = (access.clientOrigin ?? appOrigin())?.trim().replace(/\/$/, '');
   return (req, res, next) => {
     if (!production && LOOPBACK.has(req.socket.remoteAddress ?? '') && !req.headers['x-forwarded-for']) return next();
     if (req.method === 'GET' || req.method === 'HEAD') {

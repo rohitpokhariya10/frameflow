@@ -54,6 +54,8 @@ export function registerProductTemplateRoutes(router: Router, ctx: { products: P
     try { const id = idOf(req), { started } = products.startDetect(id, { force: req.body?.force === true, useAi: req.body?.useAi === true, savedAnswer: req.body?.savedAnswer === true, recover: req.body?.recover === true, newRequest: req.body?.newRequest === true }); res.status(started ? 202 : 200).json({ started, template: products.view(id) }); } catch (error) { next(error); }
   });
   router.put(`${base}/:id/review`, json, async (req, res, next) => { try { res.json(await products.review(idOf(req), req.body as ReviewInput)); } catch (error) { next(error); } });
+  // The AI-read text lines moved onto their letters (on this computer, free): only when asked; a new analysis revision.
+  router.post(`${base}/:id/text/fit`, json, async (req, res, next) => { try { res.json(await products.fitText(idOf(req), { expectedRevision: req.body?.expectedRevision })); } catch (error) { next(error); } });
   // A picture for the review (a logo's replacement): stored, used only when the review naming it is saved.
   router.post(`${base}/:id/review-assets`, async (req, res, next) => {
     try { const { bytes } = await readUpload(req); if (!bytes?.length) throw new RunError('INVALID_UPLOAD', 'Choose a picture.'); res.status(201).json(await products.uploadReviewAsset(idOf(req), bytes)); } catch (error) { next(error); }

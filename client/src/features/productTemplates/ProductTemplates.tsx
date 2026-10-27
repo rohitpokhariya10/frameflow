@@ -156,7 +156,7 @@ function SheetCrop({ url, sheet, box }: { url: string; sheet: SheetAnswer; box: 
 /** Steps 2–4 of one template, by its stage (detecting and preparing are waited for). */
 function ProductSetup({ id, onBack, onUse, initialChoosing, onOpenRunInEditor }: { id: string; onBack: () => void; onUse: (id: string) => void; initialChoosing?: boolean; onOpenRunInEditor?: (runId: string) => Promise<void> }) {
   const [view, setView] = useState<ProductView>(), [error, setError] = useState(''), [reviewing, setReviewing] = useState(false), [choosing, setChoosing] = useState(!!initialChoosing), [retryAi, setRetryAi] = useState(false);
-  const [inspecting, setInspecting] = useState(false), [opening, setOpening] = useState(false);
+  const [inspecting, setInspecting] = useState(false), [opening, setOpening] = useState(false), [fitted, setFitted] = useState(0);
   const live = useRef(true);
   const load = useCallback(async () => { const v = await productApi.get(id); if (live.current) setView(v); return v; }, [id]);
   useEffect(() => { live.current = true; void load().catch((e: Error) => setError(e.message)); return () => { live.current = false; }; }, [load]);
@@ -199,6 +199,7 @@ function ProductSetup({ id, onBack, onUse, initialChoosing, onOpenRunInEditor }:
   if (reviewing || view.stage === 'review' || view.stage === 'changed') return <div className="ot-page prt-page-wide">{aiDone ? head(2, "Here’s what we found", 'Each box is one element. Fix anything that looks wrong, then prepare the template. Items that need a look are listed first.')
       : head(2, 'AI detection did not complete', 'Local candidates are retained. Recover a saved response or approve a new AI analysis before preparation.')}
     {view.product.preparing?.status === 'failed' && <Alert>{view.product.preparing.error}</Alert>}
+    {aiDone && view.counts.words > 0 && <FitText view={view} onDone={v => { setView(v); setFitted(n => n + 1); }} onError={setError} />}
     {aiDone ? <p>{view.counts.characters} Characters · {view.counts.products} Products · {view.counts.words} Text words · {view.counts.text} Text groups · {view.counts.logos} Logos
       {(view.product.detection?.ai?.costUsd ?? 0) > 0 && <> <button type="button" className="ws-btn ws-btn-quiet" onClick={useSaved}>Find the elements again from the saved AI answer (free; your corrections are kept)</button></>}</p>
       : <p data-testid="local-only-counts">Read on this computer, without AI: {view.counts.words} Text words · {view.counts.text} Text groups · {view.counts.logos} Logos. Characters and products: {added ? `${added} added by you` : 'not detected'}.</p>}
@@ -211,7 +212,7 @@ function ProductSetup({ id, onBack, onUse, initialChoosing, onOpenRunInEditor }:
       <button type="button" className="ws-btn" onClick={() => setRetryAi(false)}>Cancel</button></section>}
     {view.product.detection?.ai?.offline && <p role="status">Offline fixture detections — not verified AI provider results.</p>}
     {view.product.detection?.ai?.model?.includes('(recorded answer') && <p role="status">A recorded AI answer for this exact image, replayed: no new AI request was made.</p>}
-    <ProductReview key={view.product.objectsRevision} view={view} onSaved={async (v, next) => { setView(v); if (next) { setReviewing(false); setChoosing(true); } }} onError={setError} /></div>;
+    <ProductReview key={`${view.product.objectsRevision}:${fitted}`} view={view} onSaved={async (v, next) => { setView(v); if (next) { setReviewing(false); setChoosing(true); } }} onError={setError} /></div>;
   if (view.stage === 'prepared' || inspecting) return <div className="ot-page prt-page-wide">{head(4, 'Inspect the layers and the background', 'Compare it with your original, look at each layer and at the background on its own, then save it as your master template.')}
     {view.product.editorDraft && <p className="ot-muted">These checks describe the original separation. Open in Editor to inspect and continue your saved editing draft. Opening it does not approve quality.</p>}
     {view.product.revisions.length > 0 && <button type="button" className="ws-btn" onClick={() => onUse(id)}>Use a saved revision</button>}
@@ -230,6 +231,20 @@ function ProductSetup({ id, onBack, onUse, initialChoosing, onOpenRunInEditor }:
           <button type="button" className="ws-btn ws-btn-quiet" onClick={() => setChoosing(true)}>Change what is decomposed</button></div></div>
     </div></section></div>;
 }
+/** The AI-read text boxes moved onto their letters (free, read on this computer), when asked; a person's corrections stay. */
+function FitText({ view, onDone, onError }: { view: ProductView; onDone: (v: ProductView) => void; onError: (message: string) => void }) {
+  const [busy, setBusy] = useState(false), [note, setNote] = useState('');
+  const run = () => {
+    setBusy(true); setNote('');
+    void productApi.fitText(view.template.id, view.template.revision).then(r => {
+      onDone(r);
+      setNote(r.fit.moved ? `${r.fit.moved} line${r.fit.moved === 1 ? '' : 's'} moved onto ${r.fit.moved === 1 ? 'its' : 'their'} letters. Check the boxes, then prepare again.` : 'Every line already sits on its letters, or could not be read clearly enough to move: nothing was changed.');
+    }).catch((e: Error) => onError(e.message)).finally(() => setBusy(false));
+  };
+  return <div className="ot-row" data-testid="fit-text"><button type="button" className="ws-btn" disabled={busy} onClick={run}>{busy ? 'Fitting the text to its letters…' : 'Fit text to the letters (free)'}</button>
+    <span className="ot-muted" role="status">{note || 'Moves text boxes that sit off their letters onto them, read on this computer. Your own corrections are kept.'}</span></div>;
+}
+
 export function Waiting({ label }: { label: string }) {
   return <section className="ts-card"><div className="ts-card-body"><p role="status" className="prt-waiting">{label}</p><div className="ot-rescan-progress" aria-hidden="true"><span /></div></div></section>;
 }

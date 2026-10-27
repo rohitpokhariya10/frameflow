@@ -17,7 +17,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { buildProviderInput, endpointRegistry, ProviderError, type ProviderErrorDetail } from './providers/adapters.js';
@@ -34,11 +34,11 @@ import { callLines, newRefinementRecord, noCalls, refineDecomposition, refinemen
 import { EXECUTION_POLICY, type CreativeGroup, type CreativeShape, type CreativeText, type RunTemplateExecution } from '@frameflow/shared';
 import { semanticAnalysisOf } from './runPlan.js';
 import { classifySeedreamRejection, prepareProviderImage, ProviderImageError, rejectionExplanation, verifyUploadedImage, type ProviderImageReport, type SeedreamRejection } from './providerImage.js';
+import { ARTIFACTS_DIR } from '../deployment.js';
 
 export const SEEDREAM_ENDPOINT = endpointRegistry.seedream.endpoint;
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const here = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_RUNS_DIR = resolve(here, '../../../artifacts/decomposition/layerize-experiment');
+export const DEFAULT_RUNS_DIR = resolve(ARTIFACTS_DIR, 'decomposition/layerize-experiment');
 
 /** 'refining': the recursive refinement (residual passes, clean background) of a run created with it. */
 export type Stage = 'uploaded' | 'planning' | 'planned' | 'uploading' | 'submitting' | 'queued' | 'in_progress' | 'downloading' | 'refining' | 'done' | 'failed';

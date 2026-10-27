@@ -135,7 +135,10 @@ export function SimpleReuse({ templateId, onBack, onEdit, onAllDrafts, onOpenRun
       setProgress({ stages, at: stages.length }); setStep('result');
     } catch (e) { setError(friendly(e)); setStep('upload'); }
   };
-  const generate = () => { if (ai?.ai && aiCost > 0) setAskAi('generate'); else void run(!!ai?.ai); };
+  // Products that fit in the template's own product places stand in them (its own format): no arrangement to plan, so
+  // no AI request.
+  const anchored = chosen.length > 0 && chosen.length <= (ai?.slots ?? 0) && !!draft?.ratios.every(r => r === 'original');
+  const generate = () => { if (anchored) void run(false); else if (ai?.ai && aiCost > 0) setAskAi('generate'); else void run(!!ai?.ai); };
   /** The preview drawn again with every change kept (free: nothing is re-arranged, no AI request). */
   const refresh = async () => {
     const d = draftRef.current; if (!d) return;
@@ -253,7 +256,7 @@ export function SimpleReuse({ templateId, onBack, onEdit, onAllDrafts, onOpenRun
         <p className="sr-group-label">Quick changes</p>
         <div className="sr-two">
           <button type="button" className="ws-btn" onClick={() => onEdit(draft.id)}><Pencil size={15} aria-hidden="true" />Customize Manually</button>
-          <div className="sr-regen"><button type="button" className="ws-btn" aria-expanded={regenMenu} aria-haspopup="menu" onClick={() => setRegenMenu(v => !v)}><RefreshCw size={15} aria-hidden="true" />Regenerate Layout</button>
+          <div className="sr-regen"><button type="button" className="ws-btn" aria-expanded={regenMenu} aria-haspopup="menu" disabled={anchored} title={anchored ? 'Your products stand in the template’s own product places, so there is no other layout to try.' : undefined} onClick={() => setRegenMenu(v => !v)}><RefreshCw size={15} aria-hidden="true" />Regenerate Layout</button>
             {regenMenu && <div className="sr-menu" role="menu"><button type="button" role="menuitem" onClick={() => void run(false, (draft.placement.variant ?? 0) + 1)}><LayoutGrid size={15} aria-hidden="true" /><span><strong>Try another layout</strong><small>Free · arranged automatically</small></span></button>
               {ai?.ai && <button type="button" role="menuitem" onClick={() => (aiCost > 0 ? setAskAi('regenerate') : void run(true))}><Sparkles size={15} aria-hidden="true" /><span><strong>Ask AI for a new arrangement</strong><small>{aiCost > 0 ? `About ${cost} · you’ll confirm first` : 'Free'}</small></span></button>}</div>}</div>
         </div>
