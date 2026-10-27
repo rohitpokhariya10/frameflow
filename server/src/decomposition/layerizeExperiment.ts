@@ -31,7 +31,7 @@ import { semanticPlan, type TemplateCapture } from './semanticPlanner.js';
 import { createOpenAIBackgroundReconstructor, type BackgroundReconstructor } from './cleanBackground.js';
 import { protectRenderedLayers, type InteractionRecord } from './interactionGrouping.js';
 import { callLines, newRefinementRecord, noCalls, refineDecomposition, refinementOptions, type CallCounts, type RefinementOptions, type RefinementRecord } from './recursiveDecomposition.js';
-import { EXECUTION_POLICY, type RunTemplateExecution } from '@frameflow/shared';
+import { EXECUTION_POLICY, type CreativeGroup, type CreativeShape, type CreativeText, type RunTemplateExecution } from '@frameflow/shared';
 import { semanticAnalysisOf } from './runPlan.js';
 import { classifySeedreamRejection, prepareProviderImage, ProviderImageError, rejectionExplanation, verifyUploadedImage, type ProviderImageReport, type SeedreamRejection } from './providerImage.js';
 
@@ -45,12 +45,18 @@ export type Stage = 'uploaded' | 'planning' | 'planned' | 'uploading' | 'submitt
 /**
  * Where the Seedream prompt comes from. `generated`: the planner analyzes this image. `retry`: an explicit user retry of a
  * rejected run, reusing that run's base prompt (the planner is not called again). `template-plan`: a creative template's
- * saved plan compiled for this run (creativeTemplates/compile.ts), the semantic plan without a planner call. Runs saved
- * before these modes may carry others in run.json; they are shown as recorded and never executed again.
+ * saved plan compiled for this run (creativeTemplates/compile.ts), the semantic plan without a planner call. `protected`:
+ * a protected template's prepared base (protectedTemplates/): no planner and no other model at all, Seedream only, with the
+ * administrator's own instructions or none (an empty prompt is Seedream's automatic mode). Runs saved before these modes
+ * may carry others in run.json; they are shown as recorded and never executed again.
  */
 export type PromptSource = { mode: 'generated' }
   | ({ mode: 'retry'; fromRunId: string } & LayerizePlan)
-  | ({ mode: 'template-plan'; templateId: string; templateName: string; version: number; compiledAt: string } & LayerizePlan);
+  | ({ mode: 'template-plan'; templateId: string; templateName: string; version: number; compiledAt: string } & LayerizePlan)
+  | ProtectedPromptSource;
+/** The base's sha256 and the protected template's elements revision it was prepared for: the run stays tied to both. */
+export type ProtectedPromptSource = { mode: 'protected'; templateId: string; elementsRevision: number; baseSha256: string; prompt: string };
+export const isProtectedRun = (run: Pick<RunRecord, 'promptSource' | 'origin'>) => run.promptSource?.mode === 'protected' || run.origin?.kind === 'protected-template';
 export type RunRecord = {
   id: string; createdAt: string; updatedAt: string; stage: Stage;
   promptSource?: PromptSource;
@@ -75,9 +81,11 @@ export type RunRecord = {
   /**
    * Where the image came from, when not a direct upload. 'image-template': one size of a reference creative
    * (imageTemplates.ts; generationId is its group, variantId and aspectRatio the size). 'template-execution': a template
-   * execution's upload or edited image (creativeTemplates/; generationId is the execution). Older runs may carry other kinds.
+   * execution's upload or edited image (creativeTemplates/; generationId is the execution). 'protected-template': a protected
+   * template's prepared base (generationId is the template). 'master-creative': a creative of a Text & Graphics master
+   * (generationId is the master, variantId the creative; protectedTemplates/master/creativeRun.ts). Older runs may carry other kinds.
    */
-  origin?: { kind: 'image-template' | 'template-execution'; generationId: string; variantId?: string; aspectRatio?: string };
+  origin?: { kind: 'image-template' | 'template-execution' | 'protected-template' | 'master-creative'; generationId: string; variantId?: string; aspectRatio?: string };
   /**
    * The recursive refinement (recursiveDecomposition.ts): residual passes for objects the first decomposition left in
    * its base, then one clean background from the original. Its options are fixed when the run is created; absent on runs
@@ -95,7 +103,38 @@ export type RunRecord = {
    * locally from them (extraction none: no provider call), or they were added above a decomposition of its new scenery.
    * qwen-layers: the alternative provider's layers (creativeTemplates/qwenLayers.ts) for an image Seedream refused.
    */
-  composed?: { source: 'creative-variant' | 'single-layer' | 'product-cutouts' | 'qwen-layers'; setId?: string; variantId?: string; layers: string[]; extraction: 'none' | 'scenery' | 'cutouts' | 'qwen' };
+  composed?: { source: 'creative-variant' | 'single-layer' | 'product-cutouts' | 'qwen-layers' | 'master-creative'; setId?: string; variantId?: string; layers: string[]; extraction: 'none' | 'scenery' | 'cutouts' | 'qwen' };
+  /**
+   * A creative of a master sent to decomposition (protectedTemplates/master/creativeRun.ts): which creative and revision,
+   * and its editable texts and shapes (canvas pixels), which the editor imports as text and shapes; `layers` says what
+   * each run layer is (its pictures of text and shapes are for previews and the reconstruction only).
+   */
+  creative?: { /** creativeRun.ts CREATIVE_RUN_VERSION; absent: version 1 (one flat background). */ version?: number; masterId: string; masterRevision: number; creativeId: string; creativeRevision: number; name: string; canvas: { width: number; height: number };
+    texts: CreativeText[]; shapes: CreativeShape[]; groups: CreativeGroup[]; aiGenerated: boolean;
+    layers: { file: string; kind: 'background' | 'artwork' | 'shape' | 'image' | 'text' | 'object'; elementIds: string[]; hidden: boolean; z: number }[];
+    /** A Product with Text creative's run (`masterId` is its template): characters, products and the brand logo are 'object' layers. */
+    product?: true;
+    native?: { creative: import('@frameflow/shared').ProductCreative; files: Record<string, string>; warnings: string[] };
+    words?: import('@frameflow/shared').DetectedWord[];
+    /**
+     * A Product with Text creative's run (version 3): what it was made from. Every picture layer's source file and hash
+     * (the creative's own cut-outs reused, nothing segmented again), the cost (none: no provider request), the layout of
+     * another aspect ratio, and the generated variation it came from.
+     */
+    provenance?: { preparation?: import('@frameflow/shared').ProductPrepared['separation']; processingVersion: number; inputs: { layer: string; role: string; file: string; source: string; sha256: string }[]; cost: { usd: number; providerRequests: number; segmentation: 'reused' };
+      textLayersSentToProviders: 0; layout?: import('@frameflow/shared').ProductCreativeLayout;
+      variation?: { jobId: string; index: number; kind: string; title: string; aspectRatio: string; checks?: 'ready' | 'needs-review' | 'failed' } };
+    /** How the background artwork was split into its objects: locally (artworkObjects.ts), or the master's own decomposition. */
+    artwork?: { method: 'local' | 'master-layers'; objects: number; behindPercent?: number; trustedPercent?: number; durationMs?: number;
+      /** Version 3: of the pixels behind objects, the share rebuilt from the template's structure; border dots drawn again; the layers over each other against the creative. */
+      rebuiltPercent?: number; borderDotsAdded?: number; reconstruction?: { mean: number; max: number; visiblePercent: number } } };
+  /**
+   * The alternative provider's one request for an image a direct run had refused by Seedream (qwenAlternative.ts), chosen
+   * by a person on that run's dashboard: what it asked (labels name the layers locally and are never sent) and, once
+   * sent, its request. Absent on every other run.
+   */
+  alternative?: { provider: 'qwen'; endpoint: string; fromRunId: string; caption: string; numLayers: number; labels: { label: string; box: { x: number; y: number; width: number; height: number } }[];
+    requestId?: string; submittedAt?: string; completedAt?: string; returned?: number; seed?: number };
   /** What was checked about the image before it was sent, and the exact copy fal got (providerImage.ts). */
   providerImage?: ProviderImageReport;
   /** fal's refusal of this run, classified from its own answer, with the image and prompt it refused. */
@@ -142,7 +181,7 @@ export const isSafetyRejection = (detail: ProviderErrorDetail | undefined) => !i
 const safetyExplanation = (requestId: string) => `fal's safety checker flagged this request (content_policy_violation), so Seedream's result was withheld. This is a safety-checker rejection, not a decomposition failure: the prompt and the output layer count are not the cause. The safety checker stays enabled. This stored result is final for request ${requestId}, so Resume returns the same error. Nothing was retried. Safety checkers can flag ordinary product images; try a different image.`;
 /** The saved plan a run reuses instead of the planner's. */
 const savedPlan = (run: RunRecord) => run.promptSource?.mode === 'retry' || run.promptSource?.mode === 'template-plan' ? run.promptSource : undefined;
-export const basePromptOf = (run: RunRecord) => savedPlan(run)?.prompt ?? run.planner?.prompt;
+export const basePromptOf = (run: RunRecord) => run.promptSource?.mode === 'protected' ? run.promptSource.prompt : savedPlan(run)?.prompt ?? run.planner?.prompt;
 /** The planned layers behind that prompt, or undefined when none were planned. */
 export const plannedLayersOf = (run: RunRecord) => savedPlan(run)?.planned_layers ?? run.planner?.planned_layers;
 /** The prompt that was (or will be) sent to Seedream. */
@@ -194,6 +233,11 @@ export async function createRun(runsDir: string, bytes: Buffer, promptSource: Pr
   if (options.templateExecution) assertPlanningAllowed(options.templateExecution, promptSource);
   if (options.templateCapture && (promptSource.mode !== 'generated' || options.templateExecution?.mode !== 'CREATE_TEMPLATE')) throw new RunError('INVALID_TEMPLATE_CAPTURE', 'Only a template-creating run captures a template, from its own planner call.');
   if (promptSource.mode === 'template-plan' && !promptSource.semantic_analysis) throw new RunError('INVALID_TEMPLATE_PLAN', 'A template plan needs its compiled semantic analysis.');
+  // A protected run sends Seedream its prepared base and nothing else: no template execution, no capture, and no recursive
+  // refinement (its clean-background step is an OpenAI image edit, and its residual passes are further paid calls).
+  if (promptSource.mode === 'protected' && (options.refinement || options.templateExecution || options.templateCapture || options.origin?.kind !== 'protected-template' || options.origin.generationId !== promptSource.templateId))
+    throw new RunError('INVALID_PROTECTED_RUN', 'A protected run is made from its protected template only, with no refinement, planner or other model.');
+  if (promptSource.mode === 'protected' && (typeof promptSource.prompt !== 'string' || promptSource.prompt.length > 2000)) throw new RunError('INVALID_PROTECTED_RUN', 'Layer instructions are limited to 2000 characters.');
   let refinement: RefinementOptions | undefined;
   try { refinement = refinementOptions(options.refinement); } catch (error) { throw new RunError('INVALID_REFINEMENT', error instanceof Error ? error.message : String(error)); }
   if (bytes.length > MAX_UPLOAD_BYTES) throw new RunError('UPLOAD_TOO_LARGE', `Images must be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`);
@@ -240,7 +284,12 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
   const image = readFileSync(join(dir, run.input.file));
   run.stage = 'planning'; save(dir, run, deps);
   const source = run.promptSource ?? { mode: 'generated' as const };
-  if (source.mode === 'retry' || source.mode === 'template-plan') {
+  if (source.mode === 'protected') {
+    // Never the planner (or any other model): the administrator's instructions, or none, go to Seedream as they are.
+    json(dir, 'protected-source.json', source);
+    writeFileSync(join(dir, 'prompt.txt'), source.prompt);
+    run.stage = 'planned'; save(dir, run, deps);
+  } else if (source.mode === 'retry' || source.mode === 'template-plan') {
     // Reuse (an explicit retry, or a creative template's saved plan): the saved plan is the base; the planner is not called.
     try { validatePlan({ prompt: source.prompt, planned_layers: source.planned_layers, warnings: source.warnings }); }
     catch (error) { return fail(dir, run, 'INVALID_SAVED_PLAN', error instanceof Error ? error.message : String(error), deps); }
@@ -270,8 +319,11 @@ export async function executeRun(dir: string, deps: RunnerDeps): Promise<RunReco
       return fail(dir, run, error instanceof PlannerError || error instanceof RunError ? error.code : 'PLANNER_FAILED', error instanceof Error ? error.message : String(error), deps);
     }
   }
-  try { run.finalPrompt = validatePlan({ prompt: basePromptOf(run), planned_layers: plannedLayersOf(run), warnings: [] }).prompt; }
-  catch (error) { return fail(dir, run, error instanceof PlannerError ? error.code : 'INVALID_PLAN', error instanceof Error ? error.message : String(error), deps); }
+  if (source.mode === 'protected') run.finalPrompt = source.prompt.trim();
+  else {
+    try { run.finalPrompt = validatePlan({ prompt: basePromptOf(run), planned_layers: plannedLayersOf(run), warnings: [] }).prompt; }
+    catch (error) { return fail(dir, run, error instanceof PlannerError ? error.code : 'INVALID_PLAN', error instanceof Error ? error.message : String(error), deps); }
+  }
   writeFileSync(join(dir, 'prompt.txt'), run.finalPrompt);
   save(dir, run, deps);
   let input: Record<string, unknown>;
@@ -440,6 +492,7 @@ export async function resumeRun(dir: string, deps: RunnerDeps, requestId?: strin
  */
 export async function createRetryRun(runsDir: string, failedDir: string): Promise<{ dir: string; run: RunRecord }> {
   const failed = readRun(failedDir);
+  if (isProtectedRun(failed)) throw new RunError('NOT_RETRYABLE', 'A protected run is decomposed again from its protected template, where the prepared base and the paid request are confirmed.');
   let prompt = basePromptOf(failed);
   if (failed.error?.code === 'PROVIDER_SAFETY_REJECTED') throw new RunError('NOT_RETRYABLE', 'fal\'s safety checker rejected this image (PROVIDER_SAFETY_REJECTED). It is not retried with another prompt: the same image would be checked again. Try a different image.');
   if (failed.stage !== 'failed' || failed.error?.code !== 'PROVIDER_DECOMPOSITION_REJECTED') throw new RunError('NOT_RETRYABLE', 'Only a run Seedream rejected (PROVIDER_DECOMPOSITION_REJECTED) can be retried this way.');

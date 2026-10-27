@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { StudioProductAction, StudioReferenceScene } from '@frameflow/shared';
+import type { CustomTypography, LayoutValidation, StudioProductAction, StudioReferenceScene, StyleVariationRequest, StylePreset, TypographyMode, VariantLayout, VariationEvent, VariationProvenance, VariationReview, VariationSource, VariationStatus } from '@frameflow/shared';
 
 export interface ReferencePolicy {
   primaryAssetId: string; scene: StudioReferenceScene | null;
@@ -117,6 +117,30 @@ export interface DecompositionLinkRecord {
   canvasWidth: number; canvasHeight: number; crop: { x: number; y: number; width: number; height: number }; createdAt: string;
 }
 export interface WorkerHeartbeatRecord { id: string; pid: number; startedAt: string; lastSeenAt: string }
+/**
+ * One style variation of a protected template (shared styleVariations.ts). Its artwork is a Studio asset; its layout holds
+ * VARIANT coordinates, never the template's original ones. `status` is the variation's own (set when its layout is made);
+ * while its job runs or after it failed, the job's state is shown instead (variations/service.ts).
+ */
+export interface StyleVariationRecord {
+  schemaVersion: 1;
+  id: string; batchId: string; index: number; templateId: string; templateName: string;
+  preset: StylePreset; customInstructions: string | null; source: VariationSource; provenance: VariationProvenance;
+  status: VariationStatus; error: { code: string; message: string; requestId?: string | null } | null;
+  /** The artwork at the template's canvas size; the model's own output before fitting; the wordless guide it was given. */
+  artworkAssetId: string | null; rawArtworkAssetId: string | null; guideAssetId: string | null;
+  generation: null | { model: string; providerSize: string; quality: 'low' | 'medium' | 'high'; promptVersion: string; prompt: string; cacheKey: string; requestId: string | null; cachedFrom: string | null };
+  artworkCheck: null | { status: 'clean' | 'text_found' | 'not_run'; words: { text: string; confidence: number }[]; note: string };
+  layout: VariantLayout; validation: LayoutValidation;
+  typographyMode: TypographyMode; customTypography: CustomTypography | null; confirmedProtectedEdits: string[];
+  review: { status: VariationReview; history: VariationEvent[] };
+  estimateMicroUsd: number; jobId: string | null;
+  parent: { templateId: string; baseSha256: string; analysisRevision: number; elementsRevision: number; variationId: string | null };
+  children: string[];
+  createdAt: string; updatedAt: string;
+}
+/** One confirmed request for variations: its idempotency key, what was asked and the amount the administrator confirmed. */
+export interface VariationBatchRecord { id: string; templateId: string; idempotencyKey: string; request: StyleVariationRequest; estimateMicroUsd: number; confirmedMicroUsd: number | null; variationIds: string[]; createdAt: string }
 
 /** One collection: an in-memory map backed by one JSON file. */
 export class Collection<T extends { id: string }> {
@@ -174,6 +198,8 @@ export interface StudioStore {
   jobs: Collection<JobRecord>; stages: Collection<JobStageRecord>; conceptPlans: Collection<ConceptPlanRecord>; attempts: Collection<GenerationAttemptRecord>;
   posters: Collection<PosterRecord>; reviews: Collection<ReviewRecord>; usage: Collection<UsageLedgerRecord>; reservations: Collection<BudgetReservationRecord>;
   decompositions: Collection<DecompositionLinkRecord>; heartbeats: Collection<WorkerHeartbeatRecord>;
+  /** Added after the first release: absent files are empty collections, so older stores open unchanged. */
+  styleVariations: Collection<StyleVariationRecord>; variationBatches: Collection<VariationBatchRecord>;
 }
 
 /** Open (or create) the store under `root`. Refuses a store written by a newer, unknown schema. */
@@ -192,5 +218,6 @@ export function openStudioStore(root = DEFAULT_STUDIO_DIR): StudioStore {
     jobs: c('jobs'), stages: c('job-stages'), conceptPlans: c('concept-plans'), attempts: c('generation-attempts'),
     posters: c('posters'), reviews: c('reviews'), usage: c('usage-ledger'), reservations: c('budget-reservations'),
     decompositions: c('decomposition-links'), heartbeats: c('worker-heartbeats'),
+    styleVariations: c('style-variations'), variationBatches: c('style-variation-batches'),
   };
 }

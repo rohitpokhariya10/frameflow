@@ -25,7 +25,7 @@ export const AI_PRICING = {
   ],
 } as const;
 export type CostConfidence = 'Calculated' | 'Estimated' | 'Unknown';
-export type StageId = 'reference' | 'generation' | 'verification' | 'fit' | 'planner' | 'seedream' | 'residual' | 'background' | 'curation' | 'editor';
+export type StageId = 'reference' | 'generation' | 'verification' | 'fit' | 'planner' | 'seedream' | 'alternative' | 'residual' | 'background' | 'curation' | 'editor';
 export type StageStatus = 'Complete' | 'Running' | 'Skipped' | 'Failed' | 'Warning' | 'Pending';
 export interface UsageFacts {
   inputTokens?: number; outputTokens?: number; cachedTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number;
@@ -33,7 +33,8 @@ export interface UsageFacts {
   imageOutputTokens?: number; textOutputTokens?: number;
 }
 export interface PaidCall {
-  kind: 'text' | 'image' | 'seedream'; model?: string; requestId?: string; usage?: UsageFacts;
+  /** qwen: one Qwen-Image-Layered request, the alternative after a Seedream refusal (a flat listed price per request). */
+  kind: 'text' | 'image' | 'seedream' | 'qwen'; model?: string; requestId?: string; usage?: UsageFacts;
   rawLayers?: number; baseWidth?: number; baseHeight?: number; imageCount?: number; quality?: string;
   /** Explicit provider evidence of no charge, never inferred from a failure. */
   noCharge?: boolean; estimated?: boolean; note?: string;
@@ -75,6 +76,11 @@ export function calculateCallCost(call: PaidCall, fx = AI_PRICING.budgetUsdInr a
     const rate = pixels < AI_PRICING.seedream.thresholdPixels ? AI_PRICING.seedream.low : AI_PRICING.seedream.high;
     notes.push(`${call.rawLayers} raw layers × $${rate}; output base ${call.baseWidth}×${call.baseHeight}.`);
     return amount(call.rawLayers * rate, fx, estimated ? 'Estimated' : 'Calculated', notes);
+  }
+  if (call.kind === 'qwen') {
+    if (call.model !== AI_PRICING.qwenLayered.model) return unknown('No configured rate for the recorded provider endpoint.');
+    notes.push(`fal's listed price, $${AI_PRICING.qwenLayered.perRequest} per request; not yet confirmed against an invoice.`);
+    return amount(AI_PRICING.qwenLayered.perRequest, fx, 'Estimated', notes);
   }
   const u = call.usage;
   if (!u || !valid(u.inputTokens) || !valid(u.outputTokens)) return unknown('Token usage was not saved; check provider billing.');

@@ -9,7 +9,7 @@ export type TerminalState = (typeof TERMINAL_STATES)[number];
 export const ACTIVE_STATES = ["queued", "running", "analysing", "planning", "generating", "composing", "reviewing"] as const;
 export type JobState = TerminalState | (typeof ACTIVE_STATES)[number];
 
-export const JOB_KINDS = ["analyse_template", "generate_poster", "review_poster", "make_cutout"] as const;
+export const JOB_KINDS = ["analyse_template", "generate_poster", "review_poster", "make_cutout", "generate_style_variation", "generate_master_creatives"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
 /** A job claimed this many times without finishing is assumed to crash the worker. */

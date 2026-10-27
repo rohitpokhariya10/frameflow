@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import type { RunTemplateExecution } from '@frameflow/shared';
 import { readRun, saveRunRecord, SEEDREAM_ENDPOINT, type RunRecord } from '../layerizeExperiment.js';
-import type { LayerInfo } from '../layerizeArtifacts.js';
+import { composeLayers, type LayerInfo } from '../layerizeArtifacts.js';
 import { normalizeLayerCount } from '../layerCount.js';
 
 export type VariantRunLayer = { file: string; name: string; description: string; png: Buffer; placement: { x: number; y: number; width: number; height: number }; kind: 'full-canvas' | 'bbox-crop'; semantic: { id: string; type: string } };
@@ -25,26 +25,33 @@ async function layerInfo(layer: VariantRunLayer, index: number, zIndex: number):
   return { index, file: layer.file, zIndex, name: layer.name, description: layer.description, pixelWidth: info.width, pixelHeight: info.height,
     opaquePercent: Math.round(1000 * opaque / Math.max(1, info.width * info.height)) / 10, placement: { kind: layer.kind, ...layer.placement }, semantic: { id: layer.semantic.id, type: layer.semantic.type, editableIndependently: true } };
 }
+/** These layers, back to front, written into a run folder with their reconstruction: the run's layer records. */
+export async function writeComposedLayers(dir: string, input: VariantRunLayer[], canvas: { width: number; height: number }) {
+  const layers: LayerInfo[] = [];
+  for (const [i, layer] of input.entries()) { writeFileSync(join(dir, layer.file), layer.png); layers.push(await layerInfo(layer, i, i)); }
+  await composeLayers(join(dir, 'reconstructed.png'), canvas, input.map((layer, i) => ({ png: layer.png, zIndex: i, placement: layers[i].placement })));
+  return { layers, ...normalizeLayerCount(layers) };
+}
 /**
  * A finished run made of these layers, back to front, over this composite (its original image). `source`: a creative
  * variant's own layers, the whole image as one layer, products cut out of it, or the alternative provider's layers (the
  * recovery options for an image Seedream refused).
  */
-export async function createComposedRun(runsDir: string, input: { composite: Buffer; layers: VariantRunLayer[]; origin: NonNullable<RunRecord['origin']>; templateExecution: RunTemplateExecution; variant?: { setId: string; variantId: string };
-  source?: NonNullable<RunRecord['composed']>['source'] }) {
+export async function createComposedRun(runsDir: string, input: { composite: Buffer; layers: VariantRunLayer[]; origin: NonNullable<RunRecord['origin']>; templateExecution?: RunTemplateExecution; variant?: { setId: string; variantId: string };
+  source?: NonNullable<RunRecord['composed']>['source'];
+  /** What "Open in editor" imports (every layer when absent): a master creative's texts and shapes import as text and shapes instead. */
+  editorLayerFiles?: string[] }) {
   const meta = await sharp(input.composite).metadata(), now = new Date().toISOString();
   const id = `${now.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`, dir = join(runsDir, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'original.png'), input.composite);
-  const layers: LayerInfo[] = [];
-  for (const [i, layer] of input.layers.entries()) { writeFileSync(join(dir, layer.file), layer.png); layers.push(await layerInfo(layer, i, i)); }
-  const { outputLayers, layerCount } = normalizeLayerCount(layers);
-  const run: RunRecord = { id, createdAt: now, updatedAt: now, stage: 'done', templateExecution: input.templateExecution, origin: input.origin,
+  const { layers, outputLayers, layerCount } = await writeComposedLayers(dir, input.layers, { width: meta.width!, height: meta.height! });
+  const run: RunRecord = { id, createdAt: now, updatedAt: now, stage: 'done', ...(input.templateExecution ? { templateExecution: input.templateExecution } : {}), origin: input.origin,
     original: { file: 'original.png', mime: 'image/png', width: meta.width!, height: meta.height!, bytes: input.composite.length },
     input: { file: 'original.png', mime: 'image/png', width: meta.width!, height: meta.height!, orientationNormalized: false },
     // Never submitted: no request id, no provider call.
     seedream: { endpoint: SEEDREAM_ENDPOINT }, timings: {}, warnings: [], canvas: { width: meta.width!, height: meta.height! }, layers, outputLayers, layerCount,
-    editorLayerFiles: layers.map(l => l.file), composed: { source: input.source ?? 'creative-variant', ...(input.variant ?? {}), layers: layers.map(l => l.file), extraction: input.source === 'product-cutouts' ? 'cutouts' : input.source === 'qwen-layers' ? 'qwen' : 'none' } };
+    editorLayerFiles: input.editorLayerFiles ?? layers.map(l => l.file), composed: { source: input.source ?? 'creative-variant', ...(input.variant ?? {}), layers: layers.map(l => l.file), extraction: input.source === 'product-cutouts' ? 'cutouts' : input.source === 'qwen-layers' ? 'qwen' : 'none' } };
   saveRunRecord(dir, run);
   return { dir, run };
 }

@@ -1,3 +1,5 @@
+import { createProductLayerizer, liveDecompositionPlanner, type ProductLayerizer } from './protectedTemplates/product/aiDecompose.js';
+import { liveProductAnalyzer } from './protectedTemplates/product/analyzer.js';
 /**
  * HTTP surface for OpenAI → Seedream decomposition: direct test runs (Decompose/Test), reference creatives
  * (imageTemplates.ts) and creative templates (creativeTemplates/). Mounted only with LAYERIZE_EXPERIMENT=1, in
@@ -24,10 +26,23 @@ import { DEFAULT_TEMPLATES_DIR, fileTemplateStore } from './creativeTemplates/st
 import { DEFAULT_ANALYSES_DIR, DEFAULT_VARIANTS_DIR, fileSceneStore, fileVariantStore } from './creativeTemplates/smartStores.js';
 import { createSmartCreative, readSmartFeatures, type SmartFeatures, type SmartProviders } from './creativeTemplates/smartCreative.js';
 import { liveChangeResolver, liveConceptWriter, liveSceneAnalyzer, liveSemanticVerifier } from './creativeTemplates/smartProviders.js';
-import { liveSegmenter } from './creativeTemplates/segmenter.js';
+import { liveSegmenter, type Segmenter } from './creativeTemplates/segmenter.js';
 import { registerSmartCreativeRoutes } from './creativeTemplates/smartRoutes.js';
 import { cutoutProvider } from './aiModels.js';
 import { readRunDiagnostics } from './runDiagnostics.js';
+import { createQwenRun, executeQwenRun } from './qwenAlternative.js';
+import { DEFAULT_PROTECTED_DIR, fileProtectedStore } from './protectedTemplates/store.js';
+import { createProtectedTemplates } from './protectedTemplates/service.js';
+import { registerProtectedTemplateRoutes } from './protectedTemplates/routes.js';
+import { createMasterTemplates } from './protectedTemplates/master/service.js';
+import { registerMasterTemplateRoutes } from './protectedTemplates/master/routes.js';
+import { createProductTemplates } from './protectedTemplates/product/service.js';
+import { registerProductTemplateRoutes } from './protectedTemplates/product/routes.js';
+import { liveVariationPlanner, type ProductVariationPlanner } from './protectedTemplates/product/variations.js';
+import { liveReusePlacementPlanner, type ReusePlacementPlanner } from './protectedTemplates/product/reusePlacement.js';
+import { liveArtworkGenerator, type ArtworkGenerator } from './protectedTemplates/product/artwork.js';
+import type { SceneAnalyzer } from './creativeTemplates/smartProviders.js';
+import { localRecognizer, type WordRecognizer } from '../textRecognition/recognizer.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const FILE = /^[a-z0-9-]+\.(png|jpg|webp|json|txt)$/;
@@ -97,7 +112,25 @@ function readUpload(req: Request): Promise<{ bytes: Buffer; fields: Record<strin
  * Every default is the app's own folder and providers.
  */
 export function createLayerizeRouter(options: { runsDir?: string; deps?: () => RunnerDeps; generation?: () => GenerationConfig; access?: ExperimentAccess;
-  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter; templatesDir?: string; executionsDir?: string; inspector?: () => StructureInspector;
+  imageTemplatesDir?: string; imagePrompt?: () => ImagePromptWriter; templatesDir?: string; executionsDir?: string; inspector?: () => StructureInspector; protectedDir?: string;
+  /** The local word recognizer for protected templates (tesseract by default). */
+  wordRecognizer?: () => WordRecognizer;
+  /** The local OCR engine of master template scans (tesseract by default, else `wordRecognizer`). */
+  masterRecognizer?: () => WordRecognizer;
+  /** Product with Text templates: the vision analysis (the live one only with a configured key; tests pass a fake). */
+  productAnalyzer?: () => SceneAnalyzer | undefined;
+  /** Product with Text templates: the segmentation provider for objects (SAM-3; used only when the administrator approves it). */
+  /** Product with Text templates: their word reader (the master templates' local OCR by default). */
+  productRecognizer?: () => WordRecognizer;
+  productSegmenter?: () => Segmenter | undefined;
+  /** Product with Text templates: the AI decomposition core (OpenAI planner → Seedream Layerize; only with approved cost). */
+  productLayerizer?: () => ProductLayerizer | undefined;
+  /** Product with Text templates: the AI variation planner (used only when a request approves it). */
+  productPlanner?: () => ProductVariationPlanner | undefined;
+  /** Reuse Template's AI product placement (OpenAI; only with the person's approval of its cost). */
+  productPlacement?: () => ReusePlacementPlanner | undefined;
+  /** Product with Text templates: the image model for new AI artwork of recomposed variations (used only with approval). */
+  productArtwork?: () => ArtworkGenerator | undefined;
   smart?: SmartProviders & { analysesDir?: string; variantsDir?: string; env?: NodeJS.ProcessEnv } } = {}): Router {
   const runsDir = options.runsDir ?? DEFAULT_RUNS_DIR;
   const deps = options.deps ?? (() => liveDeps());
@@ -164,6 +197,22 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   }) });
   const { shown } = registerCreativeTemplateRoutes(router, { templates, executions, service, runsDir, runState });
   registerSmartCreativeRoutes(router, { smart, shownExecution: shown });
+  // Protected templates: text and logos kept out of decomposition; Seedream only (protectedTemplates/).
+  const protectedStore = fileProtectedStore(options.protectedDir ?? DEFAULT_PROTECTED_DIR);
+  // A protected run waiting its turn counts as running: it is never confirmed and sent twice.
+  const protectedService = createProtectedTemplates({ store: protectedStore, runsDir, deps, isActiveRun: id => !!runState(id), recognizer: options.wordRecognizer ?? localRecognizer,
+    fx: () => { const v = Number(process.env.AI_BUDGET_USD_INR); return Number.isFinite(v) && v > 0 ? v : 90; } });
+  registerProtectedTemplateRoutes(router, { store: protectedStore, inTurn, service: protectedService });
+  // Text & Graphics master templates (protectedTemplates/master/): local scan and clean background, creatives from saved files.
+  registerMasterTemplateRoutes(router, { masters: createMasterTemplates({ store: protectedStore, service: protectedService, runsDir, recognizer: options.masterRecognizer ?? options.wordRecognizer ?? localRecognizer }) });
+  // Product with Text templates (protectedTemplates/product/): text and bank logos kept as overlays, each object on its own.
+  registerProductTemplateRoutes(router, { products: createProductTemplates({ store: protectedStore, service: protectedService, runsDir, recognizer: options.productRecognizer ?? options.masterRecognizer ?? options.wordRecognizer ?? localRecognizer,
+    analyzer: options.productAnalyzer ?? (() => (process.env.OPENAI_API_KEY ? liveProductAnalyzer() : undefined)),
+    segmenter: options.productSegmenter ?? (() => (process.env.FAL_KEY ? liveSegmenter('sam3', () => deps().transport()) : undefined)),
+    layerizer: options.productLayerizer ?? (() => (process.env.OPENAI_API_KEY && process.env.FAL_KEY ? createProductLayerizer({ planner: liveDecompositionPlanner(), transport: () => deps().transport() }) : undefined)),
+    planner: options.productPlanner ?? (() => (process.env.OPENAI_API_KEY ? liveVariationPlanner() : undefined)),
+    artwork: options.productArtwork ?? (() => (process.env.OPENAI_API_KEY ? liveArtworkGenerator() : undefined)),
+    placement: options.productPlacement ?? (() => (process.env.OPENAI_API_KEY ? liveReusePlacementPlanner() : undefined)) }) });
 
   router.get('/runs/:id/diagnostics', async (req, res, next) => {
     try {
@@ -178,6 +227,16 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
       busy();
       const { dir, run } = await createRetryRun(runsDir, dirOf(req.params.id));
       background(run.id, () => executeRun(dir, deps()));
+      res.status(202).json(run);
+    } catch (error) { next(error); }
+  });
+  // Explicit user action only, after Seedream refused a run: one Qwen-Image-Layered request (listed $0.05) for the same
+  // image, as a new run (qwenAlternative.ts). Never automatic; the refused run is left as it is.
+  router.post('/runs/:id/qwen', async (req, res, next) => {
+    try {
+      busy();
+      const { dir, run } = await createQwenRun(runsDir, dirOf(req.params.id));
+      background(run.id, () => executeQwenRun(dir, deps()));
       res.status(202).json(run);
     } catch (error) { next(error); }
   });
@@ -215,9 +274,12 @@ export function createLayerizeRouter(options: { runsDir?: string; deps?: () => R
   router.use(((error: unknown, _req, res, next) => {
     void next;
     const code = error instanceof RunError ? error.code : 'INTERNAL';
-    const conflict = ['BUSY', 'RUN_ACTIVE_OR_AMBIGUOUS', 'IDEMPOTENCY_CONFLICT', 'PLAN_DECISION_REQUIRED', 'REVIEW_REQUIRED', 'NOT_RETRYABLE', 'STALE_RESOLUTION', 'RESOLUTION_NEEDS_INPUT', 'ANALYSIS_NOT_READY', 'CUTOUT_REQUIRED', 'NOT_NEEDED', 'REPEAT_REQUIRES_CONFIRMATION'];
-    const status = code === 'NOT_FOUND' || code === 'TEMPLATE_NOT_FOUND' ? 404 : conflict.includes(code) ? 409 : code === 'UPLOAD_TOO_LARGE' ? 413
-      : code === 'SMART_EDIT_UNAVAILABLE' || code === 'VARIANTS_UNAVAILABLE' ? 503 : error instanceof RunError ? 400 : 500;
+    const conflict = ['BUSY', 'RUN_ACTIVE_OR_AMBIGUOUS', 'IDEMPOTENCY_CONFLICT', 'PLAN_DECISION_REQUIRED', 'REVIEW_REQUIRED', 'NOT_RETRYABLE', 'STALE_RESOLUTION', 'RESOLUTION_NEEDS_INPUT', 'ANALYSIS_NOT_READY', 'CUTOUT_REQUIRED', 'NOT_NEEDED', 'REPEAT_REQUIRES_CONFIRMATION',
+      'STALE_REVISION', 'REPEAT_REQUIRES_CHANGE', 'RESUME_AVAILABLE', 'CONFLICT'];
+    // Protected templates: a step whose preconditions are not met (nothing was changed or sent).
+    const unprocessable = ['PREFLIGHT_FAILED', 'REGIONS_INVALID', 'REGIONS_NOT_CONFIRMED', 'NO_PROTECTED_ELEMENTS', 'NOT_READY', 'BASE_NOT_READY', 'BASE_ASPECT_MISMATCH', 'ACKNOWLEDGEMENT_REQUIRED', 'NO_TEXT_ANALYSIS', 'NOT_REPLACEABLE', 'FILE_CHANGED', 'NOT_BACKGROUND_ONLY'];
+    const status = code === 'NOT_FOUND' || code === 'TEMPLATE_NOT_FOUND' || code === 'FILE_MISSING' ? 404 : conflict.includes(code) ? 409 : unprocessable.includes(code) ? 422 : code === 'UPLOAD_TOO_LARGE' ? 413
+      : code === 'SMART_EDIT_UNAVAILABLE' || code === 'VARIANTS_UNAVAILABLE' || code === 'NOT_CONFIGURED' ? 503 : error instanceof RunError ? 400 : 500;
     res.status(status).json({ error: { code, message: error instanceof Error ? error.message : 'Unexpected error.', ...(error instanceof RunError ? error.details : {}) } });
   }) as express.ErrorRequestHandler);
   return router;

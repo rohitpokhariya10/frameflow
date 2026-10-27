@@ -10,28 +10,35 @@ import { randomUUID } from 'node:crypto';
 import type { ServerEnv } from '../config.js';
 import type { Provider } from '../ai/provider.js';
 import type { Segmenter } from '../../decomposition/creativeTemplates/segmenter.js';
+import type { ProtectedStore } from '../../decomposition/protectedTemplates/store.js';
+import type { WordRecognizer } from '../../textRecognition/recognizer.js';
 import type { StudioStore } from '../store.js';
 import { claimNextJob, finishJob, isTerminal } from './queue.js';
 import { runJob, type JobKindDef } from './runner.js';
 import { analyseTemplateJob } from './kinds/analyseTemplate.js';
 import { generatePosterJob, reviewPosterJob } from './kinds/generatePoster.js';
 import { makeCutoutJob } from './kinds/makeCutout.js';
+import { generateStyleVariationJob } from './kinds/generateStyleVariation.js';
+import { generateMasterCreativesJob } from './kinds/generateMasterCreatives.js';
 
 export const LEASE_MS = 60_000;
 const IDLE_POLL_MS = 1_000;
 
 /** Job kinds this worker runs. Generator's decompose_scene is deliberately absent: FrameFlow decomposes. */
 export const jobRegistry: Record<string, JobKindDef> = {
+  [generateMasterCreativesJob.kind]: generateMasterCreativesJob,
   [analyseTemplateJob.kind]: analyseTemplateJob,
   [generatePosterJob.kind]: generatePosterJob,
   [reviewPosterJob.kind]: reviewPosterJob,
   [makeCutoutJob.kind]: makeCutoutJob,
+  [generateStyleVariationJob.kind]: generateStyleVariationJob,
 };
 
-export interface WorkerOptions { db: StudioStore; storageDir: string; env?: ServerEnv; provider?: Provider; segmenter?: () => Segmenter | undefined; log?: (msg: string) => void; registry?: Record<string, JobKindDef> }
+export interface WorkerOptions { db: StudioStore; storageDir: string; env?: ServerEnv; provider?: Provider; segmenter?: () => Segmenter | undefined; log?: (msg: string) => void; registry?: Record<string, JobKindDef>;
+  protectedStore?: () => ProtectedStore; recognizer?: () => WordRecognizer }
 export interface StudioWorker { workerId: string; startedAt: string; lastSeenAt: () => string; current: () => string | null; wake: () => void; stop: () => Promise<void> }
 
-export function startWorker({ db, storageDir, env, provider, segmenter, log = console.log, registry = jobRegistry }: WorkerOptions): StudioWorker {
+export function startWorker({ db, storageDir, env, provider, segmenter, log = console.log, registry = jobRegistry, protectedStore, recognizer }: WorkerOptions): StudioWorker {
   const workerId = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();
   let lastSeenAt = startedAt, current: string | null = null, stopping = false;
@@ -61,7 +68,7 @@ export function startWorker({ db, storageDir, env, provider, segmenter, log = co
       }
       current = job.id;
       try {
-        const state = await runJob(db, job, def, { workerId, leaseMs: LEASE_MS, storageDir, env, provider, segmenter });
+        const state = await runJob(db, job, def, { workerId, leaseMs: LEASE_MS, storageDir, env, provider, segmenter, protectedStore, recognizer });
         log(`template studio job ${job.id} (${job.kind}) -> ${state}`);
       } catch (err) {
         // Infrastructure error (e.g. disk full). The lease expires and the job resumes from its last completed stage.

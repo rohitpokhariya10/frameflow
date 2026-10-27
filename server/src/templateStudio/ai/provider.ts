@@ -51,6 +51,8 @@ export interface ImageEditResponse {
 export interface Provider {
   structured(req: StructuredRequest): Promise<StructuredResponse>;
   editImage(req: ImageEditRequest): Promise<ImageEditResponse>;
+  /** True for the deterministic offline test provider: anything it produced is labelled as a mock, never as AI output. */
+  readonly offline?: boolean;
 }
 
 export class ProviderCallError extends Error {

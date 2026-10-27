@@ -13,7 +13,11 @@ import { z } from 'zod';
 import {
   DEFAULT_FIDELITY_MODE, DEFAULT_STUDIO_FORMAT, FIDELITY_MODES, STUDIO_COPY_FIELDS, STUDIO_CREATIVE_DIRECTIONS, STUDIO_FORMATS, STUDIO_IMAGE_QUALITIES,
   STUDIO_MAX_PRODUCTS, STUDIO_MAX_REFERENCES, STUDIO_OCCASION_GROUPS, type StudioEstimate, type StudioEstimateLine,
+  DEFAULT_PRESET_IDS, PROVENANCE_DETAILS, PROVENANCE_LABELS, STYLE_PRESETS, TYPOGRAPHY_MODE_LABELS, VARIATION_LIMITS, validProtectedTemplateId, type StyleVariationRequest,
 } from '@frameflow/shared';
+import { DEFAULT_PROTECTED_DIR, fileProtectedStore } from '../decomposition/protectedTemplates/store.js';
+import { localRecognizer, type WordRecognizer } from '../textRecognition/recognizer.js';
+import { changeLayout, createBatch, duplicateVariation, estimateView, MAX_VARIATIONS_LISTED, planVariations, reviewVariation, toVariationView, VariationError, variationTemplate, type LayoutPatch } from './variations/service.js';
 import { experimentAccess, type ExperimentAccess } from '../decomposition/layerizeRouter.js';
 import { DEFAULT_RUNS_DIR } from '../decomposition/layerizeExperiment.js';
 import { cutoutProvider } from '../decomposition/aiModels.js';
@@ -49,6 +53,7 @@ import { resumeBudgetJob } from './jobs/queue.js';
 import { resolveReferencePolicy } from './referencePolicy.js';
 import { budgetStatus, BudgetExceededError } from './costs/budget.js';
 import { setupStatus } from './setup.js';
+import { registerMasterCreativeRoutes } from './masterCreatives/routes.js';
 
 class StudioHttpError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'StudioHttpError'; }
@@ -96,6 +101,12 @@ export interface TemplateStudioOptions {
   worker?: boolean;
   falConfigured?: boolean;
   log?: (message: string) => void;
+  /** Protected templates, read only (style variations); FrameFlow's own folder by default. */
+  protectedDir?: string;
+  /** The local recognizer that checks generated artwork for drawn text (tesseract by default). */
+  recognizer?: () => WordRecognizer;
+  /** The local recognizer of master templates (the same reading as their scans; tesseract by default): AI variations' template check. */
+  masterRecognizer?: () => WordRecognizer;
 }
 
 export function createTemplateStudioRouter(options: TemplateStudioOptions = {}): Router & { studio: { db: StudioStore; env: ServerEnv; worker?: StudioWorker } } {
@@ -109,12 +120,14 @@ export function createTemplateStudioRouter(options: TemplateStudioOptions = {}):
     try { kind = cutoutProvider(process.env); } catch { return undefined; }
     return kind === 'none' || !falKey ? undefined : liveSegmenter(kind, () => createFalTransport(falKey));
   });
-  const worker = options.worker === false ? undefined : startWorker({ db, storageDir: env.assetStorageDir, env, provider, segmenter, log: options.log });
+  const protectedStore = fileProtectedStore(options.protectedDir ?? DEFAULT_PROTECTED_DIR), recognizer = options.recognizer ?? localRecognizer;
+  const worker = options.worker === false ? undefined : startWorker({ db, storageDir: env.assetStorageDir, env, provider, segmenter, log: options.log, protectedStore: () => protectedStore, recognizer });
   const money = (m: number) => describeMoney(m, env);
   const router = express.Router() as Router & { studio: { db: StudioStore; env: ServerEnv; worker?: StudioWorker } };
   router.studio = { db, env, worker };
   router.use(experimentAccess(options.access));
   router.use(express.json({ limit: '256kb', strict: true }));
+  registerMasterCreativeRoutes(router, { db, env, store: protectedStore, configured: !!env.OPENAI_API_KEY || !!options.provider, offline: (provider as Provider).offline === true, recognizer: options.masterRecognizer ?? localRecognizer, wake: () => worker?.wake() });
   const queued = <T>(value: T) => { worker?.wake(); return value; };
   const id = (req: Request, name = 'id') => { const value = req.params[name]; if (!validId(value)) throw new StudioHttpError(404, 'not_found', 'Not found.'); return value as string; };
   const posterOf = (req: Request) => db.posters.get(id(req)) ?? (() => { throw notFound('Poster'); })();
@@ -403,17 +416,83 @@ export function createTemplateStudioRouter(options: TemplateStudioOptions = {}):
       const jobIds = posterJobIds(db, poster);
       res.setHeader('Cache-Control', 'no-store');
       res.json({
-        link, poster: { id: poster.id, headline: campaign.copy.headline ?? null, thumb: `/api/template-studio/posters/${poster.id}/image?width=360&format=jpeg&v=${encodeURIComponent(poster.updatedAt)}`, fidelityMode: campaign.fidelityMode },
+        // provenance: reference_reuse means the run decomposed the template's original reference, copied unchanged.
+        link, poster: { id: poster.id, headline: campaign.copy.headline ?? null, thumb: `/api/template-studio/posters/${poster.id}/image?width=360&format=jpeg&v=${encodeURIComponent(poster.updatedAt)}`, fidelityMode: campaign.fidelityMode, provenance: poster.provenance ?? 'ai_generated' },
         template: template ? { id: template.id, name: template.name } : null,
         costs: { template: view ? costSummary(view.usage, env) : null, generation: costSummary(db.usage.filter(u => u.jobId !== null && jobIds.includes(u.jobId)), env) },
       });
     } catch (e) { next(e); }
   });
 
+  // --- Style variations of protected templates --------------------------------------------------------------------------
+  // Paid: only POST /protected/:templateId/variations, with an explicit confirmation naming the exact estimate. Every other
+  // route is local and free (typography, layout and logo changes never ask for new artwork).
+  const protectedIdOf = (req: Request) => { const value = req.params.templateId; if (!validProtectedTemplateId(value)) throw notFound('Protected template'); return value as string; };
+  const variationOf = (req: Request) => db.styleVariations.get(id(req)) ?? (() => { throw notFound('Variation'); })();
+  const variationJson = (variationId: string) => ({ variation: toVariationView(db, env, db.styleVariations.require(variationId, 'Variation')) });
+  const slot = z.object({ presetId: z.string().max(60), source: z.enum(['ai', 'restyle', 'reuse']), customName: z.string().max(VARIATION_LIMITS.maxPresetName).optional(), customDirection: z.string().max(VARIATION_LIMITS.maxCustomInstructions).optional() });
+  const typography = z.object({ headline: z.string().max(120), body: z.string().max(120), accent: z.string().max(120).optional(), headlineWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), bodyWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), color: z.string().max(7).optional() });
+  const variationRequest = z.object({ slots: z.array(slot).min(1).max(VARIATION_LIMITS.maxCount), customInstructions: z.string().max(VARIATION_LIMITS.maxCustomInstructions).optional(),
+    typographyMode: z.enum(['match', 'suggested', 'custom']), customTypography: typography.optional(), quality: z.enum(STUDIO_IMAGE_QUALITIES) });
+  router.get('/variations/meta', (_req, res) => res.json({
+    presets: STYLE_PRESETS, defaults: DEFAULT_PRESET_IDS, typographyModes: TYPOGRAPHY_MODE_LABELS, provenance: { labels: PROVENANCE_LABELS, details: PROVENANCE_DETAILS },
+    limits: VARIATION_LIMITS, quality: env.IMAGE_QUALITY, qualities: STUDIO_IMAGE_QUALITIES, model: env.OPENAI_IMAGE_MODEL, fx: env.fx,
+  }));
+  router.get('/protected/:templateId/variations', (req, res, next) => {
+    try {
+      const templateId = protectedIdOf(req);
+      let readiness: { ready: boolean; code?: string; reason?: string } = { ready: true };
+      try { variationTemplate(protectedStore, templateId); } catch (err) { if (!(err instanceof VariationError)) throw err; readiness = { ready: false, code: err.code, reason: err.message }; }
+      const variations = db.styleVariations.filter(v => v.templateId === templateId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.index - b.index).slice(0, MAX_VARIATIONS_LISTED);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ readiness, variations: variations.map(v => toVariationView(db, env, v)) });
+    } catch (e) { next(e); }
+  });
+  router.post('/protected/:templateId/variations/estimate', async (req, res, next) => {
+    try {
+      const body = parse(z.object({ request: variationRequest }), req.body), src = variationTemplate(protectedStore, protectedIdOf(req));
+      const { plans, providerSize } = await planVariations(db, env, src, body.request as StyleVariationRequest);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(estimateView(db, env, plans, providerSize, body.request.quality));
+    } catch (e) { next(e); }
+  });
+  /** Explicit, paid when any slot needs new AI artwork: needs confirm.paid and the exact estimate it was shown. */
+  router.post('/protected/:templateId/variations', async (req, res, next) => {
+    try {
+      const body = parse(idempotencyKey.extend({ request: variationRequest, confirm: z.object({ paid: z.boolean().optional(), estimateMicroUsd: z.number().int().min(0).optional() }).optional() }), req.body);
+      const src = variationTemplate(protectedStore, protectedIdOf(req));
+      const { batch, created } = await createBatch(db, env, env.assetStorageDir, src, { idempotencyKey: body.idempotencyKey, request: body.request as StyleVariationRequest, confirm: body.confirm });
+      res.status(created ? 202 : 200).json(queued({ batch: { id: batch.id, variationIds: batch.variationIds, existing: !created }, variations: batch.variationIds.map(v => variationJson(v).variation) }));
+    } catch (e) { next(e); }
+  });
+  router.get('/variations/:id', (req, res, next) => { try { res.setHeader('Cache-Control', 'no-store'); res.json(variationJson(variationOf(req).id)); } catch (e) { next(e); } });
+  const style = z.object({ fontFamily: z.string().max(120), fontSize: z.number(), fontWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), fontStyle: z.enum(['normal', 'italic']), color: z.string().max(7), opacity: z.number(), letterSpacing: z.number() }).partial();
+  const box = z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number(), rotation: z.number() });
+  /** Typography, word and logo changes in variant coordinates. Never new artwork, never a paid call. */
+  router.patch('/variations/:id/layout', async (req, res, next) => {
+    try {
+      const body = parse(z.object({ typographyMode: z.enum(['match', 'suggested', 'custom']).optional(), customTypography: typography.nullable().optional(),
+        words: z.array(z.object({ wordId: z.string().max(40), box: box.optional(), text: z.string().max(80).optional(), hidden: z.boolean().optional(), style: style.optional() })).max(400).optional(),
+        logos: z.array(z.object({ slotId: z.string().max(40), box: box.optional(), hidden: z.boolean().optional() })).max(60).optional(),
+        confirmProtectedEdits: z.array(z.string().max(40)).max(400).optional() }), req.body);
+      const record = variationOf(req), template = protectedStore.get(record.templateId) ?? (() => { throw notFound('Protected template'); })();
+      if (!template.textAnalysis) throw new StudioHttpError(422, 'no_text_analysis', 'The template has no word analysis any more.');
+      await changeLayout(db, env.assetStorageDir, record, template.textAnalysis, body as LayoutPatch);
+      res.json(variationJson(record.id));
+    } catch (e) { next(e); }
+  });
+  router.post('/variations/:id/review', (req, res, next) => {
+    try { const body = parse(z.object({ action: z.enum(['select', 'reject', 'save', 'reopen']) }), req.body); reviewVariation(db, variationOf(req), body.action); res.json(variationJson(req.params.id as string)); } catch (e) { next(e); }
+  });
+  router.post('/variations/:id/duplicate', (req, res, next) => {
+    try { const copy = duplicateVariation(db, variationOf(req)); res.status(201).json(variationJson(copy.id)); } catch (e) { next(e); }
+  });
+
   router.use(((error: unknown, _req, res, next) => {
     void next;
     let e: StudioHttpError;
     if (error instanceof StudioHttpError) e = error;
+    else if (error instanceof VariationError) e = new StudioHttpError(error.status, error.code, error.message, error.details);
     else if (error instanceof TemplateError) e = new StudioHttpError(error.code === 'not_found' ? 404 : 422, error.code, error.message);
     else if (error instanceof BudgetExceededError) e = new StudioHttpError(422, error.code, error.message);
     else if (error instanceof CampaignError) e = new StudioHttpError(error.code === 'not_found' ? 404 : 422, error.code, error.message);

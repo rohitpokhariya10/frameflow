@@ -1,6 +1,8 @@
 import type { ServerEnv } from "../config.js";
 import type { Provider } from "../ai/provider.js";
 import type { Segmenter } from "../../decomposition/creativeTemplates/segmenter.js";
+import type { ProtectedStore } from "../../decomposition/protectedTemplates/store.js";
+import type { WordRecognizer } from "../../textRecognition/recognizer.js";
 import { newId, now, type JobRecord as Job, type StudioStore as Db } from "../store.js";
 import { finishJob, renewLease, type JobErrorInfo, type JobState, type TerminalState } from "./queue.js";
 
@@ -60,6 +62,9 @@ export interface RunnerDeps {
   provider?: Provider;
   /** FrameFlow's mask provider for exact product cutouts; undefined when it is not configured. */
   segmenter?: () => Segmenter | undefined;
+  /** Style variations: the protected templates (read only) and the local recognizer that checks generated artwork for text. */
+  protectedStore?: () => ProtectedStore;
+  recognizer?: () => WordRecognizer;
 }
 
 export async function runJob(db: Db, job: Job, def: JobKindDef, deps: RunnerDeps): Promise<JobState> {

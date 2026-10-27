@@ -1,5 +1,6 @@
 import type { ImageProvider } from './ai.js';
 import type { CanvasImageRole, CanvasShapeRole, CanvasTextRole, EditableProperties, ImageFit } from './canvasElement.js';
+import type { ProtectedSlot } from './protectedContent.js';
 
 /** The editor's own roles, and the shared CanvasElement text roles a text opened from a template keeps. */
 export type TextRole = 'eyebrow' | 'title' | 'date' | 'venue' | 'body' | 'custom' | CanvasTextRole;
@@ -46,6 +47,14 @@ export interface TextElement {
   box?: { fill: string | null; radius: number };
   /** What a creative of the template may change; kept as metadata, the editor itself edits freely. */
   editable?: EditableProperties;
+  /** Not draggable or resizable on the canvas until unlocked (protected text opens locked). Absent: free, as before. */
+  locked?: boolean;
+  /** The protected template slot this text fills (protectedContent.ts): a reuse replaces its text in place. */
+  protectedSlot?: ProtectedSlot;
+  /** Absent: upright. Only drawn italic when the font has an italic (otherwise the browser slants it). */
+  fontStyle?: 'normal' | 'italic';
+  /** 0..1. Absent: fully opaque, as before. */
+  opacity?: number;
 }
 
 export interface CanvasSize { width: number; height: number }
@@ -61,13 +70,15 @@ export interface DesignLayerBase {
   /** The shared CanvasElement role, and what a creative of the template may change (metadata, as on text). */
   role?: CanvasImageRole | CanvasShapeRole;
   editable?: EditableProperties;
+  /** The protected template slot this layer fills (protectedContent.ts): replacing its picture keeps the slot and its box. */
+  protectedSlot?: ProtectedSlot;
 }
 export interface ImageLayerElement extends DesignLayerBase {
   type: 'image';
   /** Absent on an empty image slot of a template: the slot keeps its place and can be given a picture. */
   assetId?: string;
-  /** For text rasters: an editable suggestion the user can convert into a text element. */
-  textSuggestion?: { text: string; confidence: 'none' | 'low'; fill?: string; fontSize?: number; fontWeight?: 400 | 600 | 700 };
+  /** For text rasters: an editable suggestion the user can convert into a text element. 'provided': typed by the template's administrator, not recognised from the image. */
+  textSuggestion?: { text: string; confidence: 'none' | 'low' | 'provided'; fill?: string; fontSize?: number; fontWeight?: 400 | 600 | 700 };
   /** How the picture fills the box without distortion, around the focal point (0..1). Absent: stretched to the box, as before. */
   fit?: ImageFit;
   focalPoint?: { x: number; y: number };
@@ -83,6 +94,8 @@ export type DesignLayer = ImageLayerElement | ShapeLayerElement;
 export const LAYER_LIMITS = { maxLayers: 60, minSide: 1, maxSide: 16384 } as const;
 
 export interface DesignVariant {
+  /** Product template word/group editing, without changing Text template behavior. */
+  productTemplate?: true;
   id: string;
   name: string;
   revision: number;
@@ -105,6 +118,22 @@ export interface DesignVariant {
    * another one.
    */
   importedFrom?: { templateId: string; resultId: string; runId: string };
+  /**
+   * Opened from a style variation of a protected template (styleVariations.ts): which variation, and where its artwork came
+   * from, so the editor states it honestly. The text and logos are always the template's own, placed by FrameFlow.
+   */
+  styleVariation?: { variationId: string; templateId: string; presetId: string; provenance: 'ai_generated' | 'local_reuse' | 'local_restyle' | 'reconstructed'; typographyMode: 'match' | 'suggested' | 'custom' };
+  /**
+   * Opened from a creative of a Text & Graphics master (masterTemplates.ts): which master revision and creative, the
+   * creative revision this design was built from or last saved to, and the scale from source pixels to this canvas.
+   * Saving sends this design's text, logos and shapes back to that creative; the master is never changed.
+   */
+  creative?: { masterId: string; masterRevision: number; creativeId: string; syncedRevision: number; scale: number; size?: CanvasSize; product?: true; masterEditing?: true; warnings?: string[] };
+  /**
+   * Opened smaller than its source (a creative's decomposition whose largest text is beyond the editor's font limit): the
+   * source's size and the scale to this canvas, so an export draws at the source's own size. Removed when the canvas is resized.
+   */
+  sourceSize?: { width: number; height: number; scale: number };
   /**
    * Opened from a template creative: which template version and creative. From then on this is an independent design:
    * editing it never changes the template or the creative. `background` keeps the template's background element (its
@@ -196,3 +225,10 @@ export * from './referenceCreative.js';
 export * from './aiPricing.js';
 export * from './creativeTemplates/index.js';
 export * from './templateStudio.js';
+export * from './protectedContent.js';
+export * from './protectedWords.js';
+export * from './styleVariations.js';
+export * from './offerFonts.js';
+export * from './masterTemplates.js';
+export * from './masterAi.js';
+export * from './productTemplates.js';

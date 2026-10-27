@@ -3,13 +3,16 @@
  * It answers with schema-valid data derived from the request and draws a synthetic scene. It never contacts OpenAI and
  * its images are not real generations: anything shown from it must be labelled as offline/mock.
  */
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
-import type { ImageEditRequest, Provider, StructuredRequest } from '../ai/provider.js';
+import { ProviderCallError, type ImageEditRequest, type Provider, type StructuredRequest } from '../ai/provider.js';
 import type { Segmenter } from '../../decomposition/creativeTemplates/segmenter.js';
+import { mockMasterPlan } from './masterCreativePlan.js';
 
 export interface FakeCall { kind: 'structured' | 'image'; schemaName?: string; model: string; system?: string; prompt?: string; images?: number; imageNames?: string[]; data?: Record<string, unknown> }
 
 export class FakeProvider implements Provider {
+  readonly offline = true;
   calls: FakeCall[] = [];
   /** Override answers per schema name (return a JSON string or object). */
   overrides: Record<string, (req: StructuredRequest) => unknown> = {};
@@ -25,7 +28,7 @@ export class FakeProvider implements Provider {
     this.calls.push({ kind: 'structured', schemaName: req.schemaName, model: req.model, system: req.system, data });
     await this.pause();
     const override = this.overrides[req.schemaName];
-    const body = override ? override(req) : this.answer(req.schemaName, data);
+    const body = override ? override(req) : req.schemaName === 'editable_offer_style_variations' ? mockMasterPlan(req) : this.answer(req.schemaName, data);
     return {
       text: typeof body === 'string' ? body : JSON.stringify(body),
       refusal: null,
@@ -35,10 +38,22 @@ export class FakeProvider implements Provider {
     };
   }
 
+  /** Style-variation prompts that make the fake image model refuse (as a provider safety refusal would). */
+  refuseVariations = /Fixture refusal/;
+
   async editImage(req: ImageEditRequest) {
     this.calls.push({ kind: 'image', model: req.model, prompt: req.prompt, images: req.images.length, imageNames: req.images.map(i => i.name) });
     await this.pause();
     const [w, h] = req.size.split('x').map(Number);
+    // A style variation: the supplied text-free base, recoloured by a hue taken from the prompt (each direction its own
+    // look). "Fixture drawn text" in the prompt adds a magenta block the fake recognizer reads as drawn text.
+    if (req.prompt.startsWith('Restyle the attached poster artwork')) {
+      if (this.refuseVariations.test(req.prompt)) throw new ProviderCallError({ code: 'content_policy', message: 'The image service declined this request (fixture refusal).', safeToRetry: false, outcomeUnknown: false, requestId: 'req_fake_refused' });
+      const hue = parseInt(createHash('sha256').update(req.prompt).digest('hex').slice(0, 2), 16) * 1.4;
+      let image = await sharp(req.images[0].data).resize(w, h, { fit: 'fill' }).modulate({ hue: Math.round(hue), saturation: 1.3 }).png().toBuffer();
+      if (req.prompt.includes('Fixture drawn text')) image = await sharp(image).composite([{ input: { create: { width: Math.round(w * 0.3), height: Math.round(h * 0.06), channels: 3, background: { r: 255, g: 0, b: 255 } } }, left: Math.round(w * 0.05), top: Math.round(h * 0.9) }]).png().toBuffer();
+      return { image, usage: { input_tokens: 9000, input_tokens_details: { text_tokens: 1500, image_tokens: 7500 }, output_tokens: 6000 }, requestId: `req_fake_img_${this.calls.length}` };
+    }
     // A blue studio backdrop, a white podium and a teal "product" where the layout guide puts the first product.
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f6fd6"/><stop offset="1" stop-color="#1c4fa8"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><ellipse cx="${w / 2}" cy="${h * 0.8}" rx="${w * 0.3}" ry="${h * 0.05}" fill="#f4f6fb"/><rect x="${w * 0.2}" y="${h * 0.72}" width="${w * 0.6}" height="${h * 0.08}" fill="#e8ecf5"/><rect x="${w * 0.4}" y="${h * 0.45}" width="${w * 0.2}" height="${h * 0.27}" rx="${w * 0.02}" fill="#2e7d6b"/></svg>`;
     const image = await sharp(Buffer.from(svg)).png().toBuffer();
@@ -72,6 +87,10 @@ export class FakeProvider implements Provider {
           allowedVariation: ['Number of podiums to match the products'],
           excludedDirections: ['Outdoor scenes', 'Dark backgrounds'],
           referenceClusters: [{ id: 'c1', label: 'Blue studio', description: 'All references', referenceIds: refs }],
+          // One inventory per reference, as style-profile/5 requires (contracts/ai.ts): no products listed, so uploaded products
+          // are added rather than swapped in; the reference poster's yellow offer banner and white sub-headline bar as text.
+          referenceScenes: refs.map(referenceId => ({ referenceId, confidence: 0.8, products: [], camera: 'Front, eye level', lighting: 'Soft studio light', supportingObjects: ['White podiums'], background: 'Blue studio gradient',
+            textRegions: [{ kind: 'text', description: 'Yellow offer banner', box: { x: 0.0833, y: 0.0815, width: 0.8333, height: 0.0889 } }, { kind: 'text', description: 'White sub-headline bar', box: { x: 0.0833, y: 0.1926, width: 0.5556, height: 0.037 } }] })),
           defaultClusterId: 'c1',
           contentToReplace: [{ referenceId: refs[0], kind: 'product', description: 'Three kitchen appliances' }, { referenceId: refs[0], kind: 'offer', description: 'Old 10% cashback offer' }],
           evidence: [{ rule: 'Blue studio backdrop', referenceIds: refs, confidence: 0.8 }],
