@@ -23,14 +23,15 @@ describe('replacement background quality and provenance', () => {
     expect(records.get('background-provenance.json')).toMatchObject({ baseSha256: sha256(r.base), cleanSha256: sha256(r.clean), sources: { seedreamBackground: true, verifiedComposition: false }, residualChecks: objects.map(o => ({ id: o.id, label: o.label })) });
 
     // An approved native composition has a separate clean background. Keep that exact reference under the
-    // selected products even if the mocked AI background is defective; object masks must still come from AI.
+    // selected products even if the mocked AI background is defective. The AI decomposition still runs; each product
+    // then keeps its complete layer from the composition (the uploaded picture, whole when moved) instead of a cut-out.
     const background = await decodeRgba(await sharp({ create: { width: 600, height: 600, channels: 4, background: '#e9e5dd' } }).png().toBuffer());
     const layers = await Promise.all(objects.map(async o => ({ label: o.label, kind: o.kind, box: o.box,
       png: await sharp(png).extract({ left: o.box.x, top: o.box.y, width: o.box.width, height: o.box.height }).png().toBuffer() })));
     const clean = await prepareProduct({ source, analysis: undefined, objects, layerizer, paidApproved: true, requireAiMatches: true,
       known: { verifiedComposition: true, background, clean: source, layers }, save: (f, v) => records.set(f, v) });
     expect(clean.quality.issues.filter(i => i.blocking)).toEqual([]);
-    expect(clean.cutouts.every(c => c.method === 'seedream')).toBe(true);
+    expect(clean.cutouts.every(c => c.method === (objects.find(o => o.id === c.id)?.kind === 'product' ? 'layer' : 'seedream'))).toBe(true);
     const base = await decodeRgba(clean.base);
     for (const o of objects) for (let y = o.box.y; y < o.box.y + o.box.height; y++) for (let x = o.box.x; x < o.box.x + o.box.width; x++) {
       const p = (y * 600 + x) * 4;

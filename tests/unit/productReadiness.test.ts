@@ -1,12 +1,14 @@
 import { describe,it,expect,vi } from 'vitest';
 import sharp from 'sharp';
 import { liveProductAnalyzer, parseProductScene, PRODUCT_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_MAX_OUTPUT_TOKENS, PRODUCT_ANALYSIS_TIMEOUT_MS } from '../../server/src/decomposition/protectedTemplates/product/analyzer.js';
-import { ganeshWordManifest } from '../fixtures/ganeshHandmade.fixture.js';
-const size={width:607,height:606},answer=ganeshWordManifest(size);
+import { loadGaneshHandmade } from '../fixtures/privateHandmade.js';
+// (The sample answer is the client's private hand-made manifest: these tests run only where it is present.)
+const handmade = await loadGaneshHandmade();
+const size={width:607,height:606},answer=(handmade ? handmade.ganeshWordManifest(size) : undefined)!;
 const png=()=>sharp({create:{...size,channels:3,background:'#ffffff'}}).png().toBuffer();
 function fake(result:unknown){const create=vi.fn().mockResolvedValue(result);return {create,analyzer:liveProductAnalyzer({model:'gpt-5.6-sol',client:{responses:{create}} as never})};}
 const usage={input_tokens:4000,output_tokens:8000,input_tokens_details:{cached_tokens:1000}};
-describe('Product analysis live-request readiness (mock transport; no network)',()=>{
+describe.skipIf(!handmade)('Product analysis live-request readiness (mock transport; no network)',()=>{
  it('sends one bounded strict-schema image request and records usage at current rates',async()=>{
   const {create,analyzer}=fake({status:'completed',output:[],output_text:JSON.stringify(answer),usage}),saved=new Map<string,object>();
   const scene=await analyzer.analyze(await png(),'image/png',(f,v)=>saved.set(f,v));
