@@ -19,7 +19,8 @@ export function exportFilename(canvas: CanvasSize) {
 
 /** A clean Konva group uses the editor's node styles in logical pixels. No Stage,
  * display zoom, hit canvas, Transformer, or document action is needed. */
-export async function exportPng(variant: DesignVariant): Promise<Blob> {
+/** `pixelRatio` draws the design larger than its canvas (a creative of a master template exports at the master's own size). */
+export async function exportPng(variant: DesignVariant, pixelRatio = 1, target?: CanvasSize): Promise<Blob> {
   const { canvas, background, layers = [] } = variant;
   if (!validateCanvasSize(canvas.width, canvas.height).valid) throw new Error('This canvas size cannot be exported. Choose a valid size and retry.');
   const controller = new AbortController();
@@ -28,7 +29,7 @@ export async function exportPng(variant: DesignVariant): Promise<Blob> {
   try {
     try { await abortable(loadEditorFonts(), controller.signal); }
     catch { throw new Error('Fonts could not load for export. Check your connection and retry.'); }
-    await abortable(loadRequiredFonts(variant.elements.map(e => ({ family: e.fontFamily, weight: e.fontWeight, text: e.text }))), controller.signal);
+    await abortable(loadRequiredFonts(variant.elements.map(e => ({ family: e.fontFamily, weight: e.fontWeight, text: e.text, italic: e.fontStyle === 'italic' }))), controller.signal);
     let image: HTMLImageElement | undefined;
     if (background) {
       try {
@@ -79,7 +80,14 @@ export async function exportPng(variant: DesignVariant): Promise<Blob> {
       group.add(node);
     }
     try {
-      output = group.toCanvas({ x: 0, y: 0, width: canvas.width, height: canvas.height, pixelRatio: 1 });
+      // With a target (a master's own size) the drawing covers exactly the target in device pixels: no resampling after.
+      output = group.toCanvas({ x: 0, y: 0, width: target ? target.width / pixelRatio : canvas.width, height: target ? target.height / pixelRatio : canvas.height, pixelRatio });
+      // A whole-pixel target size (a master's own size): the drawing scaled by the last fraction of a pixel Konva rounded off.
+      if (target && (output.width !== target.width || output.height !== target.height)) {
+        const exact = document.createElement('canvas'); exact.width = target.width; exact.height = target.height;
+        exact.getContext('2d')!.drawImage(output, 0, 0, target.width, target.height);
+        output.width = 0; output.height = 0; output = exact;
+      }
       const blob = await abortable(new Promise<Blob>((resolve, reject) => {
         output!.toBlob((value) => value?.size && value.type === 'image/png' ? resolve(value) : reject(new Error('Empty PNG')), 'image/png');
       }), controller.signal);

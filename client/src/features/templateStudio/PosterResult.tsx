@@ -3,7 +3,7 @@
  * out), the recorded cost, approval, and the hand-off to FrameFlow's existing decomposition.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, CheckCircle2, CircleDashed, Download, Layers3, RefreshCw, ScanSearch, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle2, CircleDashed, Download, Layers3, RefreshCw, ScanSearch, ShieldCheck, ShieldPlus, XCircle } from 'lucide-react';
 import { AI_PRICING, FIDELITY_MODES, type StudioJob, type StudioPoster, type StudioReviewCheck } from '@frameflow/shared';
 import { newIdempotencyKey, studioApi } from './api';
 import { RecordedCost } from './CostViews';
@@ -25,8 +25,12 @@ export function ReviewChecklist({ checks }: { checks: StudioReviewCheck[] }) {
 
 type View = 'poster' | 'scene' | 'raw' | 'guide';
 
-export function PosterResult({ posterId, onBack, backLabel = 'Back', onDecompose, onOpenRun, onStartedJob }: {
+export function PosterResult({ posterId, onBack, backLabel = 'Back', onDecompose, onOpenRun, onStartedJob, onProtect, onMakeMaster }: {
   posterId: string; onBack?: () => void; backLabel?: string;
+  /** Makes a protected template of this poster (its text and logos kept out of decomposition) and opens it. */
+  onProtect?: (poster: StudioPoster) => Promise<void>;
+  /** This poster's image as a Text & Graphics master (Offer Templates), without downloading and uploading it again. */
+  onMakeMaster?: (poster: StudioPoster) => Promise<void>;
   /** Sends the poster's text-free scene to FrameFlow's decomposition (the panel owns that); resolves with the run id. */
   onDecompose: (poster: StudioPoster, recursive: boolean) => Promise<void>;
   onOpenRun: (runId: string) => void;
@@ -51,20 +55,23 @@ export function PosterResult({ posterId, onBack, backLabel = 'Back', onDecompose
   const mode = FIDELITY_MODES.find(m => m.id === poster.fidelityMode)!;
   const approved = Boolean(poster.approvedAt), flagged = poster.reviewStatus !== 'ok';
   const images: Record<View, string | null> = { poster: poster.urls.poster, scene: poster.urls.scene, raw: poster.urls.rawScene, guide: poster.urls.layoutGuide };
-  const labels: Record<View, string> = { poster: 'Poster', scene: 'Text-free scene', raw: "Model's own scene", guide: 'Layout guide' };
+  const reuse = poster.provenance === 'reference_reuse';
+  const labels: Record<View, string> = { poster: 'Poster', scene: reuse ? 'Reused reference (with its text and logos)' : 'Text-free scene', raw: "Model's own scene", guide: 'Layout guide' };
   const hard = poster.review?.hardFailures ?? [];
   const reviewCost = poster.cost.lines.filter(l => l.stage.startsWith('review')).at(-1);
   const once = (name: string) => (keys.current[name] ??= newIdempotencyKey());
 
   const nextStep = <>
-        <StepCard title="Next: editable layers" hint="FrameFlow splits the text-free scene into layers, then restores your text and logo as editable elements in the editor.">
+        <StepCard title="Next: editable layers" hint={reuse ? 'This image is the original reference, copied unchanged: its bank logos and text are part of its pixels. Protect them to keep them out of decomposition.' : 'FrameFlow splits the text-free scene into layers, then restores your text and logo as editable elements in the editor.'}>
+          {onProtect && <button type="button" className={`ws-btn${reuse ? ' ws-btn-primary' : ''} ts-wide`} disabled={busy} onClick={() => void act(() => onProtect(poster))}><ShieldPlus size={16} aria-hidden="true" /> Protect text &amp; logos, then decompose with Seedream only</button>}
+          {onMakeMaster && <button type="button" className="ws-btn ts-wide" disabled={busy} onClick={() => void act(() => onMakeMaster(poster))}>Use as a Text &amp; Graphics template (scan its text and logos)</button>}
           {poster.decompositions.length > 0 && <ul className="ts-runs">{poster.decompositions.map(d => <li key={d.runId}><Layers3 size={15} aria-hidden="true" /><span>Decomposition {fmtDate(d.createdAt)}<small>{d.sentWidth}×{d.sentHeight} sent · run {d.runId.slice(-6)}</small></span><button type="button" className="ws-btn" onClick={() => onOpenRun(d.runId)}>View layers</button></li>)}</ul>}
           {!approved ? <>
             {flagged && <label className="ts-check"><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} /> I have checked the flagged items and want to use this image.</label>}
             <button type="button" className="ws-btn ws-btn-primary ws-btn-large ts-wide" disabled={busy || (flagged && !acknowledged)} onClick={() => void act(async () => { setPoster((await studioApi.post<{ poster: StudioPoster }>(`/posters/${poster.id}/approve`, { approved: true })).poster); })}><ShieldCheck size={16} aria-hidden="true" /> Approve this image</button>
           </> : !confirmDecompose ? <button type="button" className="ws-btn ws-btn-primary ws-btn-large ts-wide" disabled={busy} onClick={() => setConfirmDecompose(true)}><Layers3 size={16} aria-hidden="true" /> {poster.decompositions.length ? 'Decompose again' : 'Decompose Image into Editable Layers'}</button>
             : <div className="ts-confirm" role="group" aria-label="Confirm decomposition">
-              <p><strong>Start FrameFlow decomposition?</strong> The text-free scene ({poster.crop.width}×{poster.crop.height}) goes to FrameFlow's existing pipeline: one OpenAI planner call and one Seedream layer request, plus cleanup passes only when needed. These are paid calls. Its exact cost is recorded in Overview; FrameFlow's planning target is ₹{AI_PRICING.targetInr.min}–{AI_PRICING.targetInr.max} per image ({AI_PRICING.version}), and cleanup can add more.</p>
+              <p><strong>Start FrameFlow decomposition?</strong> {reuse ? <>No new image was generated for this poster: the template's <strong>original reference, copied unchanged</strong> ({poster.crop.width}×{poster.crop.height}), goes to FrameFlow's existing pipeline <strong>with its raster text and logos</strong>, which Seedream would decompose (or its provider may refuse) along with the rest. To keep them out, use Protect text &amp; logos instead.</> : <>The text-free scene ({poster.crop.width}×{poster.crop.height}) goes to FrameFlow's existing pipeline.</>} One OpenAI planner call and one Seedream layer request, plus cleanup passes only when needed. These are paid calls. Its exact cost is recorded in Overview; FrameFlow's planning target is ₹{AI_PRICING.targetInr.min}–{AI_PRICING.targetInr.max} per image ({AI_PRICING.version}), and cleanup can add more.</p>
               <label className="ts-check"><input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} /> Recursive cleanup (FrameFlow default)</label>
               <div className="ws-row"><button type="button" className="ws-btn ws-btn-primary" disabled={busy} onClick={() => void act(async () => { await onDecompose(poster, recursive); setConfirmDecompose(false); })}>{busy ? 'Starting…' : 'Start decomposition (paid)'}</button><button type="button" className="ws-btn ws-btn-quiet" onClick={() => setConfirmDecompose(false)}>Cancel</button></div>
             </div>}
@@ -90,7 +97,7 @@ export function PosterResult({ posterId, onBack, backLabel = 'Back', onDecompose
         <figure className="ts-preview-frame" style={{ aspectRatio: `${poster.canvas.width} / ${poster.canvas.height}` }}>
           <img src={images[view] ?? poster.urls.poster} alt={`${labels[view]} of the generated image`} />
         </figure>
-        <p className="ts-footnote">{view === 'poster' ? `Rendered at ${poster.canvas.width}×${poster.canvas.height}: the generated scene plus exact text and logo layers.` : view === 'scene' ? `The text-free scene (${poster.crop.width}×${poster.crop.height}) FrameFlow decomposes.${poster.exactProducts?.applied ? ' Products are your cutouts\' exact pixels.' : ''}` : view === 'raw' ? 'What the image model returned, before your exact product pixels replaced its products.' : 'The wordless wireframe sent to the image model first: product blocks, supports and empty text areas.'}</p>
+        <p className="ts-footnote">{view === 'poster' ? `Rendered at ${poster.canvas.width}×${poster.canvas.height}: ${reuse ? 'the reused reference' : 'the generated scene'} plus exact text and logo layers.` : view === 'scene' && reuse ? `The original reference (${poster.crop.width}×${poster.crop.height}), copied unchanged, with its own text and logos: what a plain decomposition would send.` : view === 'scene' ? `The text-free scene (${poster.crop.width}×${poster.crop.height}) FrameFlow decomposes.${poster.exactProducts?.applied ? ' Products are your cutouts\' exact pixels.' : ''}` : view === 'raw' ? 'What the image model returned, before your exact product pixels replaced its products.' : 'The wordless wireframe sent to the image model first: product blocks, supports and empty text areas.'}</p>
       </div>
       <aside className="ts-result-side">
         {nextStep}

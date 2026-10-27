@@ -19,7 +19,10 @@ export function WorkflowCost({ link, diagnostics, onOpenPoster }: { link: Studio
   return <section className="ts-workflow-cost" aria-label="Workflow cost">
     <header>
       {link.poster && <button type="button" className="ts-workflow-thumb" onClick={() => onOpenPoster(link.poster!.id)} aria-label="Open the generated image"><img src={link.poster.thumb} alt="" /></button>}
-      <div><p className="ts-kicker">FROM TEMPLATE STUDIO</p><h3>{link.poster?.headline ?? 'Generated image'}</h3><p>{link.template?.name ?? 'Template'} → generated image → this FrameFlow decomposition ({link.link?.sentWidth}×{link.link?.sentHeight} text-free scene)</p></div>
+      <div><p className="ts-kicker">FROM TEMPLATE STUDIO</p><h3>{link.poster?.headline ?? (link.poster?.provenance === 'reference_reuse' ? 'Reused reference' : 'Generated image')}</h3>
+        {link.poster?.provenance === 'reference_reuse'
+          ? <p>{link.template?.name ?? 'Template'} → <Badge tone="warn">original reference reused, no image generated</Badge> → this FrameFlow decomposition ({link.link?.sentWidth}×{link.link?.sentHeight}, with the reference's own text and logos)</p>
+          : <p>{link.template?.name ?? 'Template'} → generated image → this FrameFlow decomposition ({link.link?.sentWidth}×{link.link?.sentHeight} text-free scene)</p>}</div>
     </header>
     <table className="ts-cost-table">
       <thead><tr><th scope="col">Stage</th><th scope="col">Basis</th><th scope="col" className="ts-num">Cost</th></tr></thead>

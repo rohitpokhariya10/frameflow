@@ -11,7 +11,8 @@ import { STUDIO_API } from './api';
 
 export interface StudioRunLink {
   link: { posterId: string; runId: string; sentWidth: number; sentHeight: number; createdAt: string } | null;
-  poster?: { id: string; headline: string | null; thumb: string; fidelityMode: string };
+  /** provenance reference_reuse: the run decomposed the template's original reference, copied unchanged (with its text and logos). */
+  poster?: { id: string; headline: string | null; thumb: string; fidelityMode: string; provenance?: 'reference_reuse' | 'ai_generated' };
   template?: { id: string; name: string } | null;
   costs?: { template: StudioCostSummary | null; generation: StudioCostSummary };
 }
@@ -56,7 +57,7 @@ export function withNativeOverlay(document: ProjectDocument, overlay: StudioEdit
     rotation: 0, opacity: 1, visible: true, locked: false,
   }] : [];
   const products: DesignLayer[] = (overlay.products ?? []).filter(p => productAssets[p.id]).map(p => ({
-    id: `studio-product-${newId()}`, type: 'image', assetId: productAssets[p.id], name: `Protected product · ${p.id}`, role: 'subject',
+    id: `studio-product-${newId()}`, type: 'image', assetId: productAssets[p.id], name: `Protected product · ${p.id}`, role: 'product',
     x: p.box.x * width, y: p.box.y * height, width: Math.max(1, p.box.width * width), height: Math.max(1, p.box.height * height),
     rotation: 0, opacity: 1, visible: true, locked: false,
   }));

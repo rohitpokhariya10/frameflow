@@ -1,4 +1,4 @@
-import { AI_LIMITS, builtinDiwaliAsset, premiumAssetPath, type ImageResponse } from '@frameflow/shared';
+import { AI_LIMITS, CANVAS_LIMITS, builtinDiwaliAsset, premiumAssetPath, type ImageResponse } from '@frameflow/shared';
 import { createAssetRepository } from './assetRepository';
 const repository = createAssetRepository();
 // Known same-origin static files. Cache bytes in memory; editor handoff takes its own persistent copy.
@@ -30,13 +30,16 @@ export async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promi
   try { return await Promise.race([work, cancelled]); }
   finally { if (cancel) signal.removeEventListener('abort', cancel); }
 }
+/** Largest picture the editor decodes: a full-size layer of the largest canvas side on both sides (a 4096 × 4089 creative's
+ * background is 16.7 million pixels, above the AI image limit), or an AI image. */
+const DECODE_PIXELS = Math.max(AI_LIMITS.imagePixels, CANVAS_LIMITS.maxSide * CANVAS_LIMITS.maxSide);
 export async function decodeImage(blob: Blob, signal?: AbortSignal): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(blob);
   const image = new window.Image();
   try {
     image.src = url;
     await (signal ? abortable(image.decode(), signal) : image.decode());
-    if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth > AI_LIMITS.imageSide || image.naturalHeight > AI_LIMITS.imageSide || image.naturalWidth * image.naturalHeight > AI_LIMITS.imagePixels) throw new Error('Image dimensions are not supported.');
+    if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth > AI_LIMITS.imageSide || image.naturalHeight > AI_LIMITS.imageSide || image.naturalWidth * image.naturalHeight > DECODE_PIXELS) throw new Error('Image dimensions are not supported.');
     return image;
   } finally { URL.revokeObjectURL(url); }
 }

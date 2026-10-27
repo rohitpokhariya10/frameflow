@@ -9,6 +9,7 @@ import { historyKey, selectionKey } from './selectionKeyboard';
 import { undo, redo } from '../../store/history';
 import { recoveryWarningChanged } from '../../store/saveSlice';
 import { ExportButton } from '../export/ExportButton';
+import { CreativeSaveButton } from '../masterTemplates/CreativeSaveButton';
 import { LayerInspector, LayersList } from '../layers/LayerInspector';
 import { DetectedLayersTray } from '../decomposition/DetectedLayersTray';
 import { LEGACY_IMAGE_TO_LAYERS } from '../../lib/featureFlags';
@@ -53,9 +54,11 @@ export function EditorShell({ onNewDesign }: { onNewDesign: () => void }) {
             <button className="icon-button" aria-label="Redo" title="Redo (⌘/Ctrl Shift Z)" disabled={!canRedo} onClick={() => dispatch(redo())}><Redo2 size={16} /></button>
           </div>
           <span className={`save-status save-${save.status}`} role="status" aria-live="polite" title={save.status === 'error' ? 'Keep this tab open. Check browser storage, then edit to retry saving.' : 'Saved only in this browser. Export a PNG to keep a copy.'}><span />{{ saving: 'Saving…', saved: 'Saved on this device', error: 'Could not save' }[save.status]}</span>
+          <CreativeSaveButton />
           <ExportButton />
         </div>
       </header>
+      {!!variant.creative?.warnings?.length && variant.creative.masterEditing && <details className="recovery-warning"><summary>Master quality review · {variant.creative.warnings.length} warning(s) retained</summary><ul>{variant.creative.warnings.map((message, i) => <li key={i}>{message}</li>)}</ul><p>Return to the template’s Inspect screen to review the source layers. Editing or saving does not approve these checks.</p></details>}
       {save.warning && <div className="recovery-warning" role="alert"><span>{save.warning} New edits will replace the saved design.</span><button className="icon-button" aria-label="Dismiss recovery warning" onClick={() => dispatch(recoveryWarningChanged(''))}><X size={14} /></button></div>}
       <div className="editor-body">
         <ResizableDesignPanel onNewDesign={onNewDesign} />

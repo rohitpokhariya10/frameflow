@@ -154,7 +154,8 @@ h1, h2, h3, p { margin: 0; }
 .zoom-controls output { min-width: 43px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }
 .zoom-divider { width: 1px; height: 16px; background: var(--color-line); margin: 0 5px; }
 .zoom-controls .fit-button { width: 50px; gap: 6px; font-size: 11px; }
-.properties-panel { border-left: 1px solid var(--color-line); }
+/* The fixed workspace launchers (App.tsx .decomp-launch) sit over this panel's bottom edge: keep its footer clear of them. */
+.properties-panel { border-left: 1px solid var(--color-line); padding-bottom: 64px; }
 .panel-heading { height: 53px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #edf0e9; }
 .panel-heading h2 { font-size: 12px; font-weight: 500; }
 .subtle-label { font-size: 9px; color: var(--color-muted); }
@@ -239,8 +240,11 @@ h1, h2, h3, p { margin: 0; }
 .alignment-control button:hover { background: var(--color-chrome); }
 .alignment-control button[aria-pressed="true"] { color: var(--color-primary); background: var(--color-selected); }
 .inspector-hint { margin-top: 10px; font-size: 9px; line-height: 1.7; color: var(--color-muted); }
+.protected-slot-note { margin: 0 0 10px; padding: 7px 9px; border-radius: 8px; background: var(--color-selected); color: var(--color-ink); font-size: 11px; line-height: 1.5; }
+.protected-slot-note svg { vertical-align: -2px; color: var(--color-primary); }
+.protected-slot-lock { margin-top: 6px; display: inline-flex; gap: 4px; align-items: center; font-size: 11px; }
 .inspector-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 19px; flex-shrink: 0; border-top: 1px solid var(--color-line); }
-.auto-layout-control { margin-top: 12px; }
+.auto-layout-control { margin-top: 12px; scroll-margin-block: 12px; } /* scrolled into view with a little room (AutoLayoutControl) */
 .auto-layout-button { font-size: 11px; color: var(--color-primary); background: var(--color-selected); border-color: #d3dfd5; }
 .auto-layout-button:hover { background: #e3ebe1; }
 .auto-layout-control .inspector-hint { margin-top: 6px; }
@@ -342,3 +346,6 @@ h1, h2, h3, p { margin: 0; }
 .background-options .button { justify-content: flex-start; gap: 6px; font-size: 12.5px; position: relative; }
 .background-options .button.is-selected { border-color: var(--color-primary, #2d6a4f); color: var(--color-primary, #2d6a4f); }
 .background-colour input[type="color"] { margin-left: auto; width: 22px; height: 22px; padding: 0; border: 1px solid #0002; border-radius: 5px; background: none; cursor: pointer; }
+
+/* Phrase tools of a protected template word (TextInspector PhraseTools). */
+.phrase-tools .phrase-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

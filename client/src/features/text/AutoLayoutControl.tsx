@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'react-redux';
 import { ScanLine } from 'lucide-react';
 import type { TextElement, DesignVariant } from '@frameflow/shared';
@@ -24,6 +24,13 @@ export function AutoLayoutControl({ element }: { element: TextElement }) {
   const [notice, setNotice] = useState<{ variant: DesignVariant; message: string; unresolved: boolean } | null>(null);
   const currentNotice = notice?.variant === variant ? notice : null;
   const overflow = useMemo(() => textOverflows(element, safeRegion(variant.canvas), measureText), [element, variant.canvas]);
+  // A warning or result that appears below the fold of a long inspector is scrolled into view; selecting a text never scrolls.
+  const control = useRef<HTMLDivElement>(null), shown = useRef({ id: element.id, overflow, message: currentNotice?.message });
+  useEffect(() => {
+    const before = shown.current;
+    shown.current = { id: element.id, overflow, message: currentNotice?.message };
+    if (before.id === element.id && ((overflow && !before.overflow) || (currentNotice?.message && currentNotice.message !== before.message))) control.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [element.id, overflow, currentNotice?.message]);
   async function fit() {
     setBusy(true);
     try {
@@ -43,7 +50,7 @@ export function AutoLayoutControl({ element }: { element: TextElement }) {
       setNotice({ variant, message: 'The selected font could not be loaded. Please try again.', unresolved: true });
     } finally { setBusy(false); }
   }
-  return <div className="auto-layout-control">
+  return <div className="auto-layout-control" ref={control}>
     <button className="button auto-layout-button" disabled={busy} onClick={() => void fit()}><ScanLine size={14} />{busy ? 'Fitting…' : 'Auto Layout'}</button>
     <p className="inspector-hint">Fit within the frame. Keep every word.</p>
     {overflow && !currentNotice?.unresolved && <p className="layout-warning">Text extends outside the safe frame.</p>}

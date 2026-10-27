@@ -3,6 +3,7 @@ import { VIEWPORT } from '../features/canvas/viewport';
 
 export type LeftTab = 'design' | 'text' | 'ai';
 interface UiState {
+  productWordMode: boolean;
   activeLeftTab: LeftTab;
   zoom: number;
   selectedElementId: string | null;
@@ -12,11 +13,12 @@ interface UiState {
   aiMode: 'generate' | 'adapt' | 'decompose';
 }
 const initialState: UiState = {
-  activeLeftTab: 'design', zoom: 1, selectedElementId: null, activeVariantId: 'original', fitRequest: 0, selectionVersion: 0, aiMode: 'generate',
+  productWordMode: false, activeLeftTab: 'design', zoom: 1, selectedElementId: null, activeVariantId: 'original', fitRequest: 0, selectionVersion: 0, aiMode: 'generate',
 };
 export const uiSlice = createSlice({
   name: 'ui', initialState,
   reducers: {
+    productWordModeChanged(state, action: PayloadAction<boolean>) { state.productWordMode = action.payload; },
     variantSelected(state, action: PayloadAction<string>) {
       if (state.activeVariantId === action.payload) return;
       state.activeVariantId = action.payload; state.selectedElementId = null; state.selectionVersion++; state.fitRequest++;
@@ -30,4 +32,4 @@ export const uiSlice = createSlice({
     fitRequested(state) { state.fitRequest += 1; },
   },
 });
-export const { tabChanged, zoomChanged, fitRequested, elementSelected, variantSelected, aiModeChanged } = uiSlice.actions;
+export const { productWordModeChanged, tabChanged, zoomChanged, fitRequested, elementSelected, variantSelected, aiModeChanged } = uiSlice.actions;

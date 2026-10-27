@@ -10,7 +10,7 @@ export const fxNote = (fx: StudioFx) => `Rupees at ${fx.note}`;
 export function EstimateTable({ estimate }: { estimate: StudioEstimate }) {
   const counted = estimate.lines;
   return <div className="ts-cost">
-    {estimate.localReuse && <p className="ts-hint">Local reference reuse · no AI generation charge. Original products and raster text remain.</p>}
+    {estimate.localReuse && <p className="ts-hint">Local reference reuse · no AI image will be generated and nothing is charged for it: the template's original reference is copied unchanged, with its products, raster text and logos. To keep its text and logos out of decomposition later, protect them (Protect text &amp; logos).</p>}
     {estimate.daily && <p className="ts-hint">Studio daily budget: {estimate.daily.remaining.usd} remaining of {estimate.daily.cap.usd}; {estimate.daily.used.usd} used or reserved, including {estimate.daily.held.usd} held. {estimate.daily.fits ? 'This estimate fits.' : 'Insufficient budget — paid generation is blocked.'}</p>}
     <table className="ts-cost-table">
       <caption className="ts-sr">Estimated cost before generating</caption>

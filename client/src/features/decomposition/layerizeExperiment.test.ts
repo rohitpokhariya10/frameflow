@@ -1,18 +1,48 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { isDesignVariant } from '../../lib/persistence/schema';
-import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, runRecovery, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
+import { experimentApi, experimentToVariant, groupingOf, ownsOptions, parseTargetLayers, refinementSummary, refusalAdvice, runRecovery, suggestedLayers, targetLayerRange, templateOptionValues, type ExperimentLayer, type ExperimentRun } from './layerizeExperiment';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
 it('offers resume only for recoverable failures and paid retry only for decomposition rejection', () => {
   const failed = { stage: 'failed', seedream: { endpoint: 'seedream', requestId: 'saved-request' } };
   const error = (code: string, status?: number) => ({ code, message: 'Failed', stage: 'queued', ...(status ? { provider: { code: 'PROVIDER_REJECTED', status, messages: [] } } : {}) });
-  expect(runRecovery({ ...failed, error: error('PROVIDER_DECOMPOSITION_REJECTED', 422) })).toEqual({ resume: false, retry: true });
-  expect(runRecovery({ ...failed, error: error('PROVIDER_SAFETY_REJECTED', 422) })).toEqual({ resume: false, retry: false });
-  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 400) })).toEqual({ resume: false, retry: false });
-  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 503) })).toEqual({ resume: true, retry: false });
-  expect(runRecovery({ ...failed, error: error('RENDER_FAILED') })).toEqual({ resume: true, retry: false });
-  expect(runRecovery({ ...failed, stage: 'done' })).toEqual({ resume: false, retry: false });
+  expect(runRecovery({ ...failed, error: error('PROVIDER_DECOMPOSITION_REJECTED', 422) })).toEqual({ resume: false, retry: true, qwen: true });
+  // A template execution's run offers Qwen from its execution instead.
+  expect(runRecovery({ ...failed, error: error('PROVIDER_DECOMPOSITION_REJECTED', 422), templateExecution: { executionId: 'e', mode: 'REUSE_TEMPLATE_ORIGINAL' } as ExperimentRun['templateExecution'] })).toEqual({ resume: false, retry: true, qwen: false });
+  expect(runRecovery({ ...failed, error: error('PROVIDER_SAFETY_REJECTED', 422) })).toEqual({ resume: false, retry: false, qwen: false });
+  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 400) })).toEqual({ resume: false, retry: false, qwen: false });
+  expect(runRecovery({ ...failed, error: error('FAL_RESULT_FAILED', 503) })).toEqual({ resume: true, retry: false, qwen: false });
+  expect(runRecovery({ ...failed, error: error('RENDER_FAILED') })).toEqual({ resume: true, retry: false, qwen: false });
+  // A failed Qwen run never reached Seedream: nothing to resume, and Qwen is not offered on it again.
+  expect(runRecovery({ ...failed, seedream: { endpoint: 'seedream' }, error: error('QWEN_LAYERS_FAILED') })).toEqual({ resume: false, retry: false, qwen: false });
+  expect(runRecovery({ ...failed, stage: 'done' })).toEqual({ resume: false, retry: false, qwen: false });
+});
+
+it('explains a partner content refusal as a refusal of the image, offers Qwen only where it is available, and promises nothing', () => {
+  const provider = { code: 'PROVIDER_REJECTED', status: 422, billableUnits: '0', messages: [{ msg: 'flagged by a content checker', type: 'content_policy_violation', loc: 'body.image_url', reason: 'partner_validation_failed' }] };
+  const error = { code: 'PROVIDER_DECOMPOSITION_REJECTED', message: 'Failed', stage: 'in_progress', provider };
+  const partner = refusalAdvice({ error, rejection: { category: 'partner-content', billableUnits: '0' } }, 0.05);
+  expect(partner).toMatch(/^Seedream's content checker \(run by its provider, ByteDance\) refused this image itself, not the layer plan\./);
+  expect(partner).toMatch(/fal charged nothing for the refusal\./);
+  expect(partner).toMatch(/accepted an image on a later try before, and refused another every time/);
+  expect(partner).toMatch(/Try Qwen layers .*about \$0\.05/);
+  expect(refusalAdvice({ error, templateExecution: { executionId: 'e', mode: 'REUSE_TEMPLATE_ORIGINAL' } as ExperimentRun['templateExecution'] }, 0.05)).not.toMatch(/Qwen/);
+  const other = refusalAdvice({ error: { ...error, provider: { ...provider, billableUnits: undefined, messages: [{ msg: 'could not be processed for layer decomposition', type: 'invalid_request' }] } }, rejection: { category: 'unprocessable-image' } }, 0.05);
+  expect(other).not.toMatch(/content checker|charged nothing/);
+  expect(other).toMatch(/may fail again/);
+});
+
+it('offers a protected template\'s run neither the plan retry nor any other model, and says so', () => {
+  const provider = { code: 'PROVIDER_REJECTED', status: 422, billableUnits: '0', messages: [{ msg: 'flagged by a content checker', type: 'content_policy_violation', loc: 'body.image_url', reason: 'partner_validation_failed' }] };
+  const refused = { stage: 'failed', seedream: { endpoint: 'seedream', requestId: 'r' }, error: { code: 'PROVIDER_DECOMPOSITION_REJECTED', message: 'Failed', stage: 'in_progress', provider },
+    promptSource: { mode: 'protected' as const, templateId: 'pt-0123456789ab', elementsRevision: 1, baseSha256: 'x', prompt: '' }, origin: { kind: 'protected-template' as const, generationId: 'pt-0123456789ab' } };
+  expect(runRecovery(refused)).toEqual({ resume: false, retry: false, qwen: false });
+  expect(runRecovery({ ...refused, error: { code: 'FAL_STATUS_FAILED', message: 'x', stage: 'queued' } })).toEqual({ resume: false, retry: false, qwen: false });
+  const advice = refusalAdvice({ ...refused, rejection: { category: 'partner-content', billableUnits: '0' } }, 0.05);
+  expect(advice).toMatch(/refused the prepared base/);
+  expect(advice).toMatch(/only model a protected template uses/);
+  expect(advice).not.toMatch(/Qwen|Retry extraction/);
 });
 
 it('imports only the server-curated selection even when raw technical layers accompany the run', async () => {
