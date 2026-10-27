@@ -7,7 +7,11 @@ import { prepareProduct } from '../../server/src/decomposition/protectedTemplate
 import { parseProductScene } from '../../server/src/decomposition/protectedTemplates/product/analyzer.js';
 import { decodeRgba, sha256 } from '../../server/src/decomposition/protectedTemplates/pixels.js';
 import { findSheetCreatives } from '../../server/src/decomposition/protectedTemplates/product/sheet.js';
-import { ganeshWordManifest } from './ganeshHandmade.fixture.js';
+import { loadGaneshHandmade } from './privateHandmade.js';
+// Needs the client's private reference files (kept out of the repository).
+const handmade = await loadGaneshHandmade();
+if (!handmade) throw new Error('The visual audit needs the private reference files (Ganesh-Chaturthi.png and tests/fixtures/ganeshHandmade.fixture.ts).');
+const { ganeshWordManifest } = handmade;
 const out = process.argv[2] ?? 'test-results/product-v3/after';
 mkdirSync(out,{recursive:true});
 const save = (f: string,v: object) => writeFileSync(join(out,f),JSON.stringify(v,null,2));

@@ -36,6 +36,7 @@ import { fakeRecognizer, tesseractRecognizer, type WordRecognizer } from '../../
 import { masterPosterPng, newLogoPng } from '../../server/src/decomposition/protectedTemplates/master/masterPoster.fixture.js';
 import { artworkPosterPng } from '../../server/src/decomposition/protectedTemplates/master/artworkObjects.fixture.js';
 import { existsSync } from 'node:fs';
+import { loadGaneshHandmade } from './privateHandmade.js';
 import { homedir } from 'node:os';
 import { replacementLogoPng, VARIATION_WORDS, variationPosterPng } from '../../server/src/textRecognition/variationPoster.fixture.js';
 import { logoPng, productCutoutPng, productPhotoPng, referencePosterPng, TEST_BRAND_RULES } from '../../server/src/templateStudio/testing/fixtures.js';
@@ -203,7 +204,7 @@ const masterEcho = new Set<string>();
 // Ganesh-Chaturthi.png the HAND-MADE stand-in answer (tests/fixtures/ganeshHandmade.fixture.ts), never a model's.
 // (The hand-made manifest of the client's reference creative is confidential and kept out of the repository: used only
 // where it is present, like the reference picture itself.)
-const handmade = existsSync('tests/fixtures/ganeshHandmade.fixture.ts') ? await import('./ganeshHandmade.fixture.js') : undefined;
+const handmade = await loadGaneshHandmade();
 const GANESH_LG_SIZE = handmade?.GANESH_LG_SIZE ?? { width: 607, height: 606 };
 const realProduct = process.env.FRAMEFLOW_PRODUCT_REFERENCE === '1' && !!handmade, fixtureAnalyzer = fakeProductAnalyzer(), handmadeAnalyzer = fakeProductAnalyzer(handmade?.GANESH_LG_HANDMADE_ANSWER);
 // New artwork for recomposed variations: the offline image model (no network, labelled as a test model).

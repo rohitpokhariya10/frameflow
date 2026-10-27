@@ -8,10 +8,11 @@ import { decodeRgba } from '../../server/src/decomposition/protectedTemplates/pi
 import { logoSlot } from '../../server/src/decomposition/protectedTemplates/product/detect.js';
 import { detectedPoster } from '../../server/src/decomposition/protectedTemplates/product/productPoster.fixture.js';
 import { HAS_PRIVATE_FIXTURES } from './privateFixtures.js';
+import { loadGaneshHandmade } from '../fixtures/privateHandmade.js';
 
 describe('product-only AI manifest and actual request buffers', () => {
   it.skipIf(!HAS_PRIVATE_FIXTURES)('validates individually measured Ganesh words and individual products; refuses invalid word coordinates', async () => {
-    const { ganeshWordManifest } = await import('../fixtures/ganeshHandmade.fixture.js');
+    const { ganeshWordManifest } = (await loadGaneshHandmade())!;
     const original = readFileSync('Ganesh-Chaturthi.png');
     const { findSheetCreatives } = await import('../../server/src/decomposition/protectedTemplates/product/sheet.js');
     const sheet = await decodeRgba(original), crop = findSheetCreatives(sheet).boxes[0];
